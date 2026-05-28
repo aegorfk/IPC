@@ -405,12 +405,12 @@ const calendar = {
   assert.deepStrictEqual(Array.from(htmlRows[1]), ['Оплата по окладу', '21', '89 100,00']);
   const parsedHtml = context.extractZupRowsFromGrid_(htmlRows, 'test.html', 'HTML');
   assert.strictEqual(parsedHtml.length, 1);
-  assert.strictEqual(parsedHtml[0][7], 'Начислено');
-  assert.strictEqual(parsedHtml[0][8], 'Оклад');
-  assert.strictEqual(parsedHtml[0][10], 89100);
-  assert.strictEqual(parsedHtml[0][11], '');
-  assert.strictEqual(parsedHtml[0][12], '');
-  assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][7], 89100);
+  assert.strictEqual(parsedHtml[0][9], 'Начислено');
+  assert.strictEqual(parsedHtml[0][10], 'Оклад');
+  assert.strictEqual(parsedHtml[0][12], 89100);
+  assert.strictEqual(parsedHtml[0][13], '');
+  assert.strictEqual(parsedHtml[0][14], '');
+  assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][9], 89100);
   assert.strictEqual(
     context.extractDriveFolderId_('https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?ths=true'),
     '1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm'
@@ -440,11 +440,13 @@ const calendar = {
   );
   assert.strictEqual(parsedZupHtml.length, 3);
   assert.strictEqual(parsedZupHtml[0][2], 'Вентнагель Ирина Николаевна');
-  assert.strictEqual(parsedZupHtml[0][10], 89100);
-  assert.strictEqual(parsedZupHtml[1][8], 'Удержания');
-  assert.strictEqual(parsedZupHtml[1][12], 11583);
-  assert.strictEqual(parsedZupHtml[2][6], '19.01.2024');
-  assert.strictEqual(parsedZupHtml[2][11], 22798.88);
+  assert.strictEqual(parsedZupHtml[0][6], 17);
+  assert.strictEqual(parsedZupHtml[0][7], 17);
+  assert.strictEqual(parsedZupHtml[0][12], 89100);
+  assert.strictEqual(parsedZupHtml[1][10], 'Удержания');
+  assert.strictEqual(parsedZupHtml[1][14], 11583);
+  assert.strictEqual(parsedZupHtml[2][8], '19.01.2024');
+  assert.strictEqual(parsedZupHtml[2][13], 22798.88);
 }
 
 {

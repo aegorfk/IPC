@@ -250,8 +250,7 @@ function updateAllSheetsIndexation() {
     }
   }
 
-  writeMethodologySheet_(spreadsheet, todayInSpreadsheetTimezone_(spreadsheet.getSpreadsheetTimeZone()));
-  deleteLegacyCheckSheet_(spreadsheet);
+  deleteLegacyGeneratedSheets_(spreadsheet);
   showAllUpdateResults_(results);
 }
 
@@ -351,43 +350,13 @@ function showMessage_(message) {
   }
 }
 
-function writeMethodologySheet_(spreadsheet, runDate) {
-  const sheet = getOrCreateGeneratedSheet_(spreadsheet, SETTINGS.METHODOLOGY_SHEET_NAME);
-  const rows = [
-    ['Раздел', 'Методология'],
-    ['Запуск', `Обновлено ${formatDate_(runDate)}. Массовый пересчет выполняется строго в порядке: Оклад -> Ежемесячные -> Ежеквартальные -> Ежегодные -> Отпуска.`],
-    ['ИПЦ', 'Помесячный ИПЦ берется из данных КонсультантПлюс для Российской Федерации. В колонку ИПЦ записывается фактический коэффициент, включая значения меньше 1.'],
-    ['Дефляция', 'В денежном расчете ИПЦ меньше 100% приводится к 100%, чтобы индексация не уменьшала реальное содержание зарплаты и размер уже возникшей недоплаты.'],
-    ['Пени', 'Пени по ст. 236 ТК РФ считаются от общей недоплаты соответствующей строки. Если база <= 0, пени записываются как 0.'],
-    ['Дата начала', 'Для оклада и премий дата начала - 5-е число месяца, следующего за расчетным месяцем, с переносом влево на ближайший рабочий день по производственному календарю.'],
-    ['Дата окончания', 'Дата окончания индексации и пеней читается из даты в скобках заголовка целевой колонки, если она указана.'],
-    ['Отпуска', 'Для отпусков корректный годовой заработок реконструируется по 12 месяцам до месяца даты начала отпуска, если есть колонка "Дата начала отпуска"; иначе используется дата выплаты из колонки A.'],
-    ['ПП N 922 / ПП N 540', 'Для отпусков правило определяется по дате события: до 01.09.2025 - ПП РФ N 922, с 01.09.2025 - ПП РФ N 540.'],
-    ['Годовые премии', 'Для самостоятельного требования по премии лист "Ежегодные" может содержать пропорциональную сумму за неполный год. В отпускной базе такие годовые премии не учитываются, пока календарный год премии не завершен на дату отпуска.'],
-  ];
-
-  writeRowsToGeneratedSheet_(sheet, rows);
-}
-
-function writeRowsToGeneratedSheet_(sheet, rows) {
-  sheet.clear();
-  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
-  sheet.getRange(1, 1, 1, rows[0].length).setFontWeight('bold');
-  sheet.setFrozenRows(1);
-  for (let column = 1; column <= rows[0].length; column++) {
-    sheet.autoResizeColumn(column);
-  }
-}
-
-function getOrCreateGeneratedSheet_(spreadsheet, sheetName) {
-  return spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
-}
-
-function deleteLegacyCheckSheet_(spreadsheet) {
-  const sheet = spreadsheet.getSheetByName('Проверка');
-  if (sheet) {
-    spreadsheet.deleteSheet(sheet);
-  }
+function deleteLegacyGeneratedSheets_(spreadsheet) {
+  ['Проверка', SETTINGS.METHODOLOGY_SHEET_NAME].forEach((sheetName) => {
+    const sheet = spreadsheet.getSheetByName(sheetName);
+    if (sheet) {
+      spreadsheet.deleteSheet(sheet);
+    }
+  });
 }
 
 function isGeneratedSheetName_(sheetName) {

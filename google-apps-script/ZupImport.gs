@@ -18,6 +18,8 @@ const ZUP_IMPORT_HEADERS = [
   'Период',
   'Год',
   'Месяц',
+  'Рабочие дни',
+  'Оплачено дней',
   'Дата выплаты',
   'Раздел 1С',
   'Категория',
@@ -36,6 +38,8 @@ const ZUP_SUMMARY_HEADERS = [
   'Раздел 1С',
   'Категория',
   'Вид начисления',
+  'Рабочие дни',
+  'Оплачено дней',
   'Начислено',
   'Выплачено',
   'Удержано',
@@ -55,6 +59,26 @@ const ZUP_DIAGNOSTIC_HEADERS = [
 ];
 
 const ZUP_CATEGORY_RULES = [
+  {
+    category: 'Доплата до оклада',
+    patterns: ['доплата до оклада'],
+  },
+  {
+    category: 'Командировки',
+    patterns: ['командировка', 'командировочные'],
+  },
+  {
+    category: 'Больничные',
+    patterns: ['больнич', 'пособие по временной нетрудоспособности'],
+  },
+  {
+    category: 'Отпуск без оплаты',
+    patterns: ['отпуск за свой счет', 'отпуск без оплаты'],
+  },
+  {
+    category: 'Материальная помощь',
+    patterns: ['материальная помощь', 'матпомощ'],
+  },
   {
     category: 'Оклад',
     patterns: ['оплата по окладу', 'оклад по дням', 'должностной оклад', 'зарплата за месяц', 'за первую половину'],
@@ -680,6 +704,7 @@ function extractZupRowSegment_(segment, context) {
 
   const period = extractZupPeriodFromCells_(segment.cells) || context.period;
   const paymentDate = extractZupPaymentDateFromCells_(segment.cells);
+  const dayColumns = extractZupDayColumns_(segment.cells, segment.section);
   const amountColumns = buildZupAmountColumns_(segment.section, amount);
   return [
     context.sourceFileName,
@@ -688,6 +713,8 @@ function extractZupRowSegment_(segment, context) {
     period ? formatZupPeriod_(period) : '',
     period ? period.year : '',
     period ? period.month : '',
+    dayColumns.workDays,
+    dayColumns.paidDays,
     paymentDate ? formatDate_(paymentDate) : '',
     segment.section || 'Не определен',
     category,
@@ -697,6 +724,49 @@ function extractZupRowSegment_(segment, context) {
     amountColumns.withheld,
     segment.cells.join(' | '),
   ];
+}
+
+function extractZupDayColumns_(cells, section) {
+  const result = {
+    workDays: '',
+    paidDays: '',
+  };
+  const normalizedSection = normalizeText_(section);
+  if (normalizedSection !== 'начислено') {
+    return result;
+  }
+
+  const compactCells = cells
+    .map((cell) => String(cell || '').trim())
+    .filter(Boolean);
+  const periodIndex = compactCells.findIndex((cell) => parseMonthYear_(cell));
+  if (periodIndex < 0) {
+    return result;
+  }
+
+  const workDays = parseZupDayCount_(compactCells[periodIndex + 1]);
+  const paidDays = parseZupDayCount_(compactCells[periodIndex + 3]);
+  if (workDays !== null && workDays > 0 && workDays <= 31) {
+    result.workDays = workDays;
+  }
+  if (paidDays !== null && paidDays > 0 && paidDays <= 31) {
+    result.paidDays = paidDays;
+  }
+  return result;
+}
+
+function parseZupDayCount_(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return null;
+  }
+
+  if (!/^\d{1,2}(?:[,.]\d{1,2})?(?:\s*дн\.)?$/i.test(text)) {
+    return null;
+  }
+
+  const number = Number(text.replace(/\s*дн\.$/i, '').replace(',', '.'));
+  return Number.isNaN(number) ? null : number;
 }
 
 function buildZupAmountColumns_(section, amount) {
@@ -877,7 +947,8 @@ function writeZupImportSheet_(spreadsheet, rows, skippedFiles) {
 
   writeZupSheetData_(sheet, data);
   if (rows.length) {
-    sheet.getRange(2, 11, rows.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    sheet.getRange(2, 7, rows.length, 2).setNumberFormat('0.00');
+    sheet.getRange(2, 13, rows.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
   }
 }
 
@@ -887,23 +958,26 @@ function writeZupSummarySheet_(spreadsheet, rows) {
   const data = [ZUP_SUMMARY_HEADERS].concat(summary);
   writeZupSheetData_(sheet, data);
   if (summary.length) {
-    sheet.getRange(2, 8, summary.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    sheet.getRange(2, 8, summary.length, 2).setNumberFormat('0.00');
+    sheet.getRange(2, 10, summary.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
   }
 }
 
 function buildZupSummary_(rows) {
   const map = {};
   rows.forEach((row) => {
-    const key = [row[0], row[3], row[4], row[5], row[7], row[8], row[9]].join('|');
+    const key = [row[0], row[3], row[4], row[5], row[9], row[10], row[11]].join('|');
     if (!map[key]) {
       map[key] = {
         file: row[0],
         period: row[3],
         year: row[4],
         month: row[5],
-        section: row[7],
-        category: row[8],
-        kind: row[9],
+        section: row[9],
+        category: row[10],
+        kind: row[11],
+        workDays: 0,
+        paidDays: 0,
         accrued: 0,
         paid: 0,
         withheld: 0,
@@ -911,9 +985,11 @@ function buildZupSummary_(rows) {
       };
     }
 
-    map[key].accrued += parseMoney_(row[10]) || 0;
-    map[key].paid += parseMoney_(row[11]) || 0;
-    map[key].withheld += parseMoney_(row[12]) || 0;
+    map[key].workDays += parseMoney_(row[6]) || 0;
+    map[key].paidDays += parseMoney_(row[7]) || 0;
+    map[key].accrued += parseMoney_(row[12]) || 0;
+    map[key].paid += parseMoney_(row[13]) || 0;
+    map[key].withheld += parseMoney_(row[14]) || 0;
     map[key].count++;
   });
 
@@ -929,6 +1005,8 @@ function buildZupSummary_(rows) {
         item.section,
         item.category,
         item.kind,
+        item.workDays ? roundNumber_(item.workDays, 2) : '',
+        item.paidDays ? roundNumber_(item.paidDays, 2) : '',
         roundMoney_(item.accrued),
         roundMoney_(item.paid),
         roundMoney_(item.withheld),
@@ -1063,12 +1141,12 @@ function buildZupImportAccrualIndex_(rows) {
   rows.forEach((row) => {
     const year = Number(row[4]);
     const month = Number(row[5]);
-    const amount = parseMoney_(row[10]);
+    const amount = parseMoney_(row[12]);
     if (!year || !month || amount === null) {
       return;
     }
 
-    const key = buildZupImportAccrualKey_(row[8], { year, month });
+    const key = buildZupImportAccrualKey_(row[10], { year, month });
     if (!index[key]) {
       index[key] = {
         amount: 0,
