@@ -1,4 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
+  SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
   SUMMARY_SHEET_NAME: 'Импорт_1С_Свод',
   DIAGNOSTIC_SHEET_NAME: 'Импорт_1С_Диагностика',
@@ -56,7 +57,7 @@ const ZUP_DIAGNOSTIC_HEADERS = [
 const ZUP_CATEGORY_RULES = [
   {
     category: 'Оклад',
-    patterns: ['оплата по окладу', 'оклад по дням', 'оклад', 'должностной оклад', 'зарплата за месяц', 'за первую половину'],
+    patterns: ['оплата по окладу', 'оклад по дням', 'должностной оклад', 'зарплата за месяц', 'за первую половину'],
   },
   {
     category: 'Ежемесячные премии',
@@ -77,6 +78,10 @@ const ZUP_CATEGORY_RULES = [
   {
     category: 'Выходное пособие',
     patterns: ['выходн', 'пособие'],
+  },
+  {
+    category: 'Удержания',
+    patterns: ['ндфл', 'исполнительный лист', 'удержание'],
   },
 ];
 
@@ -113,7 +118,7 @@ function clearZupImportSheets_() {
 }
 
 function importZupFolderCore_(spreadsheet, folderId) {
-  const files = listZupFilesRecursively_(DriveApp.getFolderById(folderId));
+  const files = selectZupImportFiles_(listZupFilesRecursively_(DriveApp.getFolderById(folderId)));
   const rows = [];
   const skippedFiles = [];
   let filesRead = 0;
@@ -157,9 +162,24 @@ function resolveZupFolderFromSpreadsheet_(spreadsheet) {
     return anywhereResult;
   }
 
+  const configuredResult = resolveConfiguredZupFolder_();
+  if (configuredResult) {
+    return configuredResult;
+  }
+
   throw new Error(
-    'Не нашел ссылку на папку с исходными данными. Добавьте в таблицу подпись "Исходные данные:" и рядом ссылку на Drive-папку.'
+    'Не нашел ссылку на папку с исходными данными. Добавьте в таблицу подпись "Исходные данные:" и рядом ссылку на Drive-папку или заполните ZUP_IMPORT_SETTINGS.SOURCE_FOLDER_URL.'
   );
+}
+
+function resolveConfiguredZupFolder_() {
+  const id = extractDriveFolderId_(ZUP_IMPORT_SETTINGS.SOURCE_FOLDER_URL);
+  return id
+    ? {
+      id,
+      source: 'ZUP_IMPORT_SETTINGS.SOURCE_FOLDER_URL',
+    }
+    : null;
 }
 
 function findZupFolderNearSourceLabel_(spreadsheet) {
@@ -275,6 +295,47 @@ function listZupFilesRecursively_(folder) {
   }
 
   return files;
+}
+
+function selectZupImportFiles_(files) {
+  const groups = {};
+  files.forEach((file) => {
+    const key = normalizeZupSourceFileKey_(file.getName());
+    if (!groups[key]) {
+      groups[key] = [];
+    }
+    groups[key].push(file);
+  });
+
+  return Object.keys(groups)
+    .sort()
+    .map((key) => chooseZupImportFile_(groups[key]));
+}
+
+function normalizeZupSourceFileKey_(fileName) {
+  return normalizeText_(fileName)
+    .replace(/\.(html?|pdf|xlsx?|csv)$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function chooseZupImportFile_(files) {
+  const preferredMimeTypes = [
+    ZUP_IMPORT_SETTINGS.GOOGLE_DOCS_MIME,
+    ZUP_IMPORT_SETTINGS.HTML_MIME,
+    ZUP_IMPORT_SETTINGS.GOOGLE_SHEETS_MIME,
+    ZUP_IMPORT_SETTINGS.CSV_MIME,
+  ];
+
+  for (const mimeType of preferredMimeTypes) {
+    const found = files.find((file) => file.getMimeType() === mimeType);
+    if (found) {
+      return found;
+    }
+  }
+
+  const htmlByName = files.find((file) => /\.html?$/i.test(file.getName()));
+  return htmlByName || files[0];
 }
 
 function parseZupFile_(file) {
@@ -419,6 +480,56 @@ function parseZupPlainText_(text, sourceFileName, sourceSheetName) {
 }
 
 function htmlToZupGrid_(html) {
+  const tableRows = extractZupHtmlTableRows_(html);
+  if (tableRows.length) {
+    return tableRows;
+  }
+
+  return htmlToZupPlainTextGrid_(html);
+}
+
+function extractZupHtmlTableRows_(html) {
+  const rows = [];
+  const rowRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+  while ((rowMatch = rowRegex.exec(String(html || ''))) !== null) {
+    const row = [];
+    const cellRegex = /<t[dh]\b([^>]*)>([\s\S]*?)<\/t[dh]>/gi;
+    let cellMatch;
+    while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
+      const text = cleanZupHtmlCell_(cellMatch[2]);
+      const colspan = extractZupHtmlSpan_(cellMatch[1], 'colspan');
+      row.push(text);
+      for (let index = 1; index < colspan; index++) {
+        row.push('');
+      }
+    }
+    if (row.some((cell) => String(cell).trim())) {
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function extractZupHtmlSpan_(attributes, name) {
+  const match = String(attributes || '').match(new RegExp(`${name}=["']?(\\d+)`, 'i'));
+  const value = match ? Number(match[1]) : 1;
+  return value > 0 && value < 200 ? value : 1;
+}
+
+function cleanZupHtmlCell_(html) {
+  return decodeHtmlEntities_(
+    String(html || '')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+  ).replace(/\s+/g, ' ').trim();
+}
+
+function htmlToZupPlainTextGrid_(html) {
   const text = decodeHtmlEntities_(
     String(html || '')
       .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -481,7 +592,6 @@ function decodeHtmlEntities_(value) {
 function extractZupRowsFromGrid_(values, sourceFileName, sourceSheetName) {
   const employee = extractZupEmployee_(values) || '';
   const period = extractZupPeriod_(values, sourceFileName);
-  const paymentDate = extractZupPaymentDate_(values);
   const rows = [];
   let section = '';
   let sectionSpans = [];
@@ -510,7 +620,6 @@ function extractZupRowsFromGrid_(values, sourceFileName, sourceSheetName) {
         sourceSheetName,
         employee,
         period,
-        paymentDate,
       });
       if (extracted) {
         rows.push(extracted);
@@ -559,7 +668,7 @@ function extractZupRowSegment_(segment, context) {
     return null;
   }
 
-  const category = detectZupCategory_(rowText);
+  const category = detectZupCategory_(rowText, segment.section);
   if (!category) {
     return null;
   }
@@ -569,8 +678,8 @@ function extractZupRowSegment_(segment, context) {
     return null;
   }
 
-  const period = context.period;
-  const paymentDate = context.paymentDate;
+  const period = extractZupPeriodFromCells_(segment.cells) || context.period;
+  const paymentDate = extractZupPaymentDateFromCells_(segment.cells);
   const amountColumns = buildZupAmountColumns_(segment.section, amount);
   return [
     context.sourceFileName,
@@ -638,6 +747,20 @@ function detectZupSection_(rowText) {
 
 function detectZupCategory_(rowText) {
   const normalizedText = normalizeText_(rowText);
+  if (normalizedText.includes('прем')) {
+    if (/(кварт|0?1[./-]0?1\s*[-–]\s*3?1[./-]0?3|0?1[./-]0?4\s*[-–]\s*30[./-]0?6|0?1[./-]0?7\s*[-–]\s*30[./-]0?9|0?1[./-]10\s*[-–]\s*3?1[./-]12)/.test(normalizedText)) {
+      return 'Ежеквартальные премии';
+    }
+    if (/(ежегод|годов|итогам года|\b20\d{2}\s*год)/.test(normalizedText)) {
+      return 'Ежегодные премии';
+    }
+    return 'Ежемесячные премии';
+  }
+
+  if (/(отпуск|отпускные|компенсация отпуска)/.test(normalizedText)) {
+    return 'Отпуска';
+  }
+
   const rule = ZUP_CATEGORY_RULES.find((candidate) =>
     candidate.patterns.some((pattern) => normalizedText.includes(normalizeText_(pattern)))
   );
@@ -657,6 +780,14 @@ function extractZupEmployee_(values) {
       if (/^(сотрудник|фио)$/i.test(String(row[columnIndex]).trim())) {
         return String(row[columnIndex + 1]).trim();
       }
+    }
+
+    if (
+      rowIndex <= 5 &&
+      /\([^)]+\)/.test(String(row[0] || '')) &&
+      !/организация|расчетный листок|к выплате/i.test(String(row[0] || ''))
+    ) {
+      return String(row[0]).replace(/\s*\([^)]+\)\s*$/, '').trim();
     }
   }
   return '';
@@ -679,18 +810,31 @@ function extractZupPeriod_(values, sourceFileName) {
   return null;
 }
 
-function extractZupPaymentDate_(values) {
-  for (let rowIndex = 0; rowIndex < values.length; rowIndex++) {
-    const rowText = normalizeText_(values[rowIndex].join(' '));
-    if (!/выплачен|выплат|к выплате/.test(rowText)) {
-      continue;
+function extractZupPeriodFromCells_(cells) {
+  for (const cell of cells) {
+    const period = parseMonthYear_(cell);
+    if (period) {
+      return period;
     }
+  }
+  return parseMonthYear_(cells.join(' '));
+}
 
-    for (const cell of values[rowIndex]) {
-      const date = parseDateValue_(cell);
-      if (date) {
-        return date;
-      }
+function extractZupPaymentDateFromCells_(cells) {
+  const text = cells.join(' ');
+  const afterOt = text.match(/\bот\s+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i);
+  if (afterOt) {
+    const parsed = parseDateValue_(afterOt[1]);
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  const dates = text.match(/\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/g) || [];
+  for (let index = dates.length - 1; index >= 0; index--) {
+    const parsed = parseDateValue_(dates[index]);
+    if (parsed) {
+      return parsed;
     }
   }
   return null;
@@ -838,7 +982,7 @@ function buildZupDiagnostics_(spreadsheet, importRows) {
     }
 
     const table = findTable_(sheet);
-    const amountColumn = resolveZupDiagnosticAmountColumn_(table);
+    const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
     if (!Number.isInteger(amountColumn)) {
       diagnostics.push([
         sheet.getName(),
@@ -888,7 +1032,23 @@ function buildZupDiagnostics_(spreadsheet, importRows) {
   return diagnostics;
 }
 
-function resolveZupDiagnosticAmountColumn_(table) {
+function resolveZupDiagnosticAmountColumn_(table, target) {
+  if (
+    target.layoutId === 'salary' &&
+    Number.isInteger(table.columns.unpaidSalary) &&
+    table.columns.unpaidSalary > 0
+  ) {
+    return table.columns.unpaidSalary - 1;
+  }
+
+  if (
+    target.layoutId !== 'salary' &&
+    Number.isInteger(table.columns.underpayment) &&
+    table.columns.underpayment > 0
+  ) {
+    return table.columns.underpayment - 1;
+  }
+
   if (Number.isInteger(table.columns.correctAmount)) {
     return table.columns.correctAmount;
   }

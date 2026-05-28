@@ -423,6 +423,28 @@ const calendar = {
   assert.strictEqual(paidColumns.accrued, '');
   assert.strictEqual(paidColumns.paid, 1000);
   assert.strictEqual(paidColumns.withheld, '');
+
+  const zupHtml = [
+    '<table>',
+    '<tr><td colspan="21">Вентнагель Ирина Николаевна (000р9)</td><td colspan="10">К выплате:</td><td colspan="4">54 718,12</td></tr>',
+    '<tr><td colspan="17">Начислено:</td><td colspan="4">89 100,00</td><td colspan="10">Удержано:</td><td colspan="4">11 583,00</td></tr>',
+    '<tr><td colspan="7">Оплата по окладу</td><td colspan="3">янв. 2024</td><td colspan="2">17</td><td colspan="2">68</td><td colspan="3">17,00 дн.</td><td colspan="4">89 100,00</td><td colspan="7">НДФЛ</td><td colspan="3">янв. 2024</td><td colspan="4">11 583,00</td></tr>',
+    '<tr><td colspan="21"></td><td colspan="10">Выплачено:</td><td colspan="4">77 517,00</td></tr>',
+    '<tr><td colspan="21"></td><td colspan="7">За первую половину месяца (Банк, вед. № 5 от 19.01.24)</td><td colspan="3">янв. 2024</td><td colspan="4">22 798,88</td></tr>',
+    '</table>',
+  ].join('');
+  const parsedZupHtml = context.extractZupRowsFromGrid_(
+    context.htmlToZupGrid_(zupHtml),
+    '1. Расчетный листок О2 янв 2024.html',
+    'HTML'
+  );
+  assert.strictEqual(parsedZupHtml.length, 3);
+  assert.strictEqual(parsedZupHtml[0][2], 'Вентнагель Ирина Николаевна');
+  assert.strictEqual(parsedZupHtml[0][10], 89100);
+  assert.strictEqual(parsedZupHtml[1][8], 'Удержания');
+  assert.strictEqual(parsedZupHtml[1][12], 11583);
+  assert.strictEqual(parsedZupHtml[2][6], '19.01.2024');
+  assert.strictEqual(parsedZupHtml[2][11], 22798.88);
 }
 
 {
