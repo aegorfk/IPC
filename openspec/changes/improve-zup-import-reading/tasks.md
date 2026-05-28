@@ -1,0 +1,33 @@
+## 1. OpenSpec And Contract
+
+- [x] 1.1 Create OpenSpec change artifacts for the ZUP import-reading capability
+- [x] 1.2 Update the markdown project specification to mirror the OpenSpec contract
+
+## 2. Output Schema
+
+- [x] 2.1 Add payment statement and statement-date columns to normalized import rows and summary output
+- [x] 2.2 Add import quality and import state sheet definitions
+- [x] 2.3 Update diagnostics and summary indexes after schema expansion
+
+## 3. Parser Quality
+
+- [x] 3.1 Extract section totals from payroll slips
+- [x] 3.2 Compare parsed section totals with source section totals and emit warnings
+- [x] 3.3 Tighten premium and special accrual classification by period and row text
+
+## 4. File Reading
+
+- [x] 4.1 Record duplicate source variants and selected canonical variant in quality output
+- [x] 4.2 Add PDF OCR conversion through Advanced Drive service with graceful fallback
+- [x] 4.3 Add incremental import state keyed by file metadata and parser version
+
+## 5. User Workflows
+
+- [x] 5.1 Add dry-run import menu/function that writes preview quality output only
+- [x] 5.2 Preserve full import behavior for normal imports and force refreshes
+
+## 6. Verification And Publish
+
+- [x] 6.1 Add or update local tests for new parser fields, quality warnings, and dry-run behavior
+- [x] 6.2 Run local tests and OpenSpec validation
+- [x] 6.3 Commit and push the completed implementation

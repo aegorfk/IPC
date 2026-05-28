@@ -201,7 +201,9 @@ function onOpen() {
     .addToUi();
 
   ui.createMenu('Импорт 1С')
+    .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
+    .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
     .addItem('Очистить импорт 1С', 'clearZupImportSheets')
     .addToUi();
 }

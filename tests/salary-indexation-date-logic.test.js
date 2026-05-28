@@ -405,11 +405,11 @@ const calendar = {
   assert.deepStrictEqual(Array.from(htmlRows[1]), ['Оплата по окладу', '21', '89 100,00']);
   const parsedHtml = context.extractZupRowsFromGrid_(htmlRows, 'test.html', 'HTML');
   assert.strictEqual(parsedHtml.length, 1);
-  assert.strictEqual(parsedHtml[0][9], 'Начислено');
-  assert.strictEqual(parsedHtml[0][10], 'Оклад');
-  assert.strictEqual(parsedHtml[0][12], 89100);
-  assert.strictEqual(parsedHtml[0][13], '');
-  assert.strictEqual(parsedHtml[0][14], '');
+  assert.strictEqual(parsedHtml[0][11], 'Начислено');
+  assert.strictEqual(parsedHtml[0][12], 'Оклад');
+  assert.strictEqual(parsedHtml[0][14], 89100);
+  assert.strictEqual(parsedHtml[0][15], '');
+  assert.strictEqual(parsedHtml[0][16], '');
   assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][9], 89100);
   assert.strictEqual(
     context.extractDriveFolderId_('https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?ths=true'),
@@ -442,11 +442,121 @@ const calendar = {
   assert.strictEqual(parsedZupHtml[0][2], 'Вентнагель Ирина Николаевна');
   assert.strictEqual(parsedZupHtml[0][6], 17);
   assert.strictEqual(parsedZupHtml[0][7], 17);
-  assert.strictEqual(parsedZupHtml[0][12], 89100);
-  assert.strictEqual(parsedZupHtml[1][10], 'Удержания');
-  assert.strictEqual(parsedZupHtml[1][14], 11583);
+  assert.strictEqual(parsedZupHtml[0][14], 89100);
+  assert.strictEqual(parsedZupHtml[1][12], 'Удержания');
+  assert.strictEqual(parsedZupHtml[1][16], 11583);
   assert.strictEqual(parsedZupHtml[2][8], '19.01.2024');
-  assert.strictEqual(parsedZupHtml[2][13], 22798.88);
+  assert.strictEqual(parsedZupHtml[2][9], 'Банк, вед. № 5 от 19.01.24');
+  assert.strictEqual(parsedZupHtml[2][10], '19.01.2024');
+  assert.strictEqual(parsedZupHtml[2][13], 'За первую половину месяца');
+  assert.strictEqual(parsedZupHtml[2][15], 22798.88);
+
+  const parsedGrid = context.parseZupGrid_(
+    context.htmlToZupGrid_(zupHtml),
+    '1. Расчетный листок О2 янв 2024.html',
+    'HTML'
+  );
+  assert.strictEqual(parsedGrid.totals.accrued, 89100);
+  assert.strictEqual(parsedGrid.totals.withheld, 11583);
+  assert.strictEqual(parsedGrid.totals.paid, 77517);
+  const quality = context.buildZupParsedQuality_(parsedGrid);
+  assert.deepStrictEqual(Array.from(quality.warnings), [
+    'Выплачено: итог 77517, распознано 22798.88',
+  ]);
+}
+
+{
+  function makeFakeFile(name, mimeType, content) {
+    return {
+      getId: () => `${name}-id`,
+      getName: () => name,
+      getMimeType: () => mimeType,
+      getLastUpdated: () => new Date(2026, 0, 1),
+      getSize: () => content.length,
+      getBlob: () => ({
+        getDataAsString: () => content,
+      }),
+    };
+  }
+
+  const htmlFile = makeFakeFile(
+    'Расчетный листок янв 2024.html',
+    'text/html',
+    '<table><tr><td>Начислено</td></tr><tr><td>Оплата по окладу</td><td>янв. 2024</td><td>21</td><td>168</td><td>21,00 дн.</td><td>89 100,00</td></tr></table>'
+  );
+  const duplicateDoc = makeFakeFile(
+    'Расчетный листок янв 2024',
+    'application/vnd.google-apps.document',
+    ''
+  );
+  const groups = context.selectZupImportFileGroups_([htmlFile, duplicateDoc]);
+  assert.strictEqual(groups.length, 1);
+  assert.strictEqual(groups[0].selected.getMimeType(), 'application/vnd.google-apps.document');
+  assert.strictEqual(groups[0].variants.length, 2);
+
+  const sheetWrites = {};
+  const fakeSpreadsheet = {
+    getSheetByName(name) {
+      return sheetWrites[name] || null;
+    },
+    insertSheet(name) {
+      const sheet = {
+        name,
+        values: [],
+        clear() {
+          this.values = [];
+        },
+        getLastRow() {
+          return this.values.length;
+        },
+        getRange(row, column, rowCount, columnCount) {
+          return {
+            setValues: (values) => {
+              sheet.values = values;
+              return this;
+            },
+            getValues: () => sheet.values.slice(row - 1, row - 1 + rowCount).map((currentRow) => currentRow.slice(column - 1, column - 1 + columnCount)),
+            setFontWeight: () => this,
+            setNumberFormat: () => this,
+            setNote: () => this,
+          };
+        },
+        setFrozenRows() {},
+        autoResizeColumn() {},
+      };
+      sheetWrites[name] = sheet;
+      return sheet;
+    },
+  };
+
+  context.DriveApp = {
+    getFolderById() {
+      return {
+        getFiles() {
+          let used = false;
+          return {
+            hasNext: () => !used,
+            next: () => {
+              used = true;
+              return htmlFile;
+            },
+          };
+        },
+        getFolders() {
+          return {
+            hasNext: () => false,
+          };
+        },
+      };
+    },
+  };
+
+  const dryRun = context.importZupFolderCore_(fakeSpreadsheet, 'folder-id', { dryRun: true });
+  assert.strictEqual(dryRun.rows.length, 1);
+  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Качество']), true);
+  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_ЗУП']), false);
+  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Свод']), false);
+  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Диагностика']), false);
 }
 
 {
