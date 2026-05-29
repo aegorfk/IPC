@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v3-vlm',
+  PARSER_VERSION: 'zup-import-v4-vlm-dedupe',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -1207,7 +1207,9 @@ function selectZupImportFileGroups_(files) {
 
 function normalizeZupSourceFileKey_(fileName) {
   return normalizeText_(fileName)
+    .replace(/[_]+/g, ' ')
     .replace(/\.(html?|pdf|xlsx?|csv)$/i, '')
+    .replace(/^\d+\.\s+/, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1336,7 +1338,7 @@ function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
     return deterministic;
   }
 
-  return buildParsedZupResult_(file, combineParsedZupData_([parsed, vlmParsed]));
+  return buildParsedZupResult_(file, mergeZupVlmFallbackParsed_(parsed, vlmParsed));
 }
 
 function buildParsedZupResult_(file, parsed) {
@@ -1355,6 +1357,27 @@ function buildParsedZupResult_(file, parsed) {
     quality,
     vlmRows: normalized.vlmRows || [],
   };
+}
+
+function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed) {
+  const deterministic = normalizeParsedZupData_(deterministicParsed);
+  const vlm = normalizeParsedZupData_(vlmParsed);
+  return {
+    rows: vlm.rows,
+    totals: hasZupTotals_(deterministic.totals) ? deterministic.totals : vlm.totals,
+    employee: vlm.employee || deterministic.employee,
+    period: vlm.period || deterministic.period,
+    warnings: deterministic.warnings.concat(vlm.warnings),
+    vlmRows: vlm.vlmRows,
+  };
+}
+
+function hasZupTotals_(totals) {
+  return Boolean(totals && (
+    Math.abs(totals.accrued || 0) > 0.000001 ||
+    Math.abs(totals.withheld || 0) > 0.000001 ||
+    Math.abs(totals.paid || 0) > 0.000001
+  ));
 }
 
 function parseZupSpreadsheet_(spreadsheetId, sourceFileName) {
@@ -2402,14 +2425,18 @@ function detectZupCategory_(rowText) {
     return 'Ежемесячные премии';
   }
 
+  const rule = ZUP_CATEGORY_RULES.find((candidate) =>
+    candidate.patterns.some((pattern) => normalizedText.includes(normalizeText_(pattern)))
+  );
+  if (rule) {
+    return rule.category;
+  }
+
   if (/(отпуск|отпускные|компенсация отпуска)/.test(normalizedText)) {
     return 'Отпуска';
   }
 
-  const rule = ZUP_CATEGORY_RULES.find((candidate) =>
-    candidate.patterns.some((pattern) => normalizedText.includes(normalizeText_(pattern)))
-  );
-  return rule ? rule.category : '';
+  return '';
 }
 
 function extractZupEmployee_(values) {
@@ -2527,7 +2554,7 @@ function extractZupAmountFromSegment_(segment) {
       text: cell,
       amount: parseMoney_(cell),
     }))
-    .filter((item) => item.amount !== null);
+    .filter((item) => item.amount !== null && isLikelyZupMoneyCell_(item.text));
 
   if (!moneyCells.length) {
     return null;
@@ -2543,6 +2570,24 @@ function extractZupAmountFromSegment_(segment) {
   }
 
   return moneyCells[moneyCells.length - 1].amount;
+}
+
+function isLikelyZupMoneyCell_(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text || /[а-яёa-z]/i.test(text)) {
+    return false;
+  }
+
+  const compact = text.replace(/\s/g, '');
+  if (/^-?\d+[,.]\d{2}$/.test(compact)) {
+    return true;
+  }
+  if (/^-?\d{1,3}(?:\s\d{3})+(?:[,.]\d{1,2})?$/.test(text)) {
+    return true;
+  }
+
+  const number = parseMoney_(text);
+  return number !== null && Math.abs(number) >= 1000;
 }
 
 function compactZupRowLabel_(row) {
