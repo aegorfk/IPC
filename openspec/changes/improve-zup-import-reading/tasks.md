@@ -51,3 +51,4 @@
 - [x] 9.2 Add Polza VLM fallback with strict JSON Schema output for PDF/image/text sources that deterministic parsing cannot read
 - [x] 9.3 Add VLM audit output, model/settings visibility, and documentation
 - [x] 9.4 Run local tests and OpenSpec validation, then commit and push
+- [x] 9.5 Add forced VLM trial mode and orange highlighting for disputed import rows

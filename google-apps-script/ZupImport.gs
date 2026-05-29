@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v5-vlm-totals',
+  PARSER_VERSION: 'zup-import-v6-vlm-force',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -17,6 +17,8 @@ const ZUP_IMPORT_SETTINGS = {
   HTML_MIME: 'text/html',
   ENABLE_VLM_FALLBACK: true,
   POLZA_API_KEY_PROPERTY: 'POLZA_API_KEY',
+  VLM_MODEL_PROPERTY: 'ZUP_VLM_MODEL',
+  VLM_FORCE_PATTERN_PROPERTY: 'ZUP_VLM_FORCE_PATTERN',
   POLZA_ENDPOINT: 'https://polza.ai/api/v1/chat/completions',
   VLM_DEFAULT_MODEL: 'google/gemini-3.1-flash-lite',
   VLM_STRONG_MODEL: 'google/gemini-3.5-flash',
@@ -273,12 +275,14 @@ function forceZupFolderImport() {
 
 function showZupVlmSettings() {
   const apiKeyConfigured = Boolean(getZupPolzaApiKey_());
-  const model = getZupScriptProperty_('ZUP_VLM_MODEL') || ZUP_IMPORT_SETTINGS.VLM_DEFAULT_MODEL;
+  const model = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_MODEL_PROPERTY) || ZUP_IMPORT_SETTINGS.VLM_DEFAULT_MODEL;
+  const forcePattern = getZupVlmForcePattern_();
   showMessage_(
     [
       `VLM fallback: ${ZUP_IMPORT_SETTINGS.ENABLE_VLM_FALLBACK ? 'включен' : 'выключен'}`,
       `Polza API key: ${apiKeyConfigured ? 'задан' : `не задан (${ZUP_IMPORT_SETTINGS.POLZA_API_KEY_PROPERTY})`}`,
       `Модель: ${model}`,
+      `Принудительный VLM: ${forcePattern || 'не задан'}`,
       `Лимит файла: ${Math.round(ZUP_IMPORT_SETTINGS.VLM_MAX_FILE_BYTES / 1024 / 1024)} МБ`,
       'Ключ задается в Apps Script -> Project Settings -> Script properties.',
     ].join('\n')
@@ -1329,13 +1333,22 @@ function parseZupFile_(file) {
 
 function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
   const deterministic = buildParsedZupResult_(file, parsed);
-  if (deterministic.rows.length || !shouldUseZupVlmFallback_(file, deterministic, options)) {
+  const forceVlm = shouldForceZupVlm_(file);
+  if (deterministic.rows.length && !forceVlm) {
+    return deterministic;
+  }
+  if (!forceVlm && !shouldUseZupVlmFallback_(file, deterministic, options)) {
     return deterministic;
   }
 
-  const vlmParsed = parseZupWithPolzaVlm_(file, parsed, options);
+  const vlmOptions = Object.assign({}, options || {}, { forceVlm });
+  const vlmParsed = parseZupWithPolzaVlm_(file, parsed, vlmOptions);
   if (!vlmParsed) {
     return deterministic;
+  }
+
+  if (forceVlm && !vlmParsed.rows.length && deterministic.rows.length) {
+    return buildParsedZupResult_(file, mergeZupVlmFailureWithDeterministicParsed_(parsed, vlmParsed));
   }
 
   return buildParsedZupResult_(file, mergeZupVlmFallbackParsed_(parsed, vlmParsed));
@@ -1367,6 +1380,19 @@ function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed) {
     totals: hasZupTotals_(vlm.totals) ? vlm.totals : deterministic.totals,
     employee: vlm.employee || deterministic.employee,
     period: vlm.period || deterministic.period,
+    warnings: deterministic.warnings.concat(vlm.warnings),
+    vlmRows: vlm.vlmRows,
+  };
+}
+
+function mergeZupVlmFailureWithDeterministicParsed_(deterministicParsed, vlmParsed) {
+  const deterministic = normalizeParsedZupData_(deterministicParsed);
+  const vlm = normalizeParsedZupData_(vlmParsed);
+  return {
+    rows: deterministic.rows,
+    totals: deterministic.totals,
+    employee: deterministic.employee,
+    period: deterministic.period,
     warnings: deterministic.warnings.concat(vlm.warnings),
     vlmRows: vlm.vlmRows,
   };
@@ -1485,6 +1511,27 @@ function shouldUseZupVlmFallback_(file, parsedResult, options) {
     /^image\//i.test(mimeType);
 }
 
+function shouldForceZupVlm_(file) {
+  const pattern = getZupVlmForcePattern_();
+  if (!pattern) {
+    return false;
+  }
+  if (pattern === '*') {
+    return true;
+  }
+
+  const fileName = normalizeText_(file.getName());
+  const tokens = pattern
+    .split(/[;,\n]+/)
+    .map((item) => normalizeText_(item))
+    .filter(Boolean);
+  return tokens.some((token) => fileName.includes(token));
+}
+
+function getZupVlmForcePattern_() {
+  return getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN_PROPERTY).trim();
+}
+
 function parseZupWithPolzaVlm_(file, parsed, options) {
   const apiKey = getZupPolzaApiKey_();
   if (!apiKey) {
@@ -1537,6 +1584,7 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
     return buildEmptyZupVlmParsed_(file, `Polza VLM вернула content, который не парсится как JSON: ${String(error)}`, model, content);
   }
 
+  envelope._zupForceVlm = Boolean(options && options.forceVlm);
   const parsedVlm = convertPolzaVlmPayloadToZupParsed_(file, extracted, model, envelope);
   parsedVlm.vlmRows = [buildZupVlmLogRow_(file, model, 'OK', parsedVlm.rows.length, envelope, extracted, parsedVlm.warnings)];
   return parsedVlm;
@@ -1553,7 +1601,7 @@ function getZupPolzaApiKey_() {
 }
 
 function getZupVlmModel_(file, options) {
-  const override = getZupScriptProperty_('ZUP_VLM_MODEL');
+  const override = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_MODEL_PROPERTY);
   if (override) {
     return override;
   }
@@ -1748,6 +1796,9 @@ function convertPolzaVlmPayloadToZupParsed_(file, payload, model, envelope) {
     .filter(Boolean);
   const warnings = (payload.warnings || []).slice();
   warnings.unshift(`Строки извлечены через Polza VLM (${model}); требуется сверка по sourceText/confidence.`);
+  if (envelope && envelope._zupForceVlm) {
+    warnings.unshift('Файл принудительно перечитан через VLM по ZUP_VLM_FORCE_PATTERN.');
+  }
   if (envelope && envelope.usage && envelope.usage.cost_rub) {
     warnings.push(`Стоимость VLM-запроса: ${envelope.usage.cost_rub} ₽.`);
   }
@@ -2635,6 +2686,10 @@ function writeZupImportSheet_(spreadsheet, rows, skippedFiles) {
   if (rows.length) {
     sheet.getRange(2, 7, rows.length, 2).setNumberFormat('0.00');
     sheet.getRange(2, ZUP_IMPORT_COLUMNS.accrued + 1, rows.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    highlightZupRows_(sheet, rows, 2, ZUP_IMPORT_HEADERS.length, (row) =>
+      row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM' ||
+      row[ZUP_IMPORT_COLUMNS.category] === 'Прочее'
+    );
   }
 }
 
@@ -2717,6 +2772,9 @@ function writeZupQualitySheet_(spreadsheet, qualityRows, dryRun) {
   }
   if (qualityRows.length) {
     sheet.getRange(2, 9, qualityRows.length, 6).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    highlightZupRows_(sheet, qualityRows, 2, ZUP_QUALITY_HEADERS.length, (row) =>
+      row[4] && row[4] !== 'OK' && row[4] !== 'Не изменился'
+    );
   }
 }
 
@@ -2732,6 +2790,7 @@ function writeZupVlmLogSheet_(spreadsheet, vlmRows, dryRun) {
   }
   if (vlmRows.length) {
     sheet.getRange(2, 6, vlmRows.length, 4).setNumberFormat('0.000000');
+    highlightZupRows_(sheet, vlmRows, 2, ZUP_VLM_LOG_HEADERS.length, () => true);
   }
 }
 
@@ -2828,6 +2887,14 @@ function buildZupFileSignature_(file) {
     file.getLastUpdated ? Number(file.getLastUpdated()) : '',
     getZupFileSize_(file),
     ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+    getZupVlmImportSignature_(),
+  ].join('|');
+}
+
+function getZupVlmImportSignature_() {
+  return [
+    getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_MODEL_PROPERTY) || ZUP_IMPORT_SETTINGS.VLM_DEFAULT_MODEL,
+    getZupVlmForcePattern_(),
   ].join('|');
 }
 
@@ -2879,6 +2946,9 @@ function writeZupDiagnosticSheet_(spreadsheet, rows) {
   writeZupSheetData_(sheet, data);
   if (diagnostics.length) {
     sheet.getRange(2, 5, diagnostics.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    highlightZupRows_(sheet, diagnostics, 2, ZUP_DIAGNOSTIC_HEADERS.length, (row) =>
+      row[7] && row[7] !== 'Сходится'
+    );
   }
 }
 
@@ -3129,6 +3199,14 @@ function rectangularizeRows_(rows) {
       result.push('');
     }
     return result;
+  });
+}
+
+function highlightZupRows_(sheet, rows, startRow, width, predicate) {
+  rows.forEach((row, index) => {
+    if (predicate(row)) {
+      sheet.getRange(startRow + index, 1, 1, width).setBackground('#f4b183');
+    }
   });
 }
 

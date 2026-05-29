@@ -45,6 +45,7 @@ The current parser now handles real 1C HTML table structure, but the import stil
    - Fallback: if no normalized rows are found, call Polza.ai Chat Completions with a strict JSON Schema.
    - Default model: `google/gemini-3.1-flash-lite`, because the live Polza catalog lists file/image input, structured outputs, long context, and a low prompt/completion price relative to stronger file-capable models.
    - Override: set the Apps Script property `ZUP_VLM_MODEL` to a stronger model such as `google/gemini-3.5-flash` when quality is more important than cost.
+   - Trial mode: set `ZUP_VLM_FORCE_PATTERN` to file-name fragments for problem months; matching files are forced through VLM while deterministic rows remain a fallback if the VLM request fails.
    - Rationale: VLM extraction helps with bad OCR and scanned documents, while deterministic parsing remains cheaper and more reproducible for sources that already expose tables/text.
 
 ## Risks / Trade-offs
@@ -55,3 +56,4 @@ The current parser now handles real 1C HTML table structure, but the import stil
 - Additional columns change downstream indices → Update all summary, diagnostics, and tests in the same change.
 - VLM can misread payroll amounts → Require strict schema output, preserve `sourceText`, log raw JSON/usage in `Импорт_1С_VLM`, and keep section-total warnings in quality output.
 - VLM cost can grow on large PDFs → Limit direct file payload size, default to a low-cost file-capable model, and allow model override through script properties.
+- Manual review can miss disputed rows → Highlight VLM-derived rows, quality warnings, and diagnostic mismatches with orange fill in the service sheets.

@@ -114,3 +114,12 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **WHEN** Polza.ai returns structured extraction data
 - **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, warnings, and the raw structured JSON
 - **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation
+
+#### Scenario: User forces VLM for selected files
+- **WHEN** `ZUP_VLM_FORCE_PATTERN` contains a file-name fragment or `*`
+- **THEN** matching selected files are extracted through VLM even if deterministic parsing produced rows
+- **AND** the importer uses deterministic rows as fallback if the forced VLM request fails
+
+#### Scenario: Import output contains disputed rows
+- **WHEN** rows are VLM-derived, quality warnings exist, or diagnostics do not match
+- **THEN** the corresponding service-sheet rows are highlighted with orange fill for manual review
