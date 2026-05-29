@@ -70,3 +70,12 @@ The system SHALL classify salary, premium, vacation, top-up, business trip, sick
 #### Scenario: Special accrual text is parsed
 - **WHEN** a row text contains a known special accrual phrase such as `Командировка`, `Доплата до оклада`, or `НДФЛ`
 - **THEN** the row receives the matching category instead of falling back to salary
+
+### Requirement: Reconstruction target sheets
+The system SHALL create adjacent structural sheets that mirror the target calculation tabs for payroll-slip reconstruction.
+
+#### Scenario: User creates reconstruction sheets
+- **WHEN** the user runs the reconstruction-sheet command
+- **THEN** the system creates `Из_1С_Оклад`, `Из_1С_Ежемесячные`, `Из_1С_Ежеквартальные`, `Из_1С_Ежегодные`, and `Из_1С_Отпуска` next to their source sheets
+- **AND** the created sheets preserve headers, formatting, and formulas
+- **AND** fields intended to be filled from payroll slips or recalculated after reconstruction are blank

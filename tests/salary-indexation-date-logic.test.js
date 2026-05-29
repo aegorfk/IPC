@@ -91,6 +91,7 @@ const calendar = {
   assert.strictEqual(context.indexToColumnLetter_(0), 'A');
   assert.strictEqual(context.indexToColumnLetter_(27), 'AB');
   assert.strictEqual(context.isGeneratedSheetName_('Методология'), true);
+  assert.strictEqual(context.isGeneratedSheetName_('Из_1С_Оклад'), true);
   assert.strictEqual(context.isGeneratedSheetName_('Проверка'), false);
   assert.strictEqual(context.isGeneratedSheetName_('Оклад'), false);
 }
@@ -532,6 +533,13 @@ const calendar = {
   assert.strictEqual(groups.length, 1);
   assert.strictEqual(groups[0].selected.getMimeType(), 'application/vnd.google-apps.document');
   assert.strictEqual(groups[0].variants.length, 2);
+  assert.strictEqual(context.isZupGeneratedSheet_('Из_1С_Оклад'), true);
+  const reconstructionConfigs = context.getZupReconstructionConfigs_();
+  assert.strictEqual(reconstructionConfigs.length, 5);
+  assert.deepStrictEqual(
+    Array.from(reconstructionConfigs.find((config) => config.targetSheetName === 'Из_1С_Оклад').clearColumns),
+    ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']
+  );
 
   const sheetWrites = {};
   const fakeSpreadsheet = {

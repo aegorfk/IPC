@@ -31,3 +31,9 @@
 - [x] 6.1 Add or update local tests for new parser fields, quality warnings, and dry-run behavior
 - [x] 6.2 Run local tests and OpenSpec validation
 - [x] 6.3 Commit and push the completed implementation
+
+## 7. Reconstruction Sheet Structure
+
+- [x] 7.1 Add a menu command that creates adjacent `Из_1С_*` sheets from target tabs
+- [x] 7.2 Preserve headers, formatting, and formulas while clearing fields sourced from payroll slips
+- [x] 7.3 Run local tests and OpenSpec validation, then commit and push

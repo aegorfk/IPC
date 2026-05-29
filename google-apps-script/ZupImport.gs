@@ -1,6 +1,7 @@
 const ZUP_IMPORT_SETTINGS = {
   PARSER_VERSION: 'zup-import-v2',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
+  RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
   SUMMARY_SHEET_NAME: 'Импорт_1С_Свод',
   DIAGNOSTIC_SHEET_NAME: 'Импорт_1С_Диагностика',
@@ -117,6 +118,39 @@ const ZUP_DIAGNOSTIC_HEADERS = [
   'Детали',
 ];
 
+const ZUP_RECONSTRUCTION_SHEETS = [
+  {
+    sourceSheetName: 'Оклад',
+    targetSheetName: 'Из_1С_Оклад',
+    dataStartRow: 3,
+    clearColumns: ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L'],
+  },
+  {
+    sourceSheetName: 'Ежемесячные',
+    targetSheetName: 'Из_1С_Ежемесячные',
+    dataStartRow: 2,
+    clearColumns: ['C', 'F', 'H', 'I'],
+  },
+  {
+    sourceSheetName: 'Ежеквартальные',
+    targetSheetName: 'Из_1С_Ежеквартальные',
+    dataStartRow: 2,
+    clearColumns: ['C', 'F', 'H', 'I'],
+  },
+  {
+    sourceSheetName: 'Ежегодные',
+    targetSheetName: 'Из_1С_Ежегодные',
+    dataStartRow: 2,
+    clearColumns: ['C', 'F', 'H', 'I'],
+  },
+  {
+    sourceSheetName: 'Отпуска',
+    targetSheetName: 'Из_1С_Отпуска',
+    dataStartRow: 2,
+    clearColumns: ['A', 'B', 'D', 'G', 'H', 'K', 'L'],
+  },
+];
+
 const ZUP_CATEGORY_RULES = [
   {
     category: 'Доплата до оклада',
@@ -212,6 +246,34 @@ function forceZupFolderImport() {
   const result = importZupFolderCore_(spreadsheet, folder.id, { force: true, dryRun: false });
   showMessage_(
     `Полный импорт 1С завершен. Источник: ${folder.source}. Файлов перечитано: ${result.filesRead}. Строк распознано: ${result.rows.length}. Пропущено файлов: ${result.skippedFiles.length}.`
+  );
+}
+
+function createZupReconstructionSheets() {
+  const spreadsheet = getTargetSpreadsheet_();
+  const created = [];
+  const skipped = [];
+
+  getZupReconstructionConfigs_().forEach((config) => {
+    const sourceSheet = spreadsheet.getSheetByName(config.sourceSheetName);
+    if (!sourceSheet) {
+      skipped.push(`${config.sourceSheetName}: исходная вкладка не найдена`);
+      return;
+    }
+
+    const existingSheet = spreadsheet.getSheetByName(config.targetSheetName);
+    if (existingSheet) {
+      spreadsheet.deleteSheet(existingSheet);
+    }
+
+    const targetSheet = sourceSheet.copyTo(spreadsheet).setName(config.targetSheetName);
+    moveZupSheetAfter_(spreadsheet, targetSheet, sourceSheet);
+    prepareZupReconstructionSheet_(targetSheet, config);
+    created.push(config.targetSheetName);
+  });
+
+  showMessage_(
+    `Вкладки структуры 1С созданы: ${created.join(', ') || 'нет'}${skipped.length ? `\n\nПропущено:\n${skipped.join('\n')}` : ''}`
   );
 }
 
@@ -420,13 +482,51 @@ function extractDriveFolderId_(value) {
 }
 
 function isZupGeneratedSheet_(sheetName) {
-  return [
+  return isZupReconstructionSheetName_(sheetName) || [
     ZUP_IMPORT_SETTINGS.IMPORT_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.SUMMARY_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.QUALITY_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.STATE_SHEET_NAME,
   ].includes(sheetName);
+}
+
+function isZupReconstructionSheetName_(sheetName) {
+  return String(sheetName || '').indexOf(ZUP_IMPORT_SETTINGS.RECONSTRUCTION_PREFIX) === 0;
+}
+
+function getZupReconstructionConfigs_() {
+  return ZUP_RECONSTRUCTION_SHEETS.map((config) => Object.assign({}, config, {
+    clearColumnIndexes: config.clearColumns.map(columnLetterToIndex_),
+  }));
+}
+
+function moveZupSheetAfter_(spreadsheet, sheet, previousSheet) {
+  spreadsheet.setActiveSheet(sheet);
+  spreadsheet.moveActiveSheet(previousSheet.getIndex() + 1);
+}
+
+function prepareZupReconstructionSheet_(sheet, config) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= config.dataStartRow) {
+    const rowCount = lastRow - config.dataStartRow + 1;
+    config.clearColumnIndexes.forEach((columnIndex) => {
+      sheet.getRange(config.dataStartRow, columnIndex + 1, rowCount, 1).clearContent();
+    });
+  }
+
+  config.clearColumnIndexes.forEach((columnIndex) => {
+    sheet.getRange(Math.max(1, config.dataStartRow - 1), columnIndex + 1).setNote(
+      'Очищено для реконструкции из расчетных листков 1С.'
+    );
+  });
+
+  sheet.getRange(1, 1).setNote(
+    `Вкладка создана из "${config.sourceSheetName}" для восстановления структуры по расчетным листкам 1С.`
+  );
+  if (sheet.setTabColor) {
+    sheet.setTabColor('#d9ead3');
+  }
 }
 
 function listZupFilesRecursively_(folder) {

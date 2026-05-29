@@ -204,6 +204,7 @@ function onOpen() {
     .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
     .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
+    .addItem('Создать вкладки структуры из 1С', 'createZupReconstructionSheets')
     .addItem('Очистить импорт 1С', 'clearZupImportSheets')
     .addToUi();
 }
@@ -362,7 +363,8 @@ function deleteLegacyGeneratedSheets_(spreadsheet) {
 }
 
 function isGeneratedSheetName_(sheetName) {
-  return sheetName === SETTINGS.METHODOLOGY_SHEET_NAME;
+  return sheetName === SETTINGS.METHODOLOGY_SHEET_NAME ||
+    /^Из_1С_/i.test(String(sheetName || ''));
 }
 
 function updateUnpaidSalaryIndexationCore_(params) {
