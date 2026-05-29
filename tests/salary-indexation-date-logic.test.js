@@ -451,6 +451,17 @@ const calendar = {
   assert.strictEqual(parsedZupHtml[2][13], 'За первую половину месяца');
   assert.strictEqual(parsedZupHtml[2][15], 22798.88);
 
+  const conflictingPeriodRows = context.extractZupRowsFromGrid_(
+    context.htmlToZupGrid_(
+      '<table><tr><td>Начислено</td></tr><tr><td>Оплата по окладу</td><td>янв. 2024</td><td>89 100,00</td></tr></table>'
+    ),
+    '13. Расчетный листок О2 янв 2025.html',
+    'HTML'
+  );
+  assert.strictEqual(conflictingPeriodRows[0][3], '01.2025');
+  assert.strictEqual(conflictingPeriodRows[0][4], 2025);
+  assert.strictEqual(conflictingPeriodRows[0][5], 1);
+
   const parsedGrid = context.parseZupGrid_(
     context.htmlToZupGrid_(zupHtml),
     '1. Расчетный листок О2 янв 2024.html',
@@ -463,6 +474,34 @@ const calendar = {
   assert.deepStrictEqual(Array.from(quality.warnings), [
     'Выплачено: итог 77517, распознано 22798.88',
   ]);
+
+  const mixedSectionRows = context.extractZupRowsFromGrid_(
+    [
+      ['Начислено', '', '', 'Удержано', '', ''],
+      ['', '', '', 'Выплачено', '', ''],
+      [
+        'Премия',
+        'февр. 2024',
+        '93 625,00',
+        'Премии, межрасчет (Банк, вед. № 50 от 20.02.24)',
+        'февр. 2024',
+        '81 454,00',
+      ],
+    ],
+    '2. Расчетный листок О2 фев 2024',
+    'HTML'
+  );
+  assert.strictEqual(mixedSectionRows.length, 2);
+  assert.strictEqual(mixedSectionRows[0][11], 'Начислено');
+  assert.strictEqual(mixedSectionRows[0][12], 'Ежемесячные премии');
+  assert.strictEqual(mixedSectionRows[0][14], 93625);
+  assert.strictEqual(mixedSectionRows[1][11], 'Выплачено');
+  assert.strictEqual(mixedSectionRows[1][12], 'Ежемесячные премии');
+  assert.strictEqual(mixedSectionRows[1][15], 81454);
+  assert.strictEqual(
+    context.detectZupCategory_('Больничный за счет работодателя / Премии, межрасчет'),
+    'Больничные'
+  );
 }
 
 {

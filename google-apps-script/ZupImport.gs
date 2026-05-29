@@ -972,7 +972,7 @@ function extractZupRowsFromGrid_(values, sourceFileName, sourceSheetName) {
 
     const rowSectionSpans = detectZupSectionSpans_(row);
     if (rowSectionSpans.length) {
-      sectionSpans = rowSectionSpans;
+      sectionSpans = mergeZupSectionSpans_(sectionSpans, rowSectionSpans, row.length);
       section = rowSectionSpans[0].section;
       return;
     }
@@ -1013,6 +1013,34 @@ function detectZupSectionSpans_(row) {
   }));
 }
 
+function mergeZupSectionSpans_(currentSpans, rowSpans, rowLength) {
+  if (
+    currentSpans.length &&
+    rowSpans.length === 1 &&
+    rowSpans[0].start > 0
+  ) {
+    const preserved = currentSpans
+      .filter((span) => span.start < rowSpans[0].start)
+      .map((span) => ({
+        section: span.section,
+        start: span.start,
+      }));
+    return buildZupSectionSpansFromMarkers_(preserved.concat([{ section: rowSpans[0].section, start: rowSpans[0].start }]), rowLength);
+  }
+
+  return rowSpans;
+}
+
+function buildZupSectionSpansFromMarkers_(markers, rowLength) {
+  return markers
+    .sort((left, right) => left.start - right.start)
+    .map((marker, index, sorted) => ({
+      section: marker.section,
+      start: marker.start,
+      end: index + 1 < sorted.length ? sorted[index + 1].start : rowLength,
+    }));
+}
+
 function splitZupRowBySectionSpans_(row, sectionSpans) {
   if (sectionSpans.length === 1) {
     return [{ section: sectionSpans[0].section, cells: row }];
@@ -1045,7 +1073,7 @@ function extractZupRowSegment_(segment, context) {
     return null;
   }
 
-  const period = extractZupPeriodFromCells_(segment.cells) || context.period;
+  const period = resolveZupRowPeriod_(segment, context);
   const paymentStatement = extractZupPaymentStatement_(segment.cells);
   const paymentDate = paymentStatement.date || extractZupPaymentDateFromCells_(segment.cells);
   const dayColumns = extractZupDayColumns_(segment.cells, segment.section);
@@ -1163,6 +1191,10 @@ function detectZupSection_(rowText) {
 
 function detectZupCategory_(rowText) {
   const normalizedText = normalizeText_(rowText);
+  if (/больнич|нетрудоспособности/.test(normalizedText)) {
+    return 'Больничные';
+  }
+
   if (normalizedText.includes('прем')) {
     if (/(кварт|0?1[./-]0?1\s*[-–]\s*3?1[./-]0?3|0?1[./-]0?4\s*[-–]\s*30[./-]0?6|0?1[./-]0?7\s*[-–]\s*30[./-]0?9|0?1[./-]10\s*[-–]\s*3?1[./-]12)/.test(normalizedText)) {
       return 'Ежеквартальные премии';
@@ -1234,6 +1266,13 @@ function extractZupPeriodFromCells_(cells) {
     }
   }
   return parseMonthYear_(cells.join(' '));
+}
+
+function resolveZupRowPeriod_(segment, context) {
+  if (context.period) {
+    return context.period;
+  }
+  return extractZupPeriodFromCells_(segment.cells);
 }
 
 function extractZupPaymentDateFromCells_(cells) {
