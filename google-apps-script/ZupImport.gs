@@ -1760,7 +1760,7 @@ function extractZupRowSegment_(segment, context) {
     return null;
   }
 
-  const amount = extractLastMoneyFromRow_(segment.cells);
+  const amount = extractZupAmountFromSegment_(segment);
   if (amount === null) {
     return null;
   }
@@ -1977,7 +1977,7 @@ function extractZupPaymentDateFromCells_(cells) {
     }
   }
 
-  const dates = text.match(/\d{1,2}[./-]\d{1,2}[./-]\d{2,4}/g) || [];
+  const dates = text.match(/\d{1,2}[./]\d{1,2}[./]\d{2,4}|\d{1,2}-\d{1,2}-\d{2,4}/g) || [];
   for (let index = dates.length - 1; index >= 0; index--) {
     const parsed = parseDateValue_(dates[index]);
     if (parsed) {
@@ -2011,6 +2011,33 @@ function extractLastMoneyFromRow_(row) {
     .map((cell) => parseMoney_(cell))
     .filter((number) => number !== null);
   return numbers.length ? numbers[numbers.length - 1] : null;
+}
+
+function extractZupAmountFromSegment_(segment) {
+  const compactCells = segment.cells
+    .map((cell) => String(cell || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const moneyCells = compactCells
+    .map((cell) => ({
+      text: cell,
+      amount: parseMoney_(cell),
+    }))
+    .filter((item) => item.amount !== null);
+
+  if (!moneyCells.length) {
+    return null;
+  }
+
+  const normalizedSection = normalizeText_(segment.section);
+  if (normalizedSection === 'начислено') {
+    const afterDayCount = moneyCells.filter((item) =>
+      !/^\d{1,2}(?:[,.]\d{1,2})?(?:\s*дн\.)?$/i.test(item.text) &&
+      !/^\d{1,3}(?:[,.]\d{1,2})?$/.test(item.text)
+    );
+    return afterDayCount.length ? afterDayCount[afterDayCount.length - 1].amount : null;
+  }
+
+  return moneyCells[moneyCells.length - 1].amount;
 }
 
 function compactZupRowLabel_(row) {

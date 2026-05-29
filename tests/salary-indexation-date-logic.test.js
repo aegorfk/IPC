@@ -451,6 +451,18 @@ const calendar = {
   assert.strictEqual(parsedZupHtml[2][10], '19.01.2024');
   assert.strictEqual(parsedZupHtml[2][13], 'За первую половину месяца');
   assert.strictEqual(parsedZupHtml[2][15], 22798.88);
+  assert.strictEqual(
+    context.extractZupPaymentDateFromCells_(['Отпуск основной', '01.10-05.10', '5,00 дн.']),
+    null
+  );
+  assert.strictEqual(
+    context.extractZupAmountFromSegment_({ section: 'Начислено', cells: ['Отпуск за свой счет', '18.11', '1', '4'] }),
+    null
+  );
+  assert.strictEqual(
+    context.extractZupAmountFromSegment_({ section: 'Начислено', cells: ['Отпуск основной', '5,00 дн.', '15 320,85'] }),
+    15320.85
+  );
 
   const conflictingPeriodRows = context.extractZupRowsFromGrid_(
     context.htmlToZupGrid_(
