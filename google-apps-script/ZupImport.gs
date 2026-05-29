@@ -667,11 +667,19 @@ function buildZupSalaryModel_(rows) {
           period: row.period,
           workDays: 0,
           paidDays: 0,
+          hasWorkDays: false,
+          hasPaidDays: false,
           amount: 0,
         };
       }
-      map[key].workDays += row.workDays || 0;
-      map[key].paidDays += row.paidDays || 0;
+      if (row.workDays !== null) {
+        map[key].workDays += row.workDays;
+        map[key].hasWorkDays = true;
+      }
+      if (row.paidDays !== null) {
+        map[key].paidDays += row.paidDays;
+        map[key].hasPaidDays = true;
+      }
       map[key].amount += row.accrued || 0;
     });
   return sortZupModelItems_(Object.keys(map).map((key) => map[key]));
@@ -717,14 +725,25 @@ function fillZupSalaryReconstruction_(spreadsheet, items) {
   if (!sheet) {
     throw new Error('Не найдена вкладка Из_1С_Оклад.');
   }
+  const scaffold = readZupSalaryScaffold_(spreadsheet);
+  const itemMap = buildZupModelMapByPeriod_(items);
   retargetZupReconstructionFormulas_(sheet);
-  prepareZupOutputRows_(sheet, 3, items.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']);
-  writeZupColumn_(sheet, 3, 'A', items.map((item) => numberOrBlank_(item.paidDays)));
-  writeZupColumn_(sheet, 3, 'B', items.map((item) => numberOrBlank_(item.workDays)));
-  writeZupColumn_(sheet, 3, 'D', items.map((item) => item.period.year));
-  writeZupColumn_(sheet, 3, 'E', items.map((item) => formatZupMonthName_(item.period.month)));
-  writeZupColumn_(sheet, 3, 'I', items.map((item) => roundMoney_(item.amount)));
-  return { sheet: 'Из_1С_Оклад', rows: items.length };
+  prepareZupOutputRows_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']);
+  writeZupColumn_(sheet, 3, 'A', scaffold.map((row) => {
+    const item = itemMap[buildZupPeriodKey_(row.period)];
+    return item && item.hasPaidDays ? item.paidDays : '';
+  }));
+  writeZupColumn_(sheet, 3, 'B', scaffold.map((row) => {
+    const item = itemMap[buildZupPeriodKey_(row.period)];
+    return item && item.hasWorkDays ? item.workDays : '';
+  }));
+  writeZupColumn_(sheet, 3, 'D', scaffold.map((row) => row.period.year));
+  writeZupColumn_(sheet, 3, 'E', scaffold.map((row) => formatZupMonthName_(row.period.month)));
+  writeZupColumn_(sheet, 3, 'I', scaffold.map((row) => {
+    const item = itemMap[buildZupPeriodKey_(row.period)];
+    return item ? roundMoney_(item.amount) : '';
+  }));
+  return { sheet: 'Из_1С_Оклад', rows: scaffold.length };
 }
 
 function fillZupPremiumReconstruction_(spreadsheet, sheetName, items, type) {
@@ -732,11 +751,17 @@ function fillZupPremiumReconstruction_(spreadsheet, sheetName, items, type) {
   if (!sheet) {
     throw new Error(`Не найдена вкладка ${sheetName}.`);
   }
+  const sourceSheetName = sheetName.replace(/^Из_1С_/, '');
+  const scaffold = readZupPremiumScaffold_(spreadsheet, sourceSheetName, type);
+  const itemMap = buildZupPremiumScaffoldMap_(items, type);
   retargetZupReconstructionFormulas_(sheet);
-  prepareZupOutputRows_(sheet, 2, items.length, ['C', 'F', 'H', 'I']);
-  writeZupColumn_(sheet, 2, 'C', items.map((item) => formatZupPremiumPeriodLabel_(item, type)));
-  writeZupColumn_(sheet, 2, 'F', items.map((item) => roundMoney_(item.paid || item.accrued || 0)));
-  return { sheet: sheetName, rows: items.length };
+  prepareZupOutputRows_(sheet, 2, scaffold.length, ['C', 'F', 'H', 'I']);
+  writeZupColumn_(sheet, 2, 'C', scaffold.map((row) => row.label));
+  writeZupColumn_(sheet, 2, 'F', scaffold.map((row) => {
+    const item = itemMap[row.key];
+    return item && (item.paid || item.accrued) ? roundMoney_(item.paid || item.accrued) : '';
+  }));
+  return { sheet: sheetName, rows: scaffold.length };
 }
 
 function fillZupVacationReconstruction_(spreadsheet, items) {
@@ -817,10 +842,142 @@ function retargetZupReconstructionFormulas_(sheet) {
   });
 }
 
+function readZupSalaryScaffold_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName('Оклад');
+  if (!sheet || sheet.getLastRow() < 3) {
+    return [];
+  }
+  return sheet
+    .getRange(3, 1, sheet.getLastRow() - 2, Math.max(sheet.getLastColumn(), 5))
+    .getValues()
+    .map((row) => normalizeZupScaffoldPeriod_(row[3], row[4], `${row[4]} ${row[3]}`))
+    .filter(Boolean)
+    .map((period) => ({ period }));
+}
+
+function readZupPremiumScaffold_(spreadsheet, sourceSheetName, type) {
+  const sheet = spreadsheet.getSheetByName(sourceSheetName);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return [];
+  }
+  return sheet
+    .getRange(2, 1, sheet.getLastRow() - 1, Math.max(sheet.getLastColumn(), 3))
+    .getValues()
+    .map((row) => buildZupPremiumScaffoldRow_(row[2], type))
+    .filter(Boolean);
+}
+
+function buildZupPremiumScaffoldRow_(label, type) {
+  if (!label) {
+    return null;
+  }
+  const text = String(label).trim();
+  if (!text || /^итого|^всего/i.test(normalizeText_(text))) {
+    return null;
+  }
+
+  if (type === 'quarterly') {
+    const quarter = parseZupQuarterLabel_(text);
+    return quarter ? {
+      label: text,
+      key: buildZupQuarterKey_(quarter.year, quarter.quarter),
+    } : null;
+  }
+
+  if (type === 'annual') {
+    const year = detectZupYearFromText_(text);
+    return year ? {
+      label: text,
+      key: buildZupAnnualKey_(year),
+    } : null;
+  }
+
+  const period = parseMonthYear_(text);
+  return period ? {
+    label: text,
+    key: buildZupPeriodKey_(period),
+  } : null;
+}
+
+function buildZupModelMapByPeriod_(items) {
+  return items.reduce((map, item) => {
+    map[buildZupPeriodKey_(item.period)] = item;
+    return map;
+  }, {});
+}
+
+function buildZupPremiumScaffoldMap_(items, type) {
+  return items.reduce((map, item) => {
+    const key = buildZupPremiumScaffoldKey_(item, type);
+    if (!key) {
+      return map;
+    }
+    if (!map[key]) {
+      map[key] = {
+        paid: 0,
+        accrued: 0,
+      };
+    }
+    map[key].paid += item.paid || 0;
+    map[key].accrued += item.accrued || 0;
+    return map;
+  }, {});
+}
+
+function buildZupPremiumScaffoldKey_(item, type) {
+  if (type === 'quarterly') {
+    if (!item.premiumPeriod.quarter) {
+      return '';
+    }
+    return buildZupQuarterKey_(item.premiumPeriod.year || item.paymentPeriod.year, item.premiumPeriod.quarter);
+  }
+  if (type === 'annual') {
+    return buildZupAnnualKey_(item.premiumPeriod.year || item.paymentPeriod.year);
+  }
+  return buildZupPeriodKey_(item.paymentPeriod);
+}
+
+function normalizeZupScaffoldPeriod_(yearValue, monthValue, fallbackValue) {
+  const year = Number(yearValue);
+  const month = parseZupMonthValue_(monthValue);
+  if (year && month) {
+    return { year, month };
+  }
+  return parseMonthYear_(fallbackValue);
+}
+
+function parseZupMonthValue_(value) {
+  if (typeof value === 'number') {
+    return value >= 1 && value <= 12 ? value : null;
+  }
+  const text = normalizeText_(value).replace(/\./g, '');
+  return MONTHS[text] || null;
+}
+
+function parseZupQuarterLabel_(value) {
+  const match = normalizeText_(value).match(/([1-4])\s*квартал\s*(20\d{2})/);
+  if (!match) {
+    return null;
+  }
+  return {
+    quarter: Number(match[1]),
+    year: Number(match[2]),
+  };
+}
+
+function buildZupQuarterKey_(year, quarter) {
+  return `${year}-Q${quarter}`;
+}
+
+function buildZupAnnualKey_(year) {
+  return `${year}`;
+}
+
 function detectZupPremiumPeriod_(row, category) {
   if (category === 'Ежеквартальные премии') {
     const quarter = detectZupQuarterFromText_(`${row.kind} ${row.sourceRow}`);
     if (quarter) {
+      quarter.year = quarter.year || row.period.year;
       return quarter;
     }
   }

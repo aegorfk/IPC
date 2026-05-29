@@ -89,7 +89,8 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 
 #### Scenario: User populates reconstruction sheets
 - **WHEN** normalized rows exist in `Импорт_1С_ЗУП`
-- **THEN** the system fills `Из_1С_Оклад` with period, day counts, and imported salary accruals
-- **AND** the system fills premium reconstruction sheets with imported periods and paid amounts
+- **THEN** the system preserves the target sheets' row/period structure as the recalculation scaffold
+- **AND** the system fills `Из_1С_Оклад` with period, day counts, and imported salary accruals
+- **AND** the system fills premium reconstruction sheets with paid amounts matched to scaffold periods while leaving unmatched rows blank
 - **AND** the system fills `Из_1С_Отпуска` with vacation dates, day counts, and imported vacation amounts
 - **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets

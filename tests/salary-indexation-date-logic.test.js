@@ -676,6 +676,13 @@ const calendar = {
   assert.match(context.formatZupPremiumPeriodLabel_(model.quarterlyPremiums[0], 'quarterly'), /1 квартал 2024/);
   assert.strictEqual(model.vacations[0].amount, 3006.28);
   assert.strictEqual(model.vacations[0].days, 1);
+
+  const monthlyScaffold = context.buildZupPremiumScaffoldRow_('Февраль 2024', 'monthly');
+  assert.strictEqual(monthlyScaffold.key, '2024-02');
+  const quarterlyScaffold = context.buildZupPremiumScaffoldRow_('1 квартал 2024 (январь - март)\nАпрель 2024', 'quarterly');
+  assert.strictEqual(quarterlyScaffold.key, '2024-Q1');
+  const premiumMap = context.buildZupPremiumScaffoldMap_(model.quarterlyPremiums, 'quarterly');
+  assert.strictEqual(premiumMap['2024-Q1'].paid, 54174.5);
 }
 
 {
