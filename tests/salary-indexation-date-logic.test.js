@@ -540,6 +540,8 @@ const calendar = {
     Array.from(reconstructionConfigs.find((config) => config.targetSheetName === 'Из_1С_Оклад').clearColumns),
     ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']
   );
+  assert.strictEqual(typeof context.createSingleZupReconstructionSheet_, 'function');
+  assert.strictEqual(typeof context.copyZupReconstructionStructure_, 'function');
 
   const sheetWrites = {};
   const fakeSpreadsheet = {

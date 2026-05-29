@@ -204,7 +204,14 @@ function onOpen() {
     .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
     .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
-    .addItem('Создать вкладки структуры из 1С', 'createZupReconstructionSheets')
+    .addItem('Создать все вкладки структуры из 1С', 'createZupReconstructionSheets')
+    .addSeparator()
+    .addItem('Создать Из_1С_Оклад', 'createZupSalaryReconstructionSheet')
+    .addItem('Создать Из_1С_Ежемесячные', 'createZupMonthlyReconstructionSheet')
+    .addItem('Создать Из_1С_Ежеквартальные', 'createZupQuarterlyReconstructionSheet')
+    .addItem('Создать Из_1С_Ежегодные', 'createZupAnnualReconstructionSheet')
+    .addItem('Создать Из_1С_Отпуска', 'createZupVacationReconstructionSheet')
+    .addSeparator()
     .addItem('Очистить импорт 1С', 'clearZupImportSheets')
     .addToUi();
 }

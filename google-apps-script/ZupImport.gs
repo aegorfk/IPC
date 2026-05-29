@@ -255,26 +255,52 @@ function createZupReconstructionSheets() {
   const skipped = [];
 
   getZupReconstructionConfigs_().forEach((config) => {
-    const sourceSheet = spreadsheet.getSheetByName(config.sourceSheetName);
-    if (!sourceSheet) {
-      skipped.push(`${config.sourceSheetName}: исходная вкладка не найдена`);
-      return;
+    const result = createSingleZupReconstructionSheet_(spreadsheet, config);
+    if (result.created) {
+      created.push(result.sheetName);
+    } else {
+      skipped.push(result.reason);
     }
-
-    const existingSheet = spreadsheet.getSheetByName(config.targetSheetName);
-    if (existingSheet) {
-      spreadsheet.deleteSheet(existingSheet);
-    }
-
-    const targetSheet = sourceSheet.copyTo(spreadsheet).setName(config.targetSheetName);
-    moveZupSheetAfter_(spreadsheet, targetSheet, sourceSheet);
-    prepareZupReconstructionSheet_(targetSheet, config);
-    created.push(config.targetSheetName);
   });
 
   showMessage_(
     `Вкладки структуры 1С созданы: ${created.join(', ') || 'нет'}${skipped.length ? `\n\nПропущено:\n${skipped.join('\n')}` : ''}`
   );
+}
+
+function createZupSalaryReconstructionSheet() {
+  createNamedZupReconstructionSheet_('Оклад');
+}
+
+function createZupMonthlyReconstructionSheet() {
+  createNamedZupReconstructionSheet_('Ежемесячные');
+}
+
+function createZupQuarterlyReconstructionSheet() {
+  createNamedZupReconstructionSheet_('Ежеквартальные');
+}
+
+function createZupAnnualReconstructionSheet() {
+  createNamedZupReconstructionSheet_('Ежегодные');
+}
+
+function createZupVacationReconstructionSheet() {
+  createNamedZupReconstructionSheet_('Отпуска');
+}
+
+function createNamedZupReconstructionSheet_(sourceSheetName) {
+  const spreadsheet = getTargetSpreadsheet_();
+  const config = getZupReconstructionConfigs_().find((candidate) =>
+    candidate.sourceSheetName === sourceSheetName
+  );
+  if (!config) {
+    throw new Error(`Не найдена настройка вкладки ${sourceSheetName}.`);
+  }
+
+  const result = createSingleZupReconstructionSheet_(spreadsheet, config);
+  showMessage_(result.created
+    ? `Вкладка структуры 1С создана: ${result.sheetName}`
+    : `Вкладка структуры 1С не создана: ${result.reason}`);
 }
 
 function clearZupImportSheets() {
@@ -504,6 +530,53 @@ function getZupReconstructionConfigs_() {
 function moveZupSheetAfter_(spreadsheet, sheet, previousSheet) {
   spreadsheet.setActiveSheet(sheet);
   spreadsheet.moveActiveSheet(previousSheet.getIndex() + 1);
+}
+
+function createSingleZupReconstructionSheet_(spreadsheet, config) {
+  const sourceSheet = spreadsheet.getSheetByName(config.sourceSheetName);
+  if (!sourceSheet) {
+    return {
+      created: false,
+      reason: `${config.sourceSheetName}: исходная вкладка не найдена`,
+    };
+  }
+
+  const existingSheet = spreadsheet.getSheetByName(config.targetSheetName);
+  if (existingSheet) {
+    spreadsheet.deleteSheet(existingSheet);
+  }
+
+  const targetSheet = spreadsheet.insertSheet(config.targetSheetName);
+  moveZupSheetAfter_(spreadsheet, targetSheet, sourceSheet);
+  copyZupReconstructionStructure_(sourceSheet, targetSheet);
+  prepareZupReconstructionSheet_(targetSheet, config);
+  return {
+    created: true,
+    sheetName: config.targetSheetName,
+  };
+}
+
+function copyZupReconstructionStructure_(sourceSheet, targetSheet) {
+  const lastRow = Math.max(sourceSheet.getLastRow(), 1);
+  const lastColumn = Math.max(sourceSheet.getLastColumn(), 1);
+  const sourceRange = sourceSheet.getRange(1, 1, lastRow, lastColumn);
+  const targetRange = targetSheet.getRange(1, 1, lastRow, lastColumn);
+  sourceRange.copyTo(targetRange, { contentsOnly: false });
+
+  if (targetSheet.setFrozenRows && sourceSheet.getFrozenRows) {
+    targetSheet.setFrozenRows(sourceSheet.getFrozenRows());
+  }
+  if (targetSheet.setFrozenColumns && sourceSheet.getFrozenColumns) {
+    targetSheet.setFrozenColumns(sourceSheet.getFrozenColumns());
+  }
+
+  for (let column = 1; column <= lastColumn; column++) {
+    targetSheet.setColumnWidth(column, sourceSheet.getColumnWidth(column));
+  }
+
+  for (let row = 1; row <= lastRow; row++) {
+    targetSheet.setRowHeight(row, sourceSheet.getRowHeight(row));
+  }
 }
 
 function prepareZupReconstructionSheet_(sheet, config) {

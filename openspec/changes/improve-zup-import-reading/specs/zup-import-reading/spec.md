@@ -77,5 +77,9 @@ The system SHALL create adjacent structural sheets that mirror the target calcul
 #### Scenario: User creates reconstruction sheets
 - **WHEN** the user runs the reconstruction-sheet command
 - **THEN** the system creates `Из_1С_Оклад`, `Из_1С_Ежемесячные`, `Из_1С_Ежеквартальные`, `Из_1С_Ежегодные`, and `Из_1С_Отпуска` next to their source sheets
-- **AND** the created sheets preserve headers, formatting, and formulas
+- **AND** the created sheets preserve headers, formatting, and formulas from the actually populated source range
 - **AND** fields intended to be filled from payroll slips or recalculated after reconstruction are blank
+
+#### Scenario: User creates one reconstruction sheet
+- **WHEN** the full reconstruction-sheet command exceeds Apps Script time limits
+- **THEN** the user can create any single `Из_1С_*` sheet from a dedicated menu command
