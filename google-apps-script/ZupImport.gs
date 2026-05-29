@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v6-vlm-force',
+  PARSER_VERSION: 'zup-import-v7-vlm-trial-defaults',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -22,6 +22,8 @@ const ZUP_IMPORT_SETTINGS = {
   POLZA_ENDPOINT: 'https://polza.ai/api/v1/chat/completions',
   VLM_DEFAULT_MODEL: 'google/gemini-3.1-flash-lite',
   VLM_STRONG_MODEL: 'google/gemini-3.5-flash',
+  VLM_FORCE_MODEL: 'google/gemini-3.5-flash',
+  VLM_FORCE_PATTERN: 'фев 2026; сент 2025; июль 2024; окт 2024; фев 2024; мар 2026; авг 2025',
   VLM_MAX_FILE_BYTES: 8 * 1024 * 1024,
   VLM_MAX_TEXT_CHARS: 90000,
 };
@@ -1529,7 +1531,11 @@ function shouldForceZupVlm_(file) {
 }
 
 function getZupVlmForcePattern_() {
-  return getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN_PROPERTY).trim();
+  const override = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN_PROPERTY).trim();
+  if (/^(off|none|нет|выкл|-|0)$/i.test(override)) {
+    return '';
+  }
+  return override || ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN || '';
 }
 
 function parseZupWithPolzaVlm_(file, parsed, options) {
@@ -1604,6 +1610,10 @@ function getZupVlmModel_(file, options) {
   const override = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_MODEL_PROPERTY);
   if (override) {
     return override;
+  }
+
+  if (options && options.forceVlm) {
+    return ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL || ZUP_IMPORT_SETTINGS.VLM_STRONG_MODEL;
   }
 
   const mimeType = file.getMimeType();

@@ -116,8 +116,9 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation
 
 #### Scenario: User forces VLM for selected files
-- **WHEN** `ZUP_VLM_FORCE_PATTERN` contains a file-name fragment or `*`
+- **WHEN** `ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN` or `ZUP_VLM_FORCE_PATTERN` contains a file-name fragment or `*`
 - **THEN** matching selected files are extracted through VLM even if deterministic parsing produced rows
+- **AND** forced VLM uses `ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL` unless `ZUP_VLM_MODEL` is explicitly configured
 - **AND** the importer uses deterministic rows as fallback if the forced VLM request fails
 
 #### Scenario: Import output contains disputed rows
