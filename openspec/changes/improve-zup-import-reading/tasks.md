@@ -44,3 +44,10 @@
 - [x] 8.2 Fill `Из_1С_Оклад`, premium sheets, and `Из_1С_Отпуска` from imported rows
 - [x] 8.3 Retarget formulas inside `Из_1С_*` sheets to other reconstruction sheets
 - [x] 8.4 Run local tests and OpenSpec validation, then commit and push
+
+## 9. VLM Extraction Fallback
+
+- [x] 9.1 Select a default Polza model for payroll-slip extraction by quality/cost criteria
+- [x] 9.2 Add Polza VLM fallback with strict JSON Schema output for PDF/image/text sources that deterministic parsing cannot read
+- [x] 9.3 Add VLM audit output, model/settings visibility, and documentation
+- [x] 9.4 Run local tests and OpenSpec validation, then commit and push

@@ -94,3 +94,23 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 - **AND** the system fills premium reconstruction sheets with paid amounts matched to scaffold periods while leaving unmatched rows blank
 - **AND** the system fills `Из_1С_Отпуска` with vacation dates, day counts, and imported vacation amounts
 - **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets
+
+### Requirement: Polza VLM extraction fallback
+The system SHALL optionally use Polza.ai multimodal extraction when deterministic payroll-slip parsing produces no normalized rows.
+
+#### Scenario: Deterministic parser cannot read a supported source
+- **WHEN** a selected PDF, image, HTML, CSV, Google Doc, or Google Sheet source is read but no import rows are recognized
+- **AND** `POLZA_API_KEY` is configured in Apps Script script properties
+- **THEN** the importer sends the source content to Polza.ai using a cost-optimized default model that supports file/image input and structured outputs
+- **AND** the model response is constrained by a strict JSON Schema for employee, period, totals, row category, row kind, day counts, dates, amounts, evidence text, and confidence
+- **AND** recognized VLM rows are normalized into the same `Импорт_1С_ЗУП` schema as deterministic rows
+
+#### Scenario: VLM fallback is unavailable or risky
+- **WHEN** the API key is missing, the file is larger than the configured VLM byte limit, or Polza.ai returns an error
+- **THEN** the import does not abort
+- **AND** the quality report and VLM audit log explain why the fallback did not produce rows
+
+#### Scenario: VLM fallback is used
+- **WHEN** Polza.ai returns structured extraction data
+- **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, warnings, and the raw structured JSON
+- **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation

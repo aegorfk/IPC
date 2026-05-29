@@ -13,6 +13,7 @@ The current parser now handles real 1C HTML table structure, but the import stil
 - Avoid duplicate rows from Google Docs/HTML/PDF variants of the same payroll slip.
 - Allow safe dry-run inspection before overwriting import output.
 - Make repeated imports faster and more explicit through a persistent import-state sheet.
+- Use Polza.ai VLM extraction as an auditable fallback when deterministic parsing cannot read a source.
 
 **Non-Goals:**
 - Do not implement external OCR services outside Google Drive.
@@ -39,9 +40,18 @@ The current parser now handles real 1C HTML table structure, but the import stil
 5. **Section totals are diagnostic, not blocking.**
    - Rationale: partial OCR or ambiguous layout should still expose parsed rows; mismatches are warnings in quality output.
 
+6. **Use a hybrid deterministic + VLM pipeline.**
+   - Default: deterministic parsing for Google Docs/HTML/CSV/Sheets and Drive OCR for PDF.
+   - Fallback: if no normalized rows are found, call Polza.ai Chat Completions with a strict JSON Schema.
+   - Default model: `google/gemini-3.1-flash-lite`, because the live Polza catalog lists file/image input, structured outputs, long context, and a low prompt/completion price relative to stronger file-capable models.
+   - Override: set the Apps Script property `ZUP_VLM_MODEL` to a stronger model such as `google/gemini-3.5-flash` when quality is more important than cost.
+   - Rationale: VLM extraction helps with bad OCR and scanned documents, while deterministic parsing remains cheaper and more reproducible for sources that already expose tables/text.
+
 ## Risks / Trade-offs
 
 - Advanced Drive service may not be enabled → Catch the failure and show a clear PDF OCR warning instead of aborting the import.
 - Google Drive OCR can be imperfect or slow → Keep original PDF skipped/quality status visible and prefer existing Google Docs/HTML duplicates when available.
 - Incremental state can become stale after parser changes → Include parser version in state signatures and support full-force import.
 - Additional columns change downstream indices → Update all summary, diagnostics, and tests in the same change.
+- VLM can misread payroll amounts → Require strict schema output, preserve `sourceText`, log raw JSON/usage in `Импорт_1С_VLM`, and keep section-total warnings in quality output.
+- VLM cost can grow on large PDFs → Limit direct file payload size, default to a low-cost file-capable model, and allow model override through script properties.

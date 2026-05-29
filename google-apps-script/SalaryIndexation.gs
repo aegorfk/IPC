@@ -204,6 +204,7 @@ function onOpen() {
     .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
     .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
+    .addItem('Проверить VLM настройки', 'showZupVlmSettings')
     .addItem('Создать все вкладки структуры из 1С', 'createZupReconstructionSheets')
     .addSeparator()
     .addItem('Создать Из_1С_Оклад', 'createZupSalaryReconstructionSheet')
