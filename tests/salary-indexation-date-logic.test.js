@@ -542,6 +542,7 @@ const calendar = {
   );
   assert.strictEqual(typeof context.createSingleZupReconstructionSheet_, 'function');
   assert.strictEqual(typeof context.copyZupReconstructionStructure_, 'function');
+  assert.strictEqual(typeof context.applyZupReconstructionSheetDimensions_, 'function');
 
   const sheetWrites = {};
   const fakeSpreadsheet = {

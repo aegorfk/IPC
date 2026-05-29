@@ -550,6 +550,7 @@ function createSingleZupReconstructionSheet_(spreadsheet, config) {
   moveZupSheetAfter_(spreadsheet, targetSheet, sourceSheet);
   copyZupReconstructionStructure_(sourceSheet, targetSheet);
   prepareZupReconstructionSheet_(targetSheet, config);
+  applyZupReconstructionSheetDimensions_(sourceSheet, targetSheet);
   return {
     created: true,
     sheetName: config.targetSheetName,
@@ -569,13 +570,12 @@ function copyZupReconstructionStructure_(sourceSheet, targetSheet) {
   if (targetSheet.setFrozenColumns && sourceSheet.getFrozenColumns) {
     targetSheet.setFrozenColumns(sourceSheet.getFrozenColumns());
   }
+}
 
+function applyZupReconstructionSheetDimensions_(sourceSheet, targetSheet) {
+  const lastColumn = Math.max(sourceSheet.getLastColumn(), 1);
   for (let column = 1; column <= lastColumn; column++) {
     targetSheet.setColumnWidth(column, sourceSheet.getColumnWidth(column));
-  }
-
-  for (let row = 1; row <= lastRow; row++) {
-    targetSheet.setRowHeight(row, sourceSheet.getRowHeight(row));
   }
 }
 
