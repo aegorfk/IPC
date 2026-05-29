@@ -45,7 +45,7 @@ The current parser now handles real 1C HTML table structure, but the import stil
    - Fallback: if no normalized rows are found, call Polza.ai Chat Completions with a strict JSON Schema.
    - Default model: `google/gemini-3.1-flash-lite`, because the live Polza catalog lists file/image input, structured outputs, long context, and a low prompt/completion price relative to stronger file-capable models.
    - Override: set the Apps Script property `ZUP_VLM_MODEL` to a stronger model such as `google/gemini-3.5-flash` when quality is more important than cost.
-   - Trial mode: `ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN` contains the default problem-month file fragments, and forced extraction uses `ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL` (`google/gemini-3.5-flash`) unless `ZUP_VLM_MODEL` overrides it. A script property can still override the force pattern, and `off` disables it without editing code.
+   - Trial/repair mode: if deterministic rows do not reconcile with source section totals, the importer retries the file through `ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL` (`google/gemini-3.5-flash`) and keeps the VLM result only when it improves total validation. A script property can still force specific file-name fragments, and `off` disables that manual force pattern.
    - Rationale: VLM extraction helps with bad OCR and scanned documents, while deterministic parsing remains cheaper and more reproducible for sources that already expose tables/text.
 
 ## Risks / Trade-offs
@@ -57,3 +57,4 @@ The current parser now handles real 1C HTML table structure, but the import stil
 - VLM can misread payroll amounts → Require strict schema output, preserve `sourceText`, log raw JSON/usage in `Импорт_1С_VLM`, and keep section-total warnings in quality output.
 - VLM cost can grow on large PDFs → Limit direct file payload size, default to a low-cost file-capable model, and allow model override through script properties.
 - Manual review can miss disputed rows → Highlight VLM-derived rows, quality warnings, and diagnostic mismatches with orange fill in the service sheets.
+- Reconstructed target structures can hide missing source fields → Highlight only the disputed input cells in `Из_1С_*` sheets: missing imported amounts/days/dates and VLM-derived values.

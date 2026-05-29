@@ -121,6 +121,16 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **AND** forced VLM uses `ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL` unless `ZUP_VLM_MODEL` is explicitly configured
 - **AND** the importer uses deterministic rows as fallback if the forced VLM request fails
 
+#### Scenario: Parsed totals do not reconcile
+- **WHEN** deterministic parsing returns rows but recognized totals differ from source section totals
+- **THEN** the importer retries that file through the stronger VLM model
+- **AND** the importer keeps the VLM rows only if they improve reconciliation against the source totals
+
 #### Scenario: Import output contains disputed rows
 - **WHEN** rows are VLM-derived, quality warnings exist, or diagnostics do not match
 - **THEN** the corresponding service-sheet rows are highlighted with orange fill for manual review
+
+#### Scenario: Reconstruction sheets contain disputed source cells
+- **WHEN** `Из_1С_*` sheets are populated from import rows
+- **THEN** missing imported amounts, dates, and day counts are highlighted with orange fill
+- **AND** cells populated from VLM rows are highlighted with notes naming the source

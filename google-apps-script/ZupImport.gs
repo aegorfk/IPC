@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v7-vlm-trial-defaults',
+  PARSER_VERSION: 'zup-import-v8-universal-vlm-review',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -23,9 +23,11 @@ const ZUP_IMPORT_SETTINGS = {
   VLM_DEFAULT_MODEL: 'google/gemini-3.1-flash-lite',
   VLM_STRONG_MODEL: 'google/gemini-3.5-flash',
   VLM_FORCE_MODEL: 'google/gemini-3.5-flash',
-  VLM_FORCE_PATTERN: 'фев 2026; сент 2025; июль 2024; окт 2024; фев 2024; мар 2026; авг 2025',
+  VLM_FORCE_PATTERN: '',
+  VLM_RETRY_ON_TOTAL_MISMATCH: true,
   VLM_MAX_FILE_BYTES: 8 * 1024 * 1024,
   VLM_MAX_TEXT_CHARS: 90000,
+  REVIEW_FILL: '#f4b183',
 };
 
 const ZUP_IMPORT_HEADERS = [
@@ -684,6 +686,7 @@ function readZupImportObjects_(spreadsheet) {
       paid: parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]),
       withheld: parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]),
       sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
+      isVlm: row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM',
     }))
     .filter((row) => row.period);
 }
@@ -721,6 +724,8 @@ function buildZupSalaryModel_(rows) {
           hasWorkDays: false,
           hasPaidDays: false,
           amount: 0,
+          hasVlm: false,
+          files: {},
         };
       }
       if (row.workDays !== null) {
@@ -732,6 +737,8 @@ function buildZupSalaryModel_(rows) {
         map[key].hasPaidDays = true;
       }
       map[key].amount += row.accrued || 0;
+      map[key].hasVlm = map[key].hasVlm || row.isVlm;
+      map[key].files[row.file] = true;
     });
   return sortZupModelItems_(Object.keys(map).map((key) => map[key]));
 }
@@ -749,10 +756,14 @@ function buildZupPremiumModel_(rows, category) {
           paymentPeriod: row.period,
           accrued: 0,
           paid: 0,
+          hasVlm: false,
+          files: {},
         };
       }
       map[key].accrued += row.accrued || 0;
       map[key].paid += row.paid || 0;
+      map[key].hasVlm = map[key].hasVlm || row.isVlm;
+      map[key].files[row.file] = true;
     });
   return sortZupPremiumItems_(Object.keys(map).map((key) => map[key]));
 }
@@ -767,6 +778,8 @@ function buildZupVacationModel_(rows) {
       amount: row.accrued !== null ? row.accrued : row.paid,
       period: row.period,
       kind: row.kind,
+      isVlm: row.isVlm,
+      file: row.file,
     }))
     .sort((left, right) => Number(left.paymentDate) - Number(right.paymentDate));
 }
@@ -780,6 +793,7 @@ function fillZupSalaryReconstruction_(spreadsheet, items) {
   const itemMap = buildZupModelMapByPeriod_(items);
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']);
+  clearZupReviewMarks_(sheet, 3, scaffold.length, ['A', 'B', 'I']);
   writeZupColumn_(sheet, 3, 'A', scaffold.map((row) => {
     const item = itemMap[buildZupPeriodKey_(row.period)];
     return item && item.hasPaidDays ? item.paidDays : '';
@@ -794,6 +808,7 @@ function fillZupSalaryReconstruction_(spreadsheet, items) {
     const item = itemMap[buildZupPeriodKey_(row.period)];
     return item ? roundMoney_(item.amount) : '';
   }));
+  markZupSalaryReviewCells_(sheet, scaffold, itemMap);
   return { sheet: 'Из_1С_Оклад', rows: scaffold.length };
 }
 
@@ -807,11 +822,13 @@ function fillZupPremiumReconstruction_(spreadsheet, sheetName, items, type) {
   const itemMap = buildZupPremiumScaffoldMap_(items, type);
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 2, scaffold.length, ['C', 'F', 'H', 'I']);
+  clearZupReviewMarks_(sheet, 2, scaffold.length, ['F']);
   writeZupColumn_(sheet, 2, 'C', scaffold.map((row) => row.label));
   writeZupColumn_(sheet, 2, 'F', scaffold.map((row) => {
     const item = itemMap[row.key];
     return item && (item.paid || item.accrued) ? roundMoney_(item.paid || item.accrued) : '';
   }));
+  markZupPremiumReviewCells_(sheet, scaffold, itemMap);
   return { sheet: sheetName, rows: scaffold.length };
 }
 
@@ -822,10 +839,12 @@ function fillZupVacationReconstruction_(spreadsheet, items) {
   }
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 2, items.length, ['A', 'B', 'D', 'G', 'H', 'K', 'L']);
+  clearZupReviewMarks_(sheet, 2, items.length, ['A', 'D', 'G', 'H']);
   writeZupColumn_(sheet, 2, 'A', items.map((item) => item.eventDate || ''));
   writeZupColumn_(sheet, 2, 'D', items.map((item) => numberOrBlank_(item.days)));
   writeZupColumn_(sheet, 2, 'G', items.map((item) => item.paymentDate || ''));
   writeZupColumn_(sheet, 2, 'H', items.map((item) => roundMoney_(item.amount || 0)));
+  markZupVacationReviewCells_(sheet, items);
   return { sheet: 'Из_1С_Отпуска', rows: items.length };
 }
 
@@ -866,6 +885,82 @@ function writeZupColumn_(sheet, dataStartRow, columnLetter, values) {
   sheet
     .getRange(dataStartRow, columnLetterToIndex_(columnLetter) + 1, values.length, 1)
     .setValues(values.map((value) => [value]));
+}
+
+function clearZupReviewMarks_(sheet, dataStartRow, rowCount, columnLetters) {
+  if (!rowCount) {
+    return;
+  }
+  columnLetters.forEach((columnLetter) => {
+    sheet
+      .getRange(dataStartRow, columnLetterToIndex_(columnLetter) + 1, rowCount, 1)
+      .setBackground(null)
+      .setNote('');
+  });
+}
+
+function markZupReviewCell_(sheet, row, columnLetter, note) {
+  sheet
+    .getRange(row, columnLetterToIndex_(columnLetter) + 1)
+    .setBackground(ZUP_IMPORT_SETTINGS.REVIEW_FILL)
+    .setNote(note);
+}
+
+function markZupSalaryReviewCells_(sheet, scaffold, itemMap) {
+  scaffold.forEach((row, index) => {
+    const sheetRow = 3 + index;
+    const key = buildZupPeriodKey_(row.period);
+    const item = itemMap[key];
+    if (!item) {
+      markZupReviewCell_(sheet, sheetRow, 'A', 'Нет оплаченных дней из расчетного листка за этот период.');
+      markZupReviewCell_(sheet, sheetRow, 'B', 'Нет рабочих дней из расчетного листка за этот период.');
+      markZupReviewCell_(sheet, sheetRow, 'I', 'Нет суммы оклада из расчетного листка за этот период.');
+      return;
+    }
+    if (!item.hasPaidDays) {
+      markZupReviewCell_(sheet, sheetRow, 'A', 'Сумма оклада найдена, но оплаченные дни не распознаны.');
+    }
+    if (!item.hasWorkDays) {
+      markZupReviewCell_(sheet, sheetRow, 'B', 'Сумма оклада найдена, но рабочие дни не распознаны.');
+    }
+    if (item.hasVlm) {
+      markZupReviewCell_(sheet, sheetRow, 'I', `Оклад заполнен через VLM. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+  });
+}
+
+function markZupPremiumReviewCells_(sheet, scaffold, itemMap) {
+  scaffold.forEach((row, index) => {
+    const sheetRow = 2 + index;
+    const item = itemMap[row.key];
+    if (!item || !(item.paid || item.accrued)) {
+      markZupReviewCell_(sheet, sheetRow, 'F', 'Нет импортированной суммы премии для этой строки структуры.');
+      return;
+    }
+    if (item.hasVlm) {
+      markZupReviewCell_(sheet, sheetRow, 'F', `Премия заполнена через VLM. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+  });
+}
+
+function markZupVacationReviewCells_(sheet, items) {
+  items.forEach((item, index) => {
+    const sheetRow = 2 + index;
+    if (!item.eventDate) {
+      markZupReviewCell_(sheet, sheetRow, 'A', 'Не распознана дата события отпуска.');
+    }
+    if (!item.days) {
+      markZupReviewCell_(sheet, sheetRow, 'D', 'Не распознано количество дней отпуска.');
+    }
+    if (!item.paymentDate) {
+      markZupReviewCell_(sheet, sheetRow, 'G', 'Не распознана дата выплаты отпуска.');
+    }
+    if (item.amount === null || item.amount === undefined || item.amount === '') {
+      markZupReviewCell_(sheet, sheetRow, 'H', 'Не распознана сумма отпуска.');
+    } else if (item.isVlm) {
+      markZupReviewCell_(sheet, sheetRow, 'H', `Отпускная сумма заполнена через VLM. Источник: ${item.file || ''}`);
+    }
+  });
 }
 
 function retargetZupReconstructionFormulas_(sheet) {
@@ -967,10 +1062,16 @@ function buildZupPremiumScaffoldMap_(items, type) {
       map[key] = {
         paid: 0,
         accrued: 0,
+        hasVlm: false,
+        files: {},
       };
     }
     map[key].paid += item.paid || 0;
     map[key].accrued += item.accrued || 0;
+    map[key].hasVlm = map[key].hasVlm || item.hasVlm;
+    Object.keys(item.files || {}).forEach((fileName) => {
+      map[key].files[fileName] = true;
+    });
     return map;
   }, {});
 }
@@ -1335,7 +1436,8 @@ function parseZupFile_(file) {
 
 function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
   const deterministic = buildParsedZupResult_(file, parsed);
-  const forceVlm = shouldForceZupVlm_(file);
+  const forceReason = getZupVlmForceReason_(file, deterministic);
+  const forceVlm = Boolean(forceReason);
   if (deterministic.rows.length && !forceVlm) {
     return deterministic;
   }
@@ -1343,7 +1445,7 @@ function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
     return deterministic;
   }
 
-  const vlmOptions = Object.assign({}, options || {}, { forceVlm });
+  const vlmOptions = Object.assign({}, options || {}, { forceVlm, forceReason });
   const vlmParsed = parseZupWithPolzaVlm_(file, parsed, vlmOptions);
   if (!vlmParsed) {
     return deterministic;
@@ -1353,7 +1455,20 @@ function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
     return buildParsedZupResult_(file, mergeZupVlmFailureWithDeterministicParsed_(parsed, vlmParsed));
   }
 
-  return buildParsedZupResult_(file, mergeZupVlmFallbackParsed_(parsed, vlmParsed));
+  const merged = mergeZupVlmFallbackParsed_(parsed, vlmParsed, {
+    preferDeterministicTotals: deterministic.rows.length && forceReason === 'totalMismatch',
+  });
+  const vlmResult = buildParsedZupResult_(file, merged);
+  if (
+    deterministic.rows.length &&
+    forceReason === 'totalMismatch' &&
+    shouldKeepDeterministicZupResult_(deterministic, vlmResult)
+  ) {
+    const fallback = mergeZupVlmFailureWithDeterministicParsed_(parsed, vlmParsed);
+    fallback.warnings.push('VLM-прогон не улучшил сверку с итогами; сохранены строки детерминированного парсера.');
+    return buildParsedZupResult_(file, fallback);
+  }
+  return vlmResult;
 }
 
 function buildParsedZupResult_(file, parsed) {
@@ -1374,12 +1489,14 @@ function buildParsedZupResult_(file, parsed) {
   };
 }
 
-function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed) {
+function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed, options) {
   const deterministic = normalizeParsedZupData_(deterministicParsed);
   const vlm = normalizeParsedZupData_(vlmParsed);
   return {
     rows: vlm.rows,
-    totals: hasZupTotals_(vlm.totals) ? vlm.totals : deterministic.totals,
+    totals: options && options.preferDeterministicTotals && hasZupTotals_(deterministic.totals)
+      ? deterministic.totals
+      : (hasZupTotals_(vlm.totals) ? vlm.totals : deterministic.totals),
     employee: vlm.employee || deterministic.employee,
     period: vlm.period || deterministic.period,
     warnings: deterministic.warnings.concat(vlm.warnings),
@@ -1406,6 +1523,23 @@ function hasZupTotals_(totals) {
     Math.abs(totals.withheld || 0) > 0.000001 ||
     Math.abs(totals.paid || 0) > 0.000001
   ));
+}
+
+function shouldKeepDeterministicZupResult_(deterministicResult, vlmResult) {
+  return getZupQualityMismatchScore_(vlmResult.quality) >= getZupQualityMismatchScore_(deterministicResult.quality);
+}
+
+function getZupQualityMismatchScore_(quality) {
+  const source = quality && quality.sourceTotals ? quality.sourceTotals : buildEmptyZupTotals_();
+  const recognized = quality && quality.recognizedTotals ? quality.recognizedTotals : buildEmptyZupTotals_();
+  return ['accrued', 'withheld', 'paid'].reduce((score, key) => {
+    const sourceAmount = source[key] || 0;
+    if (!sourceAmount) {
+      return score;
+    }
+    const diff = Math.abs(sourceAmount - (recognized[key] || 0));
+    return diff > 0.01 ? score + diff : score;
+  }, 0);
 }
 
 function parseZupSpreadsheet_(spreadsheetId, sourceFileName) {
@@ -1513,8 +1647,18 @@ function shouldUseZupVlmFallback_(file, parsedResult, options) {
     /^image\//i.test(mimeType);
 }
 
-function shouldForceZupVlm_(file) {
+function getZupVlmForceReason_(file, parsedResult) {
   const pattern = getZupVlmForcePattern_();
+  if (matchesZupVlmForcePattern_(file, pattern)) {
+    return 'pattern';
+  }
+  if (shouldRetryZupVlmForTotalMismatch_(parsedResult)) {
+    return 'totalMismatch';
+  }
+  return '';
+}
+
+function matchesZupVlmForcePattern_(file, pattern) {
   if (!pattern) {
     return false;
   }
@@ -1528,6 +1672,16 @@ function shouldForceZupVlm_(file) {
     .map((item) => normalizeText_(item))
     .filter(Boolean);
   return tokens.some((token) => fileName.includes(token));
+}
+
+function shouldRetryZupVlmForTotalMismatch_(parsedResult) {
+  return Boolean(
+    ZUP_IMPORT_SETTINGS.VLM_RETRY_ON_TOTAL_MISMATCH &&
+    parsedResult &&
+    parsedResult.rows &&
+    parsedResult.rows.length &&
+    getZupQualityMismatchScore_(parsedResult.quality) > 0.01
+  );
 }
 
 function getZupVlmForcePattern_() {
@@ -1591,6 +1745,7 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
   }
 
   envelope._zupForceVlm = Boolean(options && options.forceVlm);
+  envelope._zupForceReason = options && options.forceReason;
   const parsedVlm = convertPolzaVlmPayloadToZupParsed_(file, extracted, model, envelope);
   parsedVlm.vlmRows = [buildZupVlmLogRow_(file, model, 'OK', parsedVlm.rows.length, envelope, extracted, parsedVlm.warnings)];
   return parsedVlm;
@@ -1807,7 +1962,10 @@ function convertPolzaVlmPayloadToZupParsed_(file, payload, model, envelope) {
   const warnings = (payload.warnings || []).slice();
   warnings.unshift(`Строки извлечены через Polza VLM (${model}); требуется сверка по sourceText/confidence.`);
   if (envelope && envelope._zupForceVlm) {
-    warnings.unshift('Файл принудительно перечитан через VLM по ZUP_VLM_FORCE_PATTERN.');
+    warnings.unshift(envelope._zupForceReason === 'totalMismatch'
+      ? 'Файл перечитан через VLM автоматически из-за расхождения с итогами расчетного листка.'
+      : 'Файл принудительно перечитан через VLM по ZUP_VLM_FORCE_PATTERN.'
+    );
   }
   if (envelope && envelope.usage && envelope.usage.cost_rub) {
     warnings.push(`Стоимость VLM-запроса: ${envelope.usage.cost_rub} ₽.`);
@@ -3215,7 +3373,7 @@ function rectangularizeRows_(rows) {
 function highlightZupRows_(sheet, rows, startRow, width, predicate) {
   rows.forEach((row, index) => {
     if (predicate(row)) {
-      sheet.getRange(startRow + index, 1, 1, width).setBackground('#f4b183');
+      sheet.getRange(startRow + index, 1, 1, width).setBackground(ZUP_IMPORT_SETTINGS.REVIEW_FILL);
     }
   });
 }
