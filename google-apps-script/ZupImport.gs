@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v8-universal-vlm-review',
+  PARSER_VERSION: 'zup-import-v9-quality-gates',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -28,17 +28,20 @@ const ZUP_IMPORT_SETTINGS = {
   VLM_MAX_FILE_BYTES: 8 * 1024 * 1024,
   VLM_MAX_TEXT_CHARS: 90000,
   REVIEW_FILL: '#f4b183',
+  SOURCE_FILL: '#d9ead3',
 };
 
 const ZUP_IMPORT_HEADERS = [
   'Файл',
   'Лист',
+  'Организация',
   'Сотрудник',
   'Период',
+  'Дата начисления',
   'Год',
   'Месяц',
   'Рабочие дни',
-  'Оплачено дней',
+  'Факт. отработано дней',
   'Дата выплаты',
   'Ведомость',
   'Дата ведомости',
@@ -54,22 +57,24 @@ const ZUP_IMPORT_HEADERS = [
 const ZUP_IMPORT_COLUMNS = {
   file: 0,
   sheet: 1,
-  employee: 2,
-  period: 3,
-  year: 4,
-  month: 5,
-  workDays: 6,
-  paidDays: 7,
-  paymentDate: 8,
-  paymentStatement: 9,
-  statementDate: 10,
-  section: 11,
-  category: 12,
-  kind: 13,
-  accrued: 14,
-  paid: 15,
-  withheld: 16,
-  sourceRow: 17,
+  company: 2,
+  employee: 3,
+  period: 4,
+  accrualDate: 5,
+  year: 6,
+  month: 7,
+  workDays: 8,
+  paidDays: 9,
+  paymentDate: 10,
+  paymentStatement: 11,
+  statementDate: 12,
+  section: 13,
+  category: 14,
+  kind: 15,
+  accrued: 16,
+  paid: 17,
+  withheld: 18,
+  sourceRow: 19,
 };
 
 const ZUP_SUMMARY_HEADERS = [
@@ -81,7 +86,7 @@ const ZUP_SUMMARY_HEADERS = [
   'Категория',
   'Вид начисления',
   'Рабочие дни',
-  'Оплачено дней',
+  'Факт. отработано дней',
   'Начислено',
   'Выплачено',
   'Удержано',
@@ -95,6 +100,7 @@ const ZUP_QUALITY_HEADERS = [
   'Варианты',
   'Статус',
   'Строк',
+  'Организация',
   'Сотрудник',
   'Период',
   'Начислено итог',
@@ -350,13 +356,16 @@ function populateZupReconstructionSheets() {
   });
 
   const model = buildZupReconstructionModel_(importRows);
+  const productionCalendar = loadProductionCalendarSafely_();
+  const company = model.quality.companies.length === 1 ? model.quality.companies[0] : '';
   const results = [
-    fillZupSalaryReconstruction_(spreadsheet, model.salary),
+    fillZupSalaryReconstruction_(spreadsheet, model.salary, productionCalendar, company),
     fillZupPremiumReconstruction_(spreadsheet, 'Из_1С_Ежемесячные', model.monthlyPremiums, 'monthly'),
     fillZupPremiumReconstruction_(spreadsheet, 'Из_1С_Ежеквартальные', model.quarterlyPremiums, 'quarterly'),
     fillZupPremiumReconstruction_(spreadsheet, 'Из_1С_Ежегодные', model.annualPremiums, 'annual'),
     fillZupVacationReconstruction_(spreadsheet, model.vacations),
   ];
+  markZupReconstructionCompany_(spreadsheet, company, model.quality);
 
   showMessage_(
     `Вкладки Из_1С заполнены из расчетных листков.\n${results.map((item) => `${item.sheet}: ${item.rows} строк`).join('\n')}`
@@ -445,7 +454,8 @@ function importZupFolderCore_(spreadsheet, folderId, options) {
     }
   });
 
-  writeZupQualitySheet_(spreadsheet, qualityRows, normalizedOptions.dryRun);
+  const globalQualityRows = buildZupGlobalQualityRows_(rows);
+  writeZupQualitySheet_(spreadsheet, globalQualityRows.concat(qualityRows), normalizedOptions.dryRun);
   writeZupVlmLogSheet_(spreadsheet, vlmRows, normalizedOptions.dryRun);
   if (!normalizedOptions.dryRun) {
     writeZupImportSheet_(spreadsheet, rows, skippedFiles);
@@ -458,7 +468,7 @@ function importZupFolderCore_(spreadsheet, folderId, options) {
     rows,
     skippedFiles,
     filesRead,
-    qualityRows,
+    qualityRows: globalQualityRows.concat(qualityRows),
     stateRows,
     vlmRows,
   };
@@ -672,8 +682,10 @@ function readZupImportObjects_(spreadsheet) {
     .map((row) => ({
       file: row[ZUP_IMPORT_COLUMNS.file],
       sheet: row[ZUP_IMPORT_COLUMNS.sheet],
+      company: row[ZUP_IMPORT_COLUMNS.company],
       employee: row[ZUP_IMPORT_COLUMNS.employee],
       period: normalizeZupImportPeriod_(row[ZUP_IMPORT_COLUMNS.year], row[ZUP_IMPORT_COLUMNS.month], row[ZUP_IMPORT_COLUMNS.period]),
+      accrualDate: row[ZUP_IMPORT_COLUMNS.accrualDate] instanceof Date ? row[ZUP_IMPORT_COLUMNS.accrualDate] : parseDateValue_(row[ZUP_IMPORT_COLUMNS.accrualDate]),
       workDays: parseMoney_(row[ZUP_IMPORT_COLUMNS.workDays]),
       paidDays: parseMoney_(row[ZUP_IMPORT_COLUMNS.paidDays]),
       paymentDate: row[ZUP_IMPORT_COLUMNS.paymentDate] instanceof Date ? row[ZUP_IMPORT_COLUMNS.paymentDate] : parseDateValue_(row[ZUP_IMPORT_COLUMNS.paymentDate]),
@@ -707,7 +719,83 @@ function buildZupReconstructionModel_(rows) {
     quarterlyPremiums: buildZupPremiumModel_(rows, 'Ежеквартальные премии'),
     annualPremiums: buildZupPremiumModel_(rows, 'Ежегодные премии'),
     vacations: buildZupVacationModel_(rows),
+    quality: buildZupReconstructionQuality_(rows),
   };
+}
+
+function buildZupReconstructionQuality_(rows) {
+  return {
+    companies: getUniqueNormalizedValues_(rows.map((row) => row.company)),
+    employees: getUniqueNormalizedValues_(rows.map((row) => row.employee)),
+    missingMonths: findZupMissingPeriods_(rows),
+  };
+}
+
+function getUniqueNormalizedValues_(values) {
+  const seen = {};
+  (values || []).forEach((value) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text) {
+      seen[text] = true;
+    }
+  });
+  return Object.keys(seen).sort();
+}
+
+function findZupMissingPeriods_(rows) {
+  const periods = {};
+  rows.forEach((row) => {
+    if (row.period && row.period.year && row.period.month) {
+      periods[buildZupPeriodKey_(row.period)] = row.period;
+    }
+  });
+  const sorted = Object.keys(periods)
+    .map((key) => periods[key])
+    .sort((left, right) => left.year - right.year || left.month - right.month);
+  if (sorted.length < 2) {
+    return [];
+  }
+
+  const missing = [];
+  for (
+    let cursor = { year: sorted[0].year, month: sorted[0].month };
+    cursor.year < sorted[sorted.length - 1].year || (cursor.year === sorted[sorted.length - 1].year && cursor.month <= sorted[sorted.length - 1].month);
+    cursor = nextZupPeriod_(cursor)
+  ) {
+    if (!periods[buildZupPeriodKey_(cursor)]) {
+      missing.push(formatZupPeriod_(cursor));
+    }
+  }
+  return missing;
+}
+
+function nextZupPeriod_(period) {
+  return period.month === 12
+    ? { year: period.year + 1, month: 1 }
+    : { year: period.year, month: period.month + 1 };
+}
+
+function loadProductionCalendarSafely_() {
+  try {
+    return loadProductionCalendar_();
+  } catch (error) {
+    return {};
+  }
+}
+
+function getZupWorkingDaysForPeriod_(period, productionCalendar) {
+  if (!period || !period.year || !period.month) {
+    return '';
+  }
+  let days = 0;
+  const daysInMonth = getDaysInMonth_(period.year, period.month);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(period.year, period.month - 1, day);
+    if (!isNonWorkingDay_(date, productionCalendar || {})) {
+      days++;
+    }
+  }
+  return days || '';
 }
 
 function buildZupSalaryModel_(rows) {
@@ -746,7 +834,11 @@ function buildZupSalaryModel_(rows) {
 function buildZupPremiumModel_(rows, category) {
   const map = {};
   rows
-    .filter((row) => row.category === category && (row.accrued !== null || row.paid !== null))
+    .filter((row) =>
+      row.section === 'Начислено' &&
+      row.category === category &&
+      row.accrued !== null
+    )
     .forEach((row) => {
       const premiumPeriod = detectZupPremiumPeriod_(row, category);
       const key = buildZupPremiumKey_(premiumPeriod, row.period);
@@ -755,13 +847,11 @@ function buildZupPremiumModel_(rows, category) {
           premiumPeriod,
           paymentPeriod: row.period,
           accrued: 0,
-          paid: 0,
           hasVlm: false,
           files: {},
         };
       }
       map[key].accrued += row.accrued || 0;
-      map[key].paid += row.paid || 0;
       map[key].hasVlm = map[key].hasVlm || row.isVlm;
       map[key].files[row.file] = true;
     });
@@ -769,22 +859,77 @@ function buildZupPremiumModel_(rows, category) {
 }
 
 function buildZupVacationModel_(rows) {
-  return rows
-    .filter((row) => row.category === 'Отпуска' && (row.accrued !== null || row.paid !== null))
-    .map((row) => ({
-      paymentDate: row.statementDate || row.paymentDate || zupPeriodToDate_(row.period),
-      eventDate: row.paymentDate || row.statementDate || zupPeriodToDate_(row.period),
-      days: extractZupDaysFromText_(`${row.kind} ${row.sourceRow}`),
-      amount: row.accrued !== null ? row.accrued : row.paid,
-      period: row.period,
-      kind: row.kind,
-      isVlm: row.isVlm,
-      file: row.file,
-    }))
-    .sort((left, right) => Number(left.paymentDate) - Number(right.paymentDate));
+  const byFile = {};
+  rows
+    .filter((row) => row.category === 'Отпуска')
+    .forEach((row) => {
+      if (!byFile[row.file]) {
+        byFile[row.file] = {
+          accrued: [],
+          paid: [],
+        };
+      }
+      if (row.section === 'Начислено' && row.accrued !== null) {
+        byFile[row.file].accrued.push(row);
+      } else if (row.section === 'Выплачено' && row.paid !== null) {
+        byFile[row.file].paid.push(row);
+      }
+    });
+
+  const items = [];
+  Object.keys(byFile).forEach((fileName) => {
+    items.push(...buildZupVacationItemsForFile_(fileName, byFile[fileName]));
+  });
+  return items.sort((left, right) => Number(left.paymentDate || left.eventDate) - Number(right.paymentDate || right.eventDate));
 }
 
-function fillZupSalaryReconstruction_(spreadsheet, items) {
+function buildZupVacationItemsForFile_(fileName, group) {
+  const accruedRows = group.accrued.sort(compareZupRowsByAccrualDate_);
+  const paidRows = group.paid.sort(compareZupRowsByPaymentDate_);
+  if (!accruedRows.length) {
+    return [];
+  }
+
+  if (paidRows.length === 1 && accruedRows.length > 1) {
+    return [buildZupVacationItem_(fileName, accruedRows, paidRows[0], false)];
+  }
+
+  if (paidRows.length === accruedRows.length) {
+    return accruedRows.map((row, index) => buildZupVacationItem_(fileName, [row], paidRows[index], false));
+  }
+
+  return accruedRows.map((row) => buildZupVacationItem_(fileName, [row], null, paidRows.length > 1));
+}
+
+function buildZupVacationItem_(fileName, accruedRows, paidRow, needsReview) {
+  const first = accruedRows[0];
+  const amount = accruedRows.reduce((sum, row) => sum + (row.accrued || 0), 0);
+  const days = accruedRows.reduce((sum, row) => sum + (row.paidDays || extractZupDaysFromText_(`${row.kind} ${row.sourceRow}`) || 0), 0);
+  const paymentDate = paidRow
+    ? (paidRow.statementDate || paidRow.paymentDate)
+    : null;
+  return {
+    paymentDate: paymentDate || first.accrualDate || zupPeriodToDate_(first.period),
+    eventDate: paymentDate || first.accrualDate || zupPeriodToDate_(first.period),
+    days: days || '',
+    amount,
+    period: first.period,
+    kind: accruedRows.map((row) => row.kind).filter(Boolean).join('; '),
+    isVlm: accruedRows.some((row) => row.isVlm) || Boolean(paidRow && paidRow.isVlm),
+    file: fileName,
+    needsReview,
+  };
+}
+
+function compareZupRowsByAccrualDate_(left, right) {
+  return Number(left.accrualDate || zupPeriodToDate_(left.period)) - Number(right.accrualDate || zupPeriodToDate_(right.period));
+}
+
+function compareZupRowsByPaymentDate_(left, right) {
+  return Number(left.statementDate || left.paymentDate || zupPeriodToDate_(left.period)) - Number(right.statementDate || right.paymentDate || zupPeriodToDate_(right.period));
+}
+
+function fillZupSalaryReconstruction_(spreadsheet, items, productionCalendar, company) {
   const sheet = spreadsheet.getSheetByName('Из_1С_Оклад');
   if (!sheet) {
     throw new Error('Не найдена вкладка Из_1С_Оклад.');
@@ -794,13 +939,14 @@ function fillZupSalaryReconstruction_(spreadsheet, items) {
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']);
   clearZupReviewMarks_(sheet, 3, scaffold.length, ['A', 'B', 'I']);
+  clearZupSourceMarks_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'I']);
   writeZupColumn_(sheet, 3, 'A', scaffold.map((row) => {
     const item = itemMap[buildZupPeriodKey_(row.period)];
     return item && item.hasPaidDays ? item.paidDays : '';
   }));
   writeZupColumn_(sheet, 3, 'B', scaffold.map((row) => {
     const item = itemMap[buildZupPeriodKey_(row.period)];
-    return item && item.hasWorkDays ? item.workDays : '';
+    return getZupWorkingDaysForPeriod_(row.period, productionCalendar) || (item && item.hasWorkDays ? item.workDays : '');
   }));
   writeZupColumn_(sheet, 3, 'D', scaffold.map((row) => row.period.year));
   writeZupColumn_(sheet, 3, 'E', scaffold.map((row) => formatZupMonthName_(row.period.month)));
@@ -808,7 +954,11 @@ function fillZupSalaryReconstruction_(spreadsheet, items) {
     const item = itemMap[buildZupPeriodKey_(row.period)];
     return item ? roundMoney_(item.amount) : '';
   }));
-  markZupSalaryReviewCells_(sheet, scaffold, itemMap);
+  markZupSalarySourceCells_(sheet, scaffold, itemMap, productionCalendar);
+  markZupSalaryReviewCells_(sheet, scaffold, itemMap, productionCalendar);
+  if (company) {
+    sheet.getRange('P2').setValue(company);
+  }
   return { sheet: 'Из_1С_Оклад', rows: scaffold.length };
 }
 
@@ -823,11 +973,13 @@ function fillZupPremiumReconstruction_(spreadsheet, sheetName, items, type) {
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 2, scaffold.length, ['C', 'F', 'H', 'I']);
   clearZupReviewMarks_(sheet, 2, scaffold.length, ['F']);
+  clearZupSourceMarks_(sheet, 2, scaffold.length, ['C', 'F']);
   writeZupColumn_(sheet, 2, 'C', scaffold.map((row) => row.label));
   writeZupColumn_(sheet, 2, 'F', scaffold.map((row) => {
     const item = itemMap[row.key];
-    return item && (item.paid || item.accrued) ? roundMoney_(item.paid || item.accrued) : '';
+    return item && item.accrued ? roundMoney_(item.accrued) : '';
   }));
+  markZupPremiumSourceCells_(sheet, scaffold, itemMap);
   markZupPremiumReviewCells_(sheet, scaffold, itemMap);
   return { sheet: sheetName, rows: scaffold.length };
 }
@@ -840,10 +992,12 @@ function fillZupVacationReconstruction_(spreadsheet, items) {
   retargetZupReconstructionFormulas_(sheet);
   prepareZupOutputRows_(sheet, 2, items.length, ['A', 'B', 'D', 'G', 'H', 'K', 'L']);
   clearZupReviewMarks_(sheet, 2, items.length, ['A', 'D', 'G', 'H']);
+  clearZupSourceMarks_(sheet, 2, items.length, ['A', 'D', 'G', 'H']);
   writeZupColumn_(sheet, 2, 'A', items.map((item) => item.eventDate || ''));
   writeZupColumn_(sheet, 2, 'D', items.map((item) => numberOrBlank_(item.days)));
   writeZupColumn_(sheet, 2, 'G', items.map((item) => item.paymentDate || ''));
   writeZupColumn_(sheet, 2, 'H', items.map((item) => roundMoney_(item.amount || 0)));
+  markZupVacationSourceCells_(sheet, items);
   markZupVacationReviewCells_(sheet, items);
   return { sheet: 'Из_1С_Отпуска', rows: items.length };
 }
@@ -899,6 +1053,17 @@ function clearZupReviewMarks_(sheet, dataStartRow, rowCount, columnLetters) {
   });
 }
 
+function clearZupSourceMarks_(sheet, dataStartRow, rowCount, columnLetters) {
+  if (!rowCount) {
+    return;
+  }
+  columnLetters.forEach((columnLetter) => {
+    sheet
+      .getRange(dataStartRow, columnLetterToIndex_(columnLetter) + 1, rowCount, 1)
+      .setBackground(null);
+  });
+}
+
 function markZupReviewCell_(sheet, row, columnLetter, note) {
   sheet
     .getRange(row, columnLetterToIndex_(columnLetter) + 1)
@@ -906,21 +1071,50 @@ function markZupReviewCell_(sheet, row, columnLetter, note) {
     .setNote(note);
 }
 
-function markZupSalaryReviewCells_(sheet, scaffold, itemMap) {
+function markZupSourceCell_(sheet, row, columnLetter, note) {
+  sheet
+    .getRange(row, columnLetterToIndex_(columnLetter) + 1)
+    .setBackground(ZUP_IMPORT_SETTINGS.SOURCE_FILL)
+    .setNote(note);
+}
+
+function markZupSalarySourceCells_(sheet, scaffold, itemMap, productionCalendar) {
   scaffold.forEach((row, index) => {
     const sheetRow = 3 + index;
     const key = buildZupPeriodKey_(row.period);
     const item = itemMap[key];
+    if (item && item.hasPaidDays) {
+      markZupSourceCell_(sheet, sheetRow, 'A', `Фактически отработанные дни из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+    if (getZupWorkingDaysForPeriod_(row.period, productionCalendar)) {
+      markZupSourceCell_(sheet, sheetRow, 'B', 'Рабочие дни месяца дозаполнены из производственного календаря КонсультантПлюс.');
+    } else if (item && item.hasWorkDays) {
+      markZupSourceCell_(sheet, sheetRow, 'B', `Рабочие дни из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+    if (item) {
+      markZupSourceCell_(sheet, sheetRow, 'I', `Оклад из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+  });
+}
+
+function markZupSalaryReviewCells_(sheet, scaffold, itemMap, productionCalendar) {
+  scaffold.forEach((row, index) => {
+    const sheetRow = 3 + index;
+    const key = buildZupPeriodKey_(row.period);
+    const item = itemMap[key];
+    const hasCalendarWorkDays = Boolean(getZupWorkingDaysForPeriod_(row.period, productionCalendar));
     if (!item) {
       markZupReviewCell_(sheet, sheetRow, 'A', 'Нет оплаченных дней из расчетного листка за этот период.');
-      markZupReviewCell_(sheet, sheetRow, 'B', 'Нет рабочих дней из расчетного листка за этот период.');
+      if (!hasCalendarWorkDays) {
+        markZupReviewCell_(sheet, sheetRow, 'B', 'Нет рабочих дней из расчетного листка и производственного календаря за этот период.');
+      }
       markZupReviewCell_(sheet, sheetRow, 'I', 'Нет суммы оклада из расчетного листка за этот период.');
       return;
     }
     if (!item.hasPaidDays) {
       markZupReviewCell_(sheet, sheetRow, 'A', 'Сумма оклада найдена, но оплаченные дни не распознаны.');
     }
-    if (!item.hasWorkDays) {
+    if (!item.hasWorkDays && !hasCalendarWorkDays) {
       markZupReviewCell_(sheet, sheetRow, 'B', 'Сумма оклада найдена, но рабочие дни не распознаны.');
     }
     if (item.hasVlm) {
@@ -929,16 +1123,42 @@ function markZupSalaryReviewCells_(sheet, scaffold, itemMap) {
   });
 }
 
+function markZupPremiumSourceCells_(sheet, scaffold, itemMap) {
+  scaffold.forEach((row, index) => {
+    const sheetRow = 2 + index;
+    const item = itemMap[row.key];
+    if (item && item.accrued) {
+      markZupSourceCell_(sheet, sheetRow, 'F', `Начисленная премия из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+  });
+}
+
 function markZupPremiumReviewCells_(sheet, scaffold, itemMap) {
   scaffold.forEach((row, index) => {
     const sheetRow = 2 + index;
     const item = itemMap[row.key];
-    if (!item || !(item.paid || item.accrued)) {
+    if (!item || !item.accrued) {
       markZupReviewCell_(sheet, sheetRow, 'F', 'Нет импортированной суммы премии для этой строки структуры.');
       return;
     }
     if (item.hasVlm) {
       markZupReviewCell_(sheet, sheetRow, 'F', `Премия заполнена через VLM. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+  });
+}
+
+function markZupVacationSourceCells_(sheet, items) {
+  items.forEach((item, index) => {
+    const sheetRow = 2 + index;
+    if (item.paymentDate || item.eventDate) {
+      markZupSourceCell_(sheet, sheetRow, 'A', `Дата из расчетного листка. Источник: ${item.file || ''}`);
+      markZupSourceCell_(sheet, sheetRow, 'G', `Дата выплаты из расчетного листка. Источник: ${item.file || ''}`);
+    }
+    if (item.days) {
+      markZupSourceCell_(sheet, sheetRow, 'D', `Дни отпуска из расчетного листка. Источник: ${item.file || ''}`);
+    }
+    if (item.amount) {
+      markZupSourceCell_(sheet, sheetRow, 'H', `Начисленные отпускные из расчетного листка. Источник: ${item.file || ''}`);
     }
   });
 }
@@ -957,9 +1177,33 @@ function markZupVacationReviewCells_(sheet, items) {
     }
     if (item.amount === null || item.amount === undefined || item.amount === '') {
       markZupReviewCell_(sheet, sheetRow, 'H', 'Не распознана сумма отпуска.');
+    } else if (item.needsReview) {
+      markZupReviewCell_(sheet, sheetRow, 'H', `Несколько выплат отпуска в файле; требуется ручная сверка распределения. Источник: ${item.file || ''}`);
     } else if (item.isVlm) {
       markZupReviewCell_(sheet, sheetRow, 'H', `Отпускная сумма заполнена через VLM. Источник: ${item.file || ''}`);
     }
+  });
+}
+
+function markZupReconstructionCompany_(spreadsheet, company, quality) {
+  getZupReconstructionConfigs_().forEach((config) => {
+    const sheet = spreadsheet.getSheetByName(config.targetSheetName);
+    if (!sheet) {
+      return;
+    }
+    const cell = sheet.getRange('P2');
+    cell.setValue(company || '');
+    if (company && quality.companies.length === 1) {
+      cell
+        .setBackground(ZUP_IMPORT_SETTINGS.SOURCE_FILL)
+        .setNote('Организация извлечена из расчетных листков.');
+      return;
+    }
+    cell
+      .setBackground(ZUP_IMPORT_SETTINGS.REVIEW_FILL)
+      .setNote(quality.companies.length
+        ? `В расчетных листках найдено несколько организаций: ${quality.companies.join(', ')}`
+        : 'Организация не распознана в расчетных листках.');
   });
 }
 
@@ -1060,13 +1304,11 @@ function buildZupPremiumScaffoldMap_(items, type) {
     }
     if (!map[key]) {
       map[key] = {
-        paid: 0,
         accrued: 0,
         hasVlm: false,
         files: {},
       };
     }
-    map[key].paid += item.paid || 0;
     map[key].accrued += item.accrued || 0;
     map[key].hasVlm = map[key].hasVlm || item.hasVlm;
     Object.keys(item.files || {}).forEach((fileName) => {
@@ -1497,6 +1739,7 @@ function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed, options) {
     totals: options && options.preferDeterministicTotals && hasZupTotals_(deterministic.totals)
       ? deterministic.totals
       : (hasZupTotals_(vlm.totals) ? vlm.totals : deterministic.totals),
+    company: vlm.company || deterministic.company,
     employee: vlm.employee || deterministic.employee,
     period: vlm.period || deterministic.period,
     warnings: deterministic.warnings.concat(vlm.warnings),
@@ -1510,6 +1753,7 @@ function mergeZupVlmFailureWithDeterministicParsed_(deterministicParsed, vlmPars
   return {
     rows: deterministic.rows,
     totals: deterministic.totals,
+    company: deterministic.company,
     employee: deterministic.employee,
     period: deterministic.period,
     warnings: deterministic.warnings.concat(vlm.warnings),
@@ -1870,8 +2114,11 @@ function buildZupVlmPrompt_(file) {
   return [
     `Файл: ${file.getName()}`,
     'Извлеки строки расчетного листка 1С:ЗУП в строгую структуру.',
+    'Отдельно извлеки организацию-работодателя и сотрудника. Если организация не видна, верни пустую строку.',
     'Нужны реальные строки начислений, выплат и удержаний: оклад, премии, отпускные, больничные, удержания, выплаты.',
     'Для начислений отдельно выделяй рабочие дни и оплачено дней, если они есть рядом с периодом строки.',
+    'Для каждой строки начисления верни accrualDate: полную дату начисления дохода или последний день периода начисления. Для премий с периодом 01.01-31.03 accrualDate должен быть 31.03 соответствующего года.',
+    'Премии классифицируй по периоду начисления: месяц = ежемесячная, квартальный диапазон = ежеквартальная, год = ежегодная. Не дублируй выплаченную премию как начисленную.',
     'Даты возвращай в формате dd.MM.yyyy, период листка в формате MM.yyyy.',
     'Суммы возвращай числами в рублях, без пробелов и знаков валюты. Если суммы нет, возвращай 0.',
     'Категорию выбирай из: Оклад, Ежемесячные премии, Ежеквартальные премии, Ежегодные премии, Отпуска, Больничные, Отпуск без оплаты, Удержания, Выплаты, Материальная помощь, Командировки, Доплата до оклада, Сверхурочные и ночные, Праздники и выходные, Районные коэффициенты и надбавки, Совмещение и замещение, Выходное пособие, Прочее.',
@@ -1890,6 +2137,7 @@ function buildZupVlmJsonSchema_() {
     additionalProperties: false,
     properties: {
       employee: { type: 'string' },
+      company: { type: 'string' },
       period: { type: 'string' },
       year: { type: 'integer' },
       month: { type: 'integer' },
@@ -1909,6 +2157,7 @@ function buildZupVlmJsonSchema_() {
             category: { type: 'string' },
             kind: { type: 'string' },
             period: { type: 'string' },
+            accrualDate: { type: 'string' },
             year: { type: 'integer' },
             month: { type: 'integer' },
             workDays: { type: 'number' },
@@ -1927,6 +2176,7 @@ function buildZupVlmJsonSchema_() {
             'category',
             'kind',
             'period',
+            'accrualDate',
             'year',
             'month',
             'workDays',
@@ -1947,7 +2197,7 @@ function buildZupVlmJsonSchema_() {
         items: { type: 'string' },
       },
     },
-    required: ['employee', 'period', 'year', 'month', 'totals', 'rows', 'warnings'],
+    required: ['employee', 'company', 'period', 'year', 'month', 'totals', 'rows', 'warnings'],
   };
 }
 
@@ -1974,6 +2224,7 @@ function convertPolzaVlmPayloadToZupParsed_(file, payload, model, envelope) {
   return {
     rows,
     totals: normalizeZupVlmTotals_(payload.totals),
+    company: payload.company || '',
     employee: payload.employee || '',
     period: period && period.year && period.month ? period : null,
     warnings,
@@ -1991,6 +2242,10 @@ function convertPolzaVlmRowToZupRow_(file, row, payload, fallbackPeriod) {
 
   const section = normalizeZupVlmSection_(row.section, row);
   const category = normalizeZupVlmCategory_(row.category, row.kind || row.sourceText || '', section);
+  const accrualDate = normalizeZupVlmAccrualDate_(row.accrualDate, period);
+  const periodForColumns = accrualDate
+    ? { year: accrualDate.getFullYear(), month: accrualDate.getMonth() + 1 }
+    : period;
   const accrued = normalizeZupVlmAmount_(row.accrued);
   const paid = normalizeZupVlmAmount_(row.paid);
   const withheld = normalizeZupVlmAmount_(row.withheld);
@@ -2001,10 +2256,12 @@ function convertPolzaVlmRowToZupRow_(file, row, payload, fallbackPeriod) {
   return [
     file.getName(),
     'Polza VLM',
+    payload.company || '',
     payload.employee || '',
     formatZupPeriod_(period),
-    period.year,
-    period.month,
+    accrualDate ? formatDate_(accrualDate) : '',
+    periodForColumns.year,
+    periodForColumns.month,
     normalizeZupVlmDayCount_(row.workDays),
     normalizeZupVlmDayCount_(row.paidDays),
     normalizeZupVlmDate_(row.paymentDate),
@@ -2064,6 +2321,14 @@ function normalizeZupVlmDate_(value) {
   return parsed ? formatDate_(parsed) : '';
 }
 
+function normalizeZupVlmAccrualDate_(value, period) {
+  const parsed = parseDateValue_(value);
+  if (parsed) {
+    return parsed;
+  }
+  return period && period.year && period.month ? new Date(period.year, period.month, 0) : null;
+}
+
 function normalizeZupVlmTotals_(totals) {
   const source = totals || {};
   return {
@@ -2079,6 +2344,7 @@ function buildEmptyZupVlmParsed_(file, warning, model, rawJson) {
     rows: [],
     totals: buildEmptyZupTotals_(),
     employee: '',
+    company: '',
     period: null,
     warnings: [warning],
     vlmRows: [buildZupVlmLogRow_(file, usedModel, 'Ошибка', 0, null, rawJson || '', [warning])],
@@ -2254,6 +2520,7 @@ function parseZupGrid_(values, sourceFileName, sourceSheetName) {
   return {
     rows,
     totals: extractZupSectionTotalsFromGrid_(values),
+    company: extractZupCompany_(values) || '',
     employee: extractZupEmployee_(values) || '',
     period: extractZupPeriod_(values, sourceFileName),
     warnings: [],
@@ -2265,6 +2532,7 @@ function normalizeParsedZupData_(parsed) {
     return {
       rows: parsed,
       totals: buildEmptyZupTotals_(),
+      company: parsed.length ? parsed[0][ZUP_IMPORT_COLUMNS.company] : '',
       employee: parsed.length ? parsed[0][ZUP_IMPORT_COLUMNS.employee] : '',
       period: parsed.length ? parseMonthYear_(parsed[0][ZUP_IMPORT_COLUMNS.period]) : null,
       warnings: [],
@@ -2276,6 +2544,7 @@ function normalizeParsedZupData_(parsed) {
   return {
     rows: data.rows || [],
     totals: data.totals || buildEmptyZupTotals_(),
+    company: data.company || (data.rows && data.rows.length ? data.rows[0][ZUP_IMPORT_COLUMNS.company] : ''),
     employee: data.employee || (data.rows && data.rows.length ? data.rows[0][ZUP_IMPORT_COLUMNS.employee] : ''),
     period: data.period || (data.rows && data.rows.length ? parseMonthYear_(data.rows[0][ZUP_IMPORT_COLUMNS.period]) : null),
     warnings: data.warnings || [],
@@ -2287,6 +2556,7 @@ function combineParsedZupData_(items) {
   const combined = {
     rows: [],
     totals: buildEmptyZupTotals_(),
+    company: '',
     employee: '',
     period: null,
     warnings: [],
@@ -2299,6 +2569,7 @@ function combineParsedZupData_(items) {
     combined.totals.accrued += normalized.totals.accrued || 0;
     combined.totals.withheld += normalized.totals.withheld || 0;
     combined.totals.paid += normalized.totals.paid || 0;
+    combined.company = combined.company || normalized.company;
     combined.employee = combined.employee || normalized.employee;
     combined.period = combined.period || normalized.period;
     combined.warnings.push(...normalized.warnings);
@@ -2318,6 +2589,7 @@ function buildEmptyZupTotals_() {
 
 function buildEmptyZupQualityData_() {
   return {
+    company: '',
     employee: '',
     period: '',
     sourceTotals: buildEmptyZupTotals_(),
@@ -2328,6 +2600,7 @@ function buildEmptyZupQualityData_() {
 
 function buildZupParsedQuality_(parsed) {
   const quality = buildEmptyZupQualityData_();
+  quality.company = parsed.company || '';
   quality.employee = parsed.employee || '';
   quality.period = parsed.period ? formatZupPeriod_(parsed.period) : '';
   quality.sourceTotals = parsed.totals || buildEmptyZupTotals_();
@@ -2400,6 +2673,7 @@ function buildZupTotalWarnings_(sourceTotals, recognizedTotals) {
 }
 
 function extractZupRowsFromGrid_(values, sourceFileName, sourceSheetName) {
+  const company = extractZupCompany_(values) || '';
   const employee = extractZupEmployee_(values) || '';
   const period = extractZupPeriod_(values, sourceFileName);
   const rows = [];
@@ -2428,6 +2702,7 @@ function extractZupRowsFromGrid_(values, sourceFileName, sourceSheetName) {
       const extracted = extractZupRowSegment_(segment, {
         sourceFileName,
         sourceSheetName,
+        company,
         employee,
         period,
       });
@@ -2517,6 +2792,10 @@ function extractZupRowSegment_(segment, context) {
   }
 
   const period = resolveZupRowPeriod_(segment, context);
+  const accrualDate = resolveZupAccrualDate_(segment.cells, period, context);
+  const periodForColumns = accrualDate
+    ? { year: accrualDate.getFullYear(), month: accrualDate.getMonth() + 1 }
+    : period;
   const paymentStatement = extractZupPaymentStatement_(segment.cells);
   const paymentDate = paymentStatement.date || extractZupPaymentDateFromCells_(segment.cells);
   const dayColumns = extractZupDayColumns_(segment.cells, segment.section);
@@ -2524,10 +2803,12 @@ function extractZupRowSegment_(segment, context) {
   return [
     context.sourceFileName,
     context.sourceSheetName,
+    context.company,
     context.employee,
     period ? formatZupPeriod_(period) : '',
-    period ? period.year : '',
-    period ? period.month : '',
+    accrualDate ? formatDate_(accrualDate) : '',
+    periodForColumns ? periodForColumns.year : '',
+    periodForColumns ? periodForColumns.month : '',
     dayColumns.workDays,
     dayColumns.paidDays,
     paymentDate ? formatDate_(paymentDate) : '',
@@ -2557,12 +2838,17 @@ function extractZupDayColumns_(cells, section) {
     .map((cell) => String(cell || '').trim())
     .filter(Boolean);
   const periodIndex = compactCells.findIndex((cell) => parseMonthYear_(cell));
-  if (periodIndex < 0) {
-    return result;
-  }
-
-  const workDays = parseZupDayCount_(compactCells[periodIndex + 1]);
-  const paidDays = parseZupDayCount_(compactCells[periodIndex + 3]);
+  const moneyIndex = compactCells.findIndex((cell) => parseMoney_(cell) !== null && isLikelyZupMoneyCell_(cell));
+  const dayCells = compactCells
+    .slice(periodIndex >= 0 ? periodIndex + 1 : 0, moneyIndex >= 0 ? moneyIndex : compactCells.length)
+    .map((cell) => parseZupDayCount_(cell))
+    .filter((days) => days !== null && days > 0 && days <= 31);
+  const workDays = periodIndex >= 0
+    ? parseZupDayCount_(compactCells[periodIndex + 1])
+    : dayCells[0];
+  const paidDays = periodIndex >= 0
+    ? parseZupDayCount_(compactCells[periodIndex + 3])
+    : dayCells[dayCells.length - 1];
   if (workDays !== null && workDays > 0 && workDays <= 31) {
     result.workDays = workDays;
   }
@@ -2662,6 +2948,31 @@ function detectZupCategory_(rowText) {
   return '';
 }
 
+function extractZupCompany_(values) {
+  for (let rowIndex = 0; rowIndex < Math.min(values.length, 30); rowIndex++) {
+    const row = values[rowIndex] || [];
+    const joined = row.join(' ').replace(/\s+/g, ' ').trim();
+    const inline = joined.match(/(?:организация|работодатель)\s*:?\s*(.+)$/i);
+    if (inline && inline[1]) {
+      return cleanZupHeaderValue_(inline[1]);
+    }
+
+    for (let columnIndex = 0; columnIndex < row.length - 1; columnIndex++) {
+      if (/^(организация|работодатель)$/i.test(String(row[columnIndex]).trim())) {
+        return cleanZupHeaderValue_(row[columnIndex + 1]);
+      }
+    }
+  }
+  return '';
+}
+
+function cleanZupHeaderValue_(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+(подразделение|сотрудник|фио)\s*:.*$/i, '')
+    .trim();
+}
+
 function extractZupEmployee_(values) {
   for (let rowIndex = 0; rowIndex < Math.min(values.length, 30); rowIndex++) {
     const row = values[rowIndex];
@@ -2716,10 +3027,23 @@ function extractZupPeriodFromCells_(cells) {
 }
 
 function resolveZupRowPeriod_(segment, context) {
-  if (context.period) {
-    return context.period;
+  return extractZupPeriodFromCells_(segment.cells) || context.period;
+}
+
+function resolveZupAccrualDate_(cells, period, context) {
+  const text = cells.join(' ');
+  const range = text.match(/(\d{1,2})[.](\d{1,2})(?:[.](20\d{2}))?\s*[-–]\s*(\d{1,2})[.](\d{1,2})(?:[.](20\d{2}))?/);
+  if (range) {
+    const year = Number(range[6] || range[3]) || (period && period.year) || (context.period && context.period.year);
+    const date = parseDateValue_(`${range[4]}.${range[5]}.${year}`);
+    if (date) {
+      return date;
+    }
   }
-  return extractZupPeriodFromCells_(segment.cells);
+  if (period && period.year && period.month) {
+    return new Date(period.year, period.month, 0);
+  }
+  return null;
 }
 
 function extractZupPaymentDateFromCells_(cells) {
@@ -2852,7 +3176,8 @@ function writeZupImportSheet_(spreadsheet, rows, skippedFiles) {
 
   writeZupSheetData_(sheet, data);
   if (rows.length) {
-    sheet.getRange(2, 7, rows.length, 2).setNumberFormat('0.00');
+    sheet.getRange(2, ZUP_IMPORT_COLUMNS.accrualDate + 1, rows.length, 1).setNumberFormat('dd.mm.yyyy');
+    sheet.getRange(2, ZUP_IMPORT_COLUMNS.workDays + 1, rows.length, 2).setNumberFormat('0.00');
     sheet.getRange(2, ZUP_IMPORT_COLUMNS.accrued + 1, rows.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
     highlightZupRows_(sheet, rows, 2, ZUP_IMPORT_HEADERS.length, (row) =>
       row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM' ||
@@ -2939,7 +3264,7 @@ function writeZupQualitySheet_(spreadsheet, qualityRows, dryRun) {
     sheet.getRange(1, 1).setNote(`Проверка без перезаписи основных листов. Обновлено: ${new Date()}`);
   }
   if (qualityRows.length) {
-    sheet.getRange(2, 9, qualityRows.length, 6).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    sheet.getRange(2, 10, qualityRows.length, 6).setNumberFormat(SETTINGS.MONEY_FORMAT);
     highlightZupRows_(sheet, qualityRows, 2, ZUP_QUALITY_HEADERS.length, (row) =>
       row[4] && row[4] !== 'OK' && row[4] !== 'Не изменился'
     );
@@ -2980,6 +3305,7 @@ function buildZupQualityRow_(group, parsed, fallbackStatus) {
     group.variants.join('\n'),
     status,
     parsed.rows.length,
+    quality.company,
     quality.employee,
     quality.period,
     moneyOrBlank_(quality.sourceTotals.accrued),
@@ -2989,6 +3315,59 @@ function buildZupQualityRow_(group, parsed, fallbackStatus) {
     moneyOrBlank_(quality.sourceTotals.paid),
     moneyOrBlank_(quality.recognizedTotals.paid),
     warnings.join('\n'),
+  ];
+}
+
+function buildZupGlobalQualityRows_(rows) {
+  const objects = rows.map((row) => ({
+    company: row[ZUP_IMPORT_COLUMNS.company],
+    employee: row[ZUP_IMPORT_COLUMNS.employee],
+    period: normalizeZupImportPeriod_(row[ZUP_IMPORT_COLUMNS.year], row[ZUP_IMPORT_COLUMNS.month], row[ZUP_IMPORT_COLUMNS.period]),
+  }));
+  const quality = buildZupReconstructionQuality_(objects);
+  const rowsOut = [];
+  rowsOut.push(buildZupGlobalQualityRow_(
+    'Организация',
+    quality.companies.length === 1 ? 'OK' : 'Ошибка',
+    quality.companies.length === 1
+      ? `Все расчетные листки относятся к одной организации: ${quality.companies[0]}.`
+      : (quality.companies.length ? `Найдено несколько организаций: ${quality.companies.join(', ')}.` : 'Организация не распознана.')
+  ));
+  rowsOut.push(buildZupGlobalQualityRow_(
+    'Сотрудник',
+    quality.employees.length === 1 ? 'OK' : 'Ошибка',
+    quality.employees.length === 1
+      ? `Все расчетные листки относятся к одному сотруднику: ${quality.employees[0]}.`
+      : (quality.employees.length ? `Найдено несколько сотрудников: ${quality.employees.join(', ')}.` : 'Сотрудник не распознан.')
+  ));
+  rowsOut.push(buildZupGlobalQualityRow_(
+    'Полнота месяцев',
+    quality.missingMonths.length ? 'Ошибка' : 'OK',
+    quality.missingMonths.length
+      ? `Между первым и последним распознанным месяцем есть пропуски: ${quality.missingMonths.join(', ')}.`
+      : 'Пропусков месяцев между первым и последним распознанным периодом не найдено.'
+  ));
+  return rowsOut;
+}
+
+function buildZupGlobalQualityRow_(checkName, status, warning) {
+  return [
+    `QUALITY_GATE:${checkName}`,
+    '',
+    '',
+    '',
+    status,
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    warning,
   ];
 }
 
@@ -3081,6 +3460,7 @@ function buildUnchangedZupResult_(file, rows) {
     rows: normalizedRows,
     skippedFiles: [],
     quality: {
+      company: normalizedRows.length ? normalizedRows[0][ZUP_IMPORT_COLUMNS.company] : '',
       employee: normalizedRows.length ? normalizedRows[0][ZUP_IMPORT_COLUMNS.employee] : '',
       period: normalizedRows.length ? normalizedRows[0][ZUP_IMPORT_COLUMNS.period] : '',
       sourceTotals: buildEmptyZupTotals_(),
@@ -3371,9 +3751,23 @@ function rectangularizeRows_(rows) {
 }
 
 function highlightZupRows_(sheet, rows, startRow, width, predicate) {
+  if (!rows.length) {
+    return;
+  }
+  const backgrounds = rows.map((row) =>
+    new Array(width).fill(predicate(row) ? ZUP_IMPORT_SETTINGS.REVIEW_FILL : SETTINGS.BACKGROUND_DEFAULT)
+  );
+  const range = sheet.getRange(startRow, 1, rows.length, width);
+  if (range.setBackgrounds) {
+    range.setBackgrounds(backgrounds);
+    return;
+  }
   rows.forEach((row, index) => {
     if (predicate(row)) {
-      sheet.getRange(startRow + index, 1, 1, width).setBackground(ZUP_IMPORT_SETTINGS.REVIEW_FILL);
+      const rowRange = sheet.getRange(startRow + index, 1, 1, width);
+      if (rowRange.setBackground) {
+        rowRange.setBackground(ZUP_IMPORT_SETTINGS.REVIEW_FILL);
+      }
     }
   });
 }

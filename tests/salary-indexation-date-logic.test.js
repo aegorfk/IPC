@@ -406,11 +406,11 @@ const calendar = {
   assert.deepStrictEqual(Array.from(htmlRows[1]), ['Оплата по окладу', '21', '89 100,00']);
   const parsedHtml = context.extractZupRowsFromGrid_(htmlRows, 'test.html', 'HTML');
   assert.strictEqual(parsedHtml.length, 1);
-  assert.strictEqual(parsedHtml[0][11], 'Начислено');
-  assert.strictEqual(parsedHtml[0][12], 'Оклад');
-  assert.strictEqual(parsedHtml[0][14], 89100);
-  assert.strictEqual(parsedHtml[0][15], '');
-  assert.strictEqual(parsedHtml[0][16], '');
+  assert.strictEqual(parsedHtml[0][13], 'Начислено');
+  assert.strictEqual(parsedHtml[0][14], 'Оклад');
+  assert.strictEqual(parsedHtml[0][16], 89100);
+  assert.strictEqual(parsedHtml[0][17], '');
+  assert.strictEqual(parsedHtml[0][18], '');
   assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][9], 89100);
   assert.strictEqual(
     context.extractDriveFolderId_('https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?ths=true'),
@@ -440,17 +440,17 @@ const calendar = {
     'HTML'
   );
   assert.strictEqual(parsedZupHtml.length, 3);
-  assert.strictEqual(parsedZupHtml[0][2], 'Вентнагель Ирина Николаевна');
-  assert.strictEqual(parsedZupHtml[0][6], 17);
-  assert.strictEqual(parsedZupHtml[0][7], 17);
-  assert.strictEqual(parsedZupHtml[0][14], 89100);
-  assert.strictEqual(parsedZupHtml[1][12], 'Удержания');
-  assert.strictEqual(parsedZupHtml[1][16], 11583);
-  assert.strictEqual(parsedZupHtml[2][8], '19.01.2024');
-  assert.strictEqual(parsedZupHtml[2][9], 'Банк, вед. № 5 от 19.01.24');
+  assert.strictEqual(parsedZupHtml[0][3], 'Вентнагель Ирина Николаевна');
+  assert.strictEqual(parsedZupHtml[0][8], 17);
+  assert.strictEqual(parsedZupHtml[0][9], 17);
+  assert.strictEqual(parsedZupHtml[0][16], 89100);
+  assert.strictEqual(parsedZupHtml[1][14], 'Удержания');
+  assert.strictEqual(parsedZupHtml[1][18], 11583);
   assert.strictEqual(parsedZupHtml[2][10], '19.01.2024');
-  assert.strictEqual(parsedZupHtml[2][13], 'За первую половину месяца');
-  assert.strictEqual(parsedZupHtml[2][15], 22798.88);
+  assert.strictEqual(parsedZupHtml[2][11], 'Банк, вед. № 5 от 19.01.24');
+  assert.strictEqual(parsedZupHtml[2][12], '19.01.2024');
+  assert.strictEqual(parsedZupHtml[2][15], 'За первую половину месяца');
+  assert.strictEqual(parsedZupHtml[2][17], 22798.88);
   assert.strictEqual(
     context.extractZupPaymentDateFromCells_(['Отпуск основной', '01.10-05.10', '5,00 дн.']),
     null
@@ -471,9 +471,9 @@ const calendar = {
     '13. Расчетный листок О2 янв 2025.html',
     'HTML'
   );
-  assert.strictEqual(conflictingPeriodRows[0][3], '01.2025');
-  assert.strictEqual(conflictingPeriodRows[0][4], 2025);
-  assert.strictEqual(conflictingPeriodRows[0][5], 1);
+  assert.strictEqual(conflictingPeriodRows[0][4], '01.2024');
+  assert.strictEqual(conflictingPeriodRows[0][6], 2024);
+  assert.strictEqual(conflictingPeriodRows[0][7], 1);
 
   const parsedGrid = context.parseZupGrid_(
     context.htmlToZupGrid_(zupHtml),
@@ -505,12 +505,12 @@ const calendar = {
     'HTML'
   );
   assert.strictEqual(mixedSectionRows.length, 2);
-  assert.strictEqual(mixedSectionRows[0][11], 'Начислено');
-  assert.strictEqual(mixedSectionRows[0][12], 'Ежемесячные премии');
-  assert.strictEqual(mixedSectionRows[0][14], 93625);
-  assert.strictEqual(mixedSectionRows[1][11], 'Выплачено');
-  assert.strictEqual(mixedSectionRows[1][12], 'Ежемесячные премии');
-  assert.strictEqual(mixedSectionRows[1][15], 81454);
+  assert.strictEqual(mixedSectionRows[0][13], 'Начислено');
+  assert.strictEqual(mixedSectionRows[0][14], 'Ежемесячные премии');
+  assert.strictEqual(mixedSectionRows[0][16], 93625);
+  assert.strictEqual(mixedSectionRows[1][13], 'Выплачено');
+  assert.strictEqual(mixedSectionRows[1][14], 'Ежемесячные премии');
+  assert.strictEqual(mixedSectionRows[1][17], 81454);
   assert.strictEqual(
     context.detectZupCategory_('Больничный за счет работодателя / Премии, межрасчет'),
     'Больничные'
@@ -625,6 +625,7 @@ const calendar = {
   const model = context.buildZupReconstructionModel_([
     {
       period: { year: 2024, month: 2 },
+      file: '2024_Февраль.png',
       section: 'Начислено',
       category: 'Оклад',
       workDays: 20,
@@ -636,6 +637,7 @@ const calendar = {
     },
     {
       period: { year: 2024, month: 2 },
+      file: '2024_Февраль.png',
       section: 'Начислено',
       category: 'Ежемесячные премии',
       workDays: null,
@@ -647,6 +649,7 @@ const calendar = {
     },
     {
       period: { year: 2024, month: 2 },
+      file: '2024_Февраль.png',
       section: 'Выплачено',
       category: 'Ежемесячные премии',
       workDays: null,
@@ -657,18 +660,20 @@ const calendar = {
       sourceRow: '',
     },
     {
-      period: { year: 2024, month: 7 },
-      section: 'Выплачено',
+      period: { year: 2024, month: 3 },
+      file: '2024_Июль.png',
+      section: 'Начислено',
       category: 'Ежеквартальные премии',
       workDays: null,
       paidDays: null,
-      accrued: null,
-      paid: 54174.5,
+      accrued: 54174.5,
+      paid: null,
       kind: 'Премия / 01.01-31.03',
       sourceRow: 'Премия | 01.01-31.03 | 54 174,50',
     },
     {
       period: { year: 2024, month: 9 },
+      file: '2024_Сентябрь.png',
       section: 'Начислено',
       category: 'Отпуска',
       workDays: null,
@@ -683,7 +688,7 @@ const calendar = {
   ]);
   assert.strictEqual(model.salary[0].amount, 84645);
   assert.strictEqual(model.salary[0].paidDays, 19);
-  assert.strictEqual(model.monthlyPremiums[0].paid, 81454);
+  assert.strictEqual(model.monthlyPremiums[0].accrued, 93625);
   assert.match(context.formatZupPremiumPeriodLabel_(model.monthlyPremiums[0], 'monthly'), /Февраль 2024/);
   assert.match(context.formatZupPremiumPeriodLabel_(model.quarterlyPremiums[0], 'quarterly'), /1 квартал 2024/);
   assert.strictEqual(model.vacations[0].amount, 3006.28);
@@ -694,7 +699,7 @@ const calendar = {
   const quarterlyScaffold = context.buildZupPremiumScaffoldRow_('1 квартал 2024 (январь - март)\nАпрель 2024', 'quarterly');
   assert.strictEqual(quarterlyScaffold.key, '2024-Q1');
   const premiumMap = context.buildZupPremiumScaffoldMap_(model.quarterlyPremiums, 'quarterly');
-  assert.strictEqual(premiumMap['2024-Q1'].paid, 54174.5);
+  assert.strictEqual(premiumMap['2024-Q1'].accrued, 54174.5);
 }
 
 {

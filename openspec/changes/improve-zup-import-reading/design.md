@@ -46,6 +46,8 @@ The current parser now handles real 1C HTML table structure, but the import stil
    - Default model: `google/gemini-3.1-flash-lite`, because the live Polza catalog lists file/image input, structured outputs, long context, and a low prompt/completion price relative to stronger file-capable models.
    - Override: set the Apps Script property `ZUP_VLM_MODEL` to a stronger model such as `google/gemini-3.5-flash` when quality is more important than cost.
    - Trial/repair mode: if deterministic rows do not reconcile with source section totals, the importer retries the file through `ZUP_IMPORT_SETTINGS.VLM_FORCE_MODEL` (`google/gemini-3.5-flash`) and keeps the VLM result only when it improves total validation. A script property can still force specific file-name fragments, and `off` disables that manual force pattern.
+   - Quality gates: extracted rows carry organization, employee, accrual date, and period; quality output verifies a single organization, a single employee, and contiguous monthly coverage between the first and last recognized month.
+   - Reconstruction semantics: salary uses payroll-slip factual worked days and Consultant production-calendar month workdays; premium sheets use accrued premiums by accrual period; vacation rows are built from accrued vacation rows and matched to vacation payment rows within the same source file.
    - Rationale: VLM extraction helps with bad OCR and scanned documents, while deterministic parsing remains cheaper and more reproducible for sources that already expose tables/text.
 
 ## Risks / Trade-offs
@@ -58,3 +60,4 @@ The current parser now handles real 1C HTML table structure, but the import stil
 - VLM cost can grow on large PDFs → Limit direct file payload size, default to a low-cost file-capable model, and allow model override through script properties.
 - Manual review can miss disputed rows → Highlight VLM-derived rows, quality warnings, and diagnostic mismatches with orange fill in the service sheets.
 - Reconstructed target structures can hide missing source fields → Highlight only the disputed input cells in `Из_1С_*` sheets: missing imported amounts/days/dates and VLM-derived values.
+- Trusted automatic fills can be hard to distinguish from formulas → Highlight imported/source-backed cells with green fill, while orange review marks override green.

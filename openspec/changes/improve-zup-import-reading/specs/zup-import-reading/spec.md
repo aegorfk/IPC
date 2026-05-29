@@ -26,11 +26,11 @@ The system SHALL attempt to convert PDF payroll slips to Google Docs using Advan
 - **THEN** the importer records a clear quality warning and does not abort the whole import
 
 ### Requirement: Normalized row metadata
-The system SHALL include work-day, paid-day, payment-statement, and statement-date fields in normalized import rows.
+The system SHALL include work-day, factual worked-day, payment-statement, and statement-date fields in normalized import rows.
 
 #### Scenario: Accrual row has day counts
-- **WHEN** an accrual row contains period, working days, and paid days
-- **THEN** `Импорт_1С_ЗУП` records `Рабочие дни` and `Оплачено дней`
+- **WHEN** an accrual row contains period, working days, and factual worked days
+- **THEN** `Импорт_1С_ЗУП` records `Рабочие дни` and `Факт. отработано дней`
 
 #### Scenario: Payment row has statement text
 - **WHEN** a payment row contains a bank statement number and date
@@ -90,10 +90,16 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 #### Scenario: User populates reconstruction sheets
 - **WHEN** normalized rows exist in `Импорт_1С_ЗУП`
 - **THEN** the system preserves the target sheets' row/period structure as the recalculation scaffold
-- **AND** the system fills `Из_1С_Оклад` with period, day counts, and imported salary accruals
-- **AND** the system fills premium reconstruction sheets with paid amounts matched to scaffold periods while leaving unmatched rows blank
-- **AND** the system fills `Из_1С_Отпуска` with vacation dates, day counts, and imported vacation amounts
+- **AND** the system fills `Из_1С_Оклад` with period, payroll-slip factual worked days, Consultant production-calendar month workdays, and imported salary accruals
+- **AND** the system fills premium reconstruction sheets with accrued premium amounts matched to accrual periods while leaving unmatched rows blank
+- **AND** the system fills `Из_1С_Отпуска` from accrued vacation rows, matching payment dates from vacation payment rows in the same file when possible
 - **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets
+
+#### Scenario: Import rows pass global quality gates
+- **WHEN** payroll-slip rows are imported
+- **THEN** each row stores organization, employee, period, accrual date, year, and month
+- **AND** the quality sheet reports whether all rows belong to one organization and one employee
+- **AND** the quality sheet reports missing months between the first and last recognized import period
 
 ### Requirement: Polza VLM extraction fallback
 The system SHALL optionally use Polza.ai multimodal extraction when deterministic payroll-slip parsing produces no normalized rows.
@@ -102,7 +108,7 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **WHEN** a selected PDF, image, HTML, CSV, Google Doc, or Google Sheet source is read but no import rows are recognized
 - **AND** `POLZA_API_KEY` is configured in Apps Script script properties
 - **THEN** the importer sends the source content to Polza.ai using a cost-optimized default model that supports file/image input and structured outputs
-- **AND** the model response is constrained by a strict JSON Schema for employee, period, totals, row category, row kind, day counts, dates, amounts, evidence text, and confidence
+- **AND** the model response is constrained by a strict JSON Schema for organization, employee, period, accrual date, totals, row category, row kind, day counts, dates, amounts, evidence text, and confidence
 - **AND** recognized VLM rows are normalized into the same `Импорт_1С_ЗУП` schema as deterministic rows
 
 #### Scenario: VLM fallback is unavailable or risky
@@ -134,3 +140,4 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **WHEN** `Из_1С_*` sheets are populated from import rows
 - **THEN** missing imported amounts, dates, and day counts are highlighted with orange fill
 - **AND** cells populated from VLM rows are highlighted with notes naming the source
+- **AND** cells populated from payroll slips or trusted reference data are highlighted with green fill unless an orange review condition applies
