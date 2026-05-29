@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v4-vlm-dedupe',
+  PARSER_VERSION: 'zup-import-v5-vlm-totals',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -1364,7 +1364,7 @@ function mergeZupVlmFallbackParsed_(deterministicParsed, vlmParsed) {
   const vlm = normalizeParsedZupData_(vlmParsed);
   return {
     rows: vlm.rows,
-    totals: hasZupTotals_(deterministic.totals) ? deterministic.totals : vlm.totals,
+    totals: hasZupTotals_(vlm.totals) ? vlm.totals : deterministic.totals,
     employee: vlm.employee || deterministic.employee,
     period: vlm.period || deterministic.period,
     warnings: deterministic.warnings.concat(vlm.warnings),
@@ -1814,8 +1814,12 @@ function normalizeZupVlmSection_(section, row) {
 
 function normalizeZupVlmCategory_(category, text, section) {
   const normalized = String(category || '').trim();
-  if (normalized && normalized !== 'Прочее') {
+  const detected = detectZupCategory_(text || '');
+  if (normalized && !/^(Прочее|Выплаты)$/i.test(normalized)) {
     return normalized;
+  }
+  if (detected) {
+    return detected;
   }
   if (normalizeText_(section) === 'удержано') {
     return 'Удержания';
