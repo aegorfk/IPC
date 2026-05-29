@@ -37,3 +37,10 @@
 - [x] 7.1 Add a menu command that creates adjacent `Из_1С_*` sheets from target tabs
 - [x] 7.2 Preserve headers, formatting, and formulas while clearing fields sourced from payroll slips
 - [x] 7.3 Run local tests and OpenSpec validation, then commit and push
+
+## 8. Reconstruction Sheet Population
+
+- [x] 8.1 Read normalized `Импорт_1С_ЗУП` rows into a reconstruction model
+- [x] 8.2 Fill `Из_1С_Оклад`, premium sheets, and `Из_1С_Отпуска` from imported rows
+- [x] 8.3 Retarget formulas inside `Из_1С_*` sheets to other reconstruction sheets
+- [x] 8.4 Run local tests and OpenSpec validation, then commit and push

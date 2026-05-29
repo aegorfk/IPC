@@ -83,3 +83,13 @@ The system SHALL create adjacent structural sheets that mirror the target calcul
 #### Scenario: User creates one reconstruction sheet
 - **WHEN** the full reconstruction-sheet command exceeds Apps Script time limits
 - **THEN** the user can create any single `Из_1С_*` sheet from a dedicated menu command
+
+### Requirement: Reconstruction sheet population
+The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip import rows without modifying the original target sheets.
+
+#### Scenario: User populates reconstruction sheets
+- **WHEN** normalized rows exist in `Импорт_1С_ЗУП`
+- **THEN** the system fills `Из_1С_Оклад` with period, day counts, and imported salary accruals
+- **AND** the system fills premium reconstruction sheets with imported periods and paid amounts
+- **AND** the system fills `Из_1С_Отпуска` with vacation dates, day counts, and imported vacation amounts
+- **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets

@@ -610,6 +610,75 @@ const calendar = {
 }
 
 {
+  const model = context.buildZupReconstructionModel_([
+    {
+      period: { year: 2024, month: 2 },
+      section: 'Начислено',
+      category: 'Оклад',
+      workDays: 20,
+      paidDays: 19,
+      accrued: 84645,
+      paid: null,
+      kind: 'Оплата по окладу',
+      sourceRow: '',
+    },
+    {
+      period: { year: 2024, month: 2 },
+      section: 'Начислено',
+      category: 'Ежемесячные премии',
+      workDays: null,
+      paidDays: null,
+      accrued: 93625,
+      paid: null,
+      kind: 'Премия',
+      sourceRow: '',
+    },
+    {
+      period: { year: 2024, month: 2 },
+      section: 'Выплачено',
+      category: 'Ежемесячные премии',
+      workDays: null,
+      paidDays: null,
+      accrued: null,
+      paid: 81454,
+      kind: 'Премии, межрасчет',
+      sourceRow: '',
+    },
+    {
+      period: { year: 2024, month: 7 },
+      section: 'Выплачено',
+      category: 'Ежеквартальные премии',
+      workDays: null,
+      paidDays: null,
+      accrued: null,
+      paid: 54174.5,
+      kind: 'Премия / 01.01-31.03',
+      sourceRow: 'Премия | 01.01-31.03 | 54 174,50',
+    },
+    {
+      period: { year: 2024, month: 9 },
+      section: 'Начислено',
+      category: 'Отпуска',
+      workDays: null,
+      paidDays: null,
+      accrued: 3006.28,
+      paid: null,
+      paymentDate: new Date(2024, 8, 20),
+      statementDate: new Date(2024, 8, 20),
+      kind: 'Отпуск основной / 1,00 дн.',
+      sourceRow: '',
+    },
+  ]);
+  assert.strictEqual(model.salary[0].amount, 84645);
+  assert.strictEqual(model.salary[0].paidDays, 19);
+  assert.strictEqual(model.monthlyPremiums[0].paid, 81454);
+  assert.match(context.formatZupPremiumPeriodLabel_(model.monthlyPremiums[0], 'monthly'), /Февраль 2024/);
+  assert.match(context.formatZupPremiumPeriodLabel_(model.quarterlyPremiums[0], 'quarterly'), /1 квартал 2024/);
+  assert.strictEqual(model.vacations[0].amount, 3006.28);
+  assert.strictEqual(model.vacations[0].days, 1);
+}
+
+{
   const existing = {
     formulas: [[''], ['=SUM(K3:K33)']],
     notes: [[''], ['manual total']],

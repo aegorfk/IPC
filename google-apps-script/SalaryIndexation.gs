@@ -212,6 +212,8 @@ function onOpen() {
     .addItem('Создать Из_1С_Ежегодные', 'createZupAnnualReconstructionSheet')
     .addItem('Создать Из_1С_Отпуска', 'createZupVacationReconstructionSheet')
     .addSeparator()
+    .addItem('Заполнить вкладки Из_1С из импорта', 'populateZupReconstructionSheets')
+    .addSeparator()
     .addItem('Очистить импорт 1С', 'clearZupImportSheets')
     .addToUi();
 }
