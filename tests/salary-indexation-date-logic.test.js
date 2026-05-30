@@ -74,6 +74,42 @@ const calendar = {
 }
 
 {
+  const row = [];
+  row[2] = '15.02.2024';
+  row[3] = 2024;
+  row[4] = 'фев';
+  const table = {
+    layout: context.getSheetLayout_('Оклад'),
+    columns: {
+      paymentDate: 2,
+      year: 3,
+      month: 4,
+    },
+  };
+  const due = context.getRowPenaltyDueDate_(row, table, calendar);
+  assert.strictEqual(context.formatDate_(due.date), '15.02.2024');
+  assert.strictEqual(due.source, 'колонка C');
+}
+
+{
+  const row = [];
+  row[2] = '05.02.2024\n15.02.2024';
+  row[3] = 2024;
+  row[4] = 'фев';
+  const table = {
+    layout: context.getSheetLayout_('Оклад'),
+    columns: {
+      paymentDate: 2,
+      year: 3,
+      month: 4,
+    },
+  };
+  const due = context.getRowPenaltyDueDate_(row, table, calendar);
+  assert.strictEqual(context.formatDate_(due.date), '15.02.2024');
+  assert.strictEqual(due.source, 'колонка C, последняя из 2 дат ведомостей');
+}
+
+{
   const start = context.getIndexationStartDate_(2025, 12, calendar);
   assert.strictEqual(context.formatDate_(start), '31.12.2025');
 }
@@ -550,7 +586,7 @@ const calendar = {
   assert.strictEqual(reconstructionConfigs.length, 5);
   assert.deepStrictEqual(
     Array.from(reconstructionConfigs.find((config) => config.targetSheetName === 'Из_1С_Оклад').clearColumns),
-    ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L']
+    ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L', 'Q', 'R']
   );
   assert.strictEqual(typeof context.createSingleZupReconstructionSheet_, 'function');
   assert.strictEqual(typeof context.copyZupReconstructionStructure_, 'function');

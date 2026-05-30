@@ -52,3 +52,4 @@
 - [x] 9.3 Add VLM audit output, model/settings visibility, and documentation
 - [x] 9.4 Run local tests and OpenSpec validation, then commit and push
 - [x] 9.5 Add forced VLM trial mode and orange highlighting for disputed import rows
+- [x] 9.6 Add resumable batch import for slow VLM/PDF recognition and Art. 236 payment-statement date wiring

@@ -112,7 +112,8 @@ const SETTINGS = {
 const HEADER_ALIASES = {
   year: ['год', 'расчетный период год', 'расчётный период год'],
   month: ['мес', 'месяц', 'расчетный период мес', 'расчётный период мес'],
-  paymentDate: ['дата выплаты', 'дата выплаты премии', 'дата выплаты отпуск', 'дата выплаты отпуска'],
+  paymentDate: ['дата выплаты', 'дата выплаты премии', 'дата выплаты отпуск', 'дата выплаты отпуска', 'дата ведомости выплат'],
+  paymentStatement: ['ведомости выплат', 'ведомость выплаты', 'ведомость'],
   unpaidSalary: ['недоплата по окладу', 'невыплаченный оклад', 'невыплаченная часть оклада', 'недоплата по отпускным выплатам'],
   target: ['сумма индексации недоплаты', 'сумма индексации самой недоплаты'],
   totalUnderpayment: ['общая недоплата по окладу'],
@@ -204,6 +205,8 @@ function onOpen() {
     .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
     .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
+    .addItem('Продолжить пакетный импорт', 'resumeZupFolderImport')
+    .addItem('Остановить пакетный импорт', 'cancelZupFolderImport')
     .addItem('Проверить VLM настройки', 'showZupVlmSettings')
     .addItem('Создать все вкладки структуры из 1С', 'createZupReconstructionSheets')
     .addSeparator()
@@ -556,14 +559,15 @@ function updateUnpaidSalaryIndexationCore_(params) {
       return;
     }
 
+    const penaltyDue = getRowPenaltyDueDate_(row, table, productionCalendar);
     const penaltyResult = calculateSalaryCompensation_(
       totalUnderpayment,
-      startDate,
+      penaltyDue.date,
       penaltyEnd.date,
       compensationRates
     );
     penaltyValues.push([penaltyResult.amount]);
-    penaltyNotes.push([buildPenaltyNote_(penaltyResult, startDate, penaltyEnd, totalUnderpayment, table.layout)]);
+    penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
     calculated++;
   });
@@ -609,6 +613,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
 
   values.forEach((row, rowIndex) => {
     const startDate = getRowStartDate_(row, table.columns, table.layout, productionCalendar);
+    const penaltyDue = getRowPenaltyDueDate_(row, table, productionCalendar);
     const unpaidSalary = parseMoney_(row[table.columns.unpaidSalary]);
 
     if (!startDate || unpaidSalary === null) {
@@ -650,12 +655,12 @@ function updateUnpaidSalaryIndexationCore_(params) {
 
     const penaltyResult = calculateSalaryCompensation_(
       totalUnderpayment,
-      startDate,
+      penaltyDue.date,
       penaltyEnd.date,
       compensationRates
     );
     penaltyValues.push([penaltyResult.amount]);
-    penaltyNotes.push([buildPenaltyNote_(penaltyResult, startDate, penaltyEnd, totalUnderpayment, table.layout)]);
+    penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
   });
 
@@ -752,6 +757,8 @@ function findTable_(sheet) {
         correctAmount: layout.correctAmountColumn ? columnLetterToIndex_(layout.correctAmountColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAmount),
         correctAnnualSalary: layout.correctAnnualSalaryColumn ? columnLetterToIndex_(layout.correctAnnualSalaryColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAnnualSalary),
         vacationStartDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationStartDate),
+        paymentDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentDate),
+        paymentStatement: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentStatement),
         annualPremiumYear: resolveOptionalColumn_(headerValues, HEADER_ALIASES.annualPremiumYear),
         target: columnLetterToIndex_(layout.targetColumn),
         totalUnderpayment: columnLetterToIndex_(layout.totalUnderpaymentColumn),
@@ -1248,10 +1255,11 @@ function buildResultNote_(result, startDate, calculationEnd) {
   return lines.join('\n');
 }
 
-function buildPenaltyNote_(result, dueDate, penaltyEnd, principal, layout) {
+function buildPenaltyNote_(result, dueDate, penaltyEnd, principal, layout, dueDateSource) {
   const lines = [
     `Сумма для пеней: ${principal} (колонка ${layout.totalUnderpaymentColumn}, "${layout.totalLabel}")`,
     `Установленная дата выплаты: ${formatDate_(dueDate)}`,
+    `Источник даты выплаты: ${dueDateSource || 'период строки'}`,
     `Период пеней: ${formatDate_(addDays_(dueDate, 1))} - ${formatDate_(penaltyEnd.date)}`,
     `Дата окончания: ${penaltyEnd.source}`,
     `Формула: ${layout.totalLabel} x ставка / 100 / 150 x дни задержки`,
@@ -1297,6 +1305,51 @@ function parseRowPeriod_(row, columns) {
 function getRowStartDate_(row, columns, layout, productionCalendar) {
   const period = parseRowPeriod_(row, columns);
   return period ? getIndexationStartDate_(period.year, period.month, productionCalendar) : null;
+}
+
+function getRowPenaltyDueDate_(row, table, productionCalendar) {
+  if (Number.isInteger(table.columns.paymentDate)) {
+    const parsed = parsePaymentDateCell_(row[table.columns.paymentDate]);
+    if (parsed.date) {
+      return {
+        date: parsed.date,
+        source: parsed.count > 1
+          ? `колонка ${indexToColumnLetter_(table.columns.paymentDate)}, последняя из ${parsed.count} дат ведомостей`
+          : `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
+      };
+    }
+  }
+
+  const date = getRowStartDate_(row, table.columns, table.layout, productionCalendar);
+  return {
+    date,
+    source: 'период строки, 5-е число следующего месяца с переносом на рабочий день',
+  };
+}
+
+function parsePaymentDateCell_(value) {
+  if (value instanceof Date) {
+    return { date: value, count: 1 };
+  }
+
+  const text = String(value || '');
+  const dates = [];
+  const numericPattern = /(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?/g;
+  let numericMatch;
+  while ((numericMatch = numericPattern.exec(text)) !== null) {
+    const parsed = buildParsedDate_(numericMatch[1], numericMatch[2], numericMatch[3], new Date().getFullYear());
+    if (parsed && parsed.date) {
+      dates.push(parsed.date);
+    }
+  }
+
+  if (dates.length) {
+    dates.sort((left, right) => Number(left) - Number(right));
+    return { date: dates[dates.length - 1], count: dates.length };
+  }
+
+  const fallback = parseDateValue_(value);
+  return { date: fallback, count: fallback ? 1 : 0 };
 }
 
 function getVacationEventDate_(row, table) {

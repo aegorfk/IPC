@@ -121,6 +121,13 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, warnings, and the raw structured JSON
 - **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation
 
+#### Scenario: VLM import exceeds one Apps Script execution
+- **WHEN** the user starts normal or forced payroll-slip import and the folder requires slow VLM/PDF processing
+- **THEN** the importer processes a bounded batch of files, persists the next group index in script properties, writes partial import/quality/state output, and schedules a time-driven trigger to continue
+- **AND** the quality sheet reports `QUALITY_GATE:Пакетный импорт` as `В работе` until all selected groups are processed
+- **AND** summary and diagnostics are refreshed after the final batch completes
+- **AND** the user can manually continue or cancel the active batch import from the menu
+
 #### Scenario: User forces VLM for selected files
 - **WHEN** `ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN` or `ZUP_VLM_FORCE_PATTERN` contains a file-name fragment or `*`
 - **THEN** matching selected files are extracted through VLM even if deterministic parsing produced rows
@@ -141,3 +148,4 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **THEN** missing imported amounts, dates, and day counts are highlighted with orange fill
 - **AND** cells populated from VLM rows are highlighted with notes naming the source
 - **AND** cells populated from payroll slips or trusted reference data are highlighted with green fill unless an orange review condition applies
+- **AND** payment statement names and statement dates are populated in auxiliary columns so Art. 236 compensation uses the actual statement payment date when available
