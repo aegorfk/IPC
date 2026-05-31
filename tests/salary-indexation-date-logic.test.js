@@ -130,6 +130,8 @@ const calendar = {
   assert.strictEqual(context.isGeneratedSheetName_('Из_1С_Оклад'), true);
   assert.strictEqual(context.isGeneratedSheetName_('Проверка'), false);
   assert.strictEqual(context.isGeneratedSheetName_('Оклад'), false);
+  assert.strictEqual(context.getSheetLayout_('Из_1С_Ежемесячные').id, 'monthlyPremiums');
+  assert.strictEqual(context.getSheetLayout_('Из_1С_Отпуска').id, 'vacation');
 }
 
 {
@@ -652,9 +654,31 @@ const calendar = {
   const dryRun = context.importZupFolderCore_(fakeSpreadsheet, 'folder-id', { dryRun: true });
   assert.strictEqual(dryRun.rows.length, 1);
   assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Качество']), true);
+  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_QG']), true);
   assert.strictEqual(Boolean(sheetWrites['Импорт_1С_ЗУП']), false);
   assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Свод']), false);
   assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Диагностика']), false);
+}
+
+{
+  const rows = [
+    ['2025_Январь.png', 'Polza VLM', '', 'Вентнагель Ирина Николаевна', '01.2025', '', 2025, 1, '', '', '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 89100, '', '', ''],
+    ['2026_Февраль.png', 'Polza VLM', 'БИЗНЕС СИСТЕМА ТЕЛЕХАУС ООО', 'Вентнагель Ирина Николаевна', '02.2026', '', 2026, 2, '', '', '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 33723, '', '', ''],
+    ['2024_Декабрь.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна (000р9)', '12.2024', '', 2024, 12, '', '', '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 89100, '', '', ''],
+    ['2024_Ноябрь.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '11.2024', '', 2024, 11, '', '', '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 89100, '', '', ''],
+  ];
+  const qgRows = context.buildZupQualityGateRows_(rows, []);
+  assert.ok(qgRows.some((row) => row[0] === 'Организация' && row[5] === 'БИЗНЕС СИСТЕМА ТЕЛЕХАУС ООО'));
+  assert.ok(qgRows.some((row) => row[0] === 'Организация' && row[4] === '01.2025'));
+  assert.ok(qgRows.some((row) => row[0] === 'Сотрудник' && /нормализованы/.test(row[8])));
+  const quality = context.buildZupReconstructionQuality_(rows.map((row) => ({
+    company: row[2],
+    employee: row[3],
+    period: { year: row[6], month: row[7] },
+  })));
+  assert.strictEqual(quality.mainCompany, 'О2 КЛАУД ООО');
+  assert.strictEqual(quality.mainEmployee, 'Вентнагель Ирина Николаевна');
+  assert.ok(quality.periodIssues['2026-02']);
 }
 
 {

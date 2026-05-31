@@ -53,3 +53,4 @@
 - [x] 9.4 Run local tests and OpenSpec validation, then commit and push
 - [x] 9.5 Add forced VLM trial mode and orange highlighting for disputed import rows
 - [x] 9.6 Add resumable batch import for slow VLM/PDF recognition and Art. 236 payment-statement date wiring
+- [x] 9.7 Add non-blocking QG review sheet, current-run VLM audit reset, and automatic `Из_1С_*` recalculation

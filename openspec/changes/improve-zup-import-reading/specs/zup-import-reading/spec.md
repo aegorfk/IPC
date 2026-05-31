@@ -94,12 +94,14 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 - **AND** the system fills premium reconstruction sheets with accrued premium amounts matched to accrual periods while leaving unmatched rows blank
 - **AND** the system fills `Из_1С_Отпуска` from accrued vacation rows, matching payment dates from vacation payment rows in the same file when possible
 - **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets
+- **AND** the system recalculates `Из_1С_*` sheets after filling them so indexation, vacation annual salary, and Art. 236 columns do not remain stale
 
 #### Scenario: Import rows pass global quality gates
 - **WHEN** payroll-slip rows are imported
 - **THEN** each row stores organization, employee, period, accrual date, year, and month
-- **AND** the quality sheet reports whether all rows belong to one organization and one employee
-- **AND** the quality sheet reports missing months between the first and last recognized import period
+- **AND** the quality sheet reports organization, employee, and missing-month checks as warnings instead of blocking import
+- **AND** `Импорт_1С_QG` lists company mismatches, blank company periods, employee raw-name variants, file warnings, and data-completeness metrics for manual review
+- **AND** reconstruction cells for periods with company or employee quality issues are highlighted with orange fill
 
 ### Requirement: Polza VLM extraction fallback
 The system SHALL optionally use Polza.ai multimodal extraction when deterministic payroll-slip parsing produces no normalized rows.
@@ -119,6 +121,7 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 #### Scenario: VLM fallback is used
 - **WHEN** Polza.ai returns structured extraction data
 - **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, warnings, and the raw structured JSON
+- **AND** a new normal or forced batch import clears the previous VLM audit rows before writing current-run rows
 - **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation
 
 #### Scenario: VLM import exceeds one Apps Script execution
@@ -149,3 +152,4 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 - **AND** cells populated from VLM rows are highlighted with notes naming the source
 - **AND** cells populated from payroll slips or trusted reference data are highlighted with green fill unless an orange review condition applies
 - **AND** payment statement names and statement dates are populated in auxiliary columns so Art. 236 compensation uses the actual statement payment date when available
+- **AND** organization/employee quality issues for a period are highlighted on the relevant reconstruction row without stopping calculation

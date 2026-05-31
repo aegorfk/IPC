@@ -217,6 +217,7 @@ function onOpen() {
     .addItem('Создать Из_1С_Отпуска', 'createZupVacationReconstructionSheet')
     .addSeparator()
     .addItem('Заполнить вкладки Из_1С из импорта', 'populateZupReconstructionSheets')
+    .addItem('Пересчитать вкладки Из_1С', 'updateZupReconstructionIndexation')
     .addSeparator()
     .addItem('Очистить импорт 1С', 'clearZupImportSheets')
     .addToUi();
@@ -314,6 +315,12 @@ function updateVacationIndexation() {
   });
 
   showUpdateResult_(result);
+}
+
+function updateZupReconstructionIndexation() {
+  const spreadsheet = getTargetSpreadsheet_();
+  const results = updateZupReconstructionIndexationSheets_(spreadsheet);
+  showAllUpdateResults_(results);
 }
 
 function showUpdateResult_(result) {
@@ -789,7 +796,7 @@ function findTable_(sheet) {
 }
 
 function getSheetLayout_(sheetName) {
-  const normalizedName = normalizeText_(sheetName);
+  const normalizedName = normalizeText_(String(sheetName || '').replace(/^Из_1С_/i, ''));
   return SETTINGS.SHEET_LAYOUTS.find((layout) =>
     new RegExp(layout.namePattern, 'i').test(normalizedName)
   ) || getDefaultSheetLayout_();
@@ -963,7 +970,10 @@ function getSheetByLayout_(layoutId) {
   const spreadsheet = getTargetSpreadsheet_();
   const sheet = spreadsheet
     .getSheets()
-    .find((candidate) => getSheetLayout_(candidate.getName()).id === layoutId);
+    .find((candidate) =>
+      !isGeneratedSheetName_(candidate.getName()) &&
+      getSheetLayout_(candidate.getName()).id === layoutId
+    );
 
   if (!sheet) {
     throw new Error(`Не найден лист для шаблона "${layoutId}".`);
