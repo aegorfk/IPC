@@ -728,6 +728,18 @@ const calendar = {
       period: { year: 2024, month: 2 },
       file: '2024_Февраль.png',
       section: 'Начислено',
+      category: 'Доплата до оклада',
+      workDays: 1,
+      paidDays: 1,
+      accrued: 4455,
+      paid: null,
+      kind: 'Доплата до оклада за дни отпуска',
+      sourceRow: 'Доплата до оклада за дни отпуска | 1 | 4 455,00',
+    },
+    {
+      period: { year: 2024, month: 2 },
+      file: '2024_Февраль.png',
+      section: 'Начислено',
       category: 'Ежемесячные премии',
       workDays: null,
       paidDays: null,
@@ -775,7 +787,8 @@ const calendar = {
       sourceRow: '',
     },
   ]);
-  assert.strictEqual(model.salary[0].amount, 84645);
+  assert.strictEqual(model.salary[0].amount, 89100);
+  assert.strictEqual(model.salary[0].salaryTopUpAmount, 4455);
   assert.strictEqual(model.salary[0].paidDays, 19);
   assert.strictEqual(model.monthlyPremiums[0].accrued, 93625);
   assert.match(context.formatZupPremiumPeriodLabel_(model.monthlyPremiums[0], 'monthly'), /Февраль 2024/);
@@ -789,6 +802,22 @@ const calendar = {
   assert.strictEqual(quarterlyScaffold.key, '2024-Q1');
   const premiumMap = context.buildZupPremiumScaffoldMap_(model.quarterlyPremiums, 'quarterly');
   assert.strictEqual(premiumMap['2024-Q1'].accrued, 54174.5);
+}
+
+{
+  const rows = [
+    ['2024_Февраль.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '02.2024', '', 2024, 2, 19, 19, '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 84645, '', '', ''],
+    ['2024_Февраль.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '02.2024', '', 2024, 2, 1, 1, '', '', '', 'Начислено', 'Доплата до оклада', 'Доплата до оклада за дни отпуска', 4455, '', '', ''],
+  ];
+  const structure = context.buildZupPaymentStructureRows_(rows);
+  const topUp = structure.find((row) => row[2] === 'Доплата до оклада');
+  assert.ok(topUp);
+  assert.strictEqual(topUp[4], 'salary_top_up');
+  assert.match(topUp[12], /keep_source_rows_separate/);
+  const index = context.buildZupImportAccrualIndex_(rows);
+  const imported = context.getZupImportedSalaryAccrual_(index, { year: 2024, month: 2 });
+  assert.strictEqual(imported.amount, 89100);
+  assert.match(imported.details, /Доплата до оклада/);
 }
 
 {

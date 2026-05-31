@@ -70,6 +70,13 @@ The system SHALL classify salary, premium, vacation, top-up, business trip, sick
 #### Scenario: Special accrual text is parsed
 - **WHEN** a row text contains a known special accrual phrase such as `Командировка`, `Доплата до оклада`, or `НДФЛ`
 - **THEN** the row receives the matching category instead of falling back to salary
+- **AND** `Доплата до оклада` remains a separate import category while being marked as an okладное доначисление for downstream salary-base calculations
+
+#### Scenario: Payment structure JSON is produced
+- **WHEN** normalized payroll-slip rows are written after a full import
+- **THEN** the system writes `Импорт_1С_СтруктураВыплат` with one row per company, section, category, and accrual/payment kind
+- **AND** each structure row includes a JSON object with the calculation role, totals, periods, source files, and `rowPolicy: keep_source_rows_separate`
+- **AND** `Доплата до оклада` receives `calculationRole: salary_top_up`
 
 ### Requirement: Reconstruction target sheets
 The system SHALL create adjacent structural sheets that mirror the target calculation tabs for payroll-slip reconstruction.
@@ -90,7 +97,7 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 #### Scenario: User populates reconstruction sheets
 - **WHEN** normalized rows exist in `Импорт_1С_ЗУП`
 - **THEN** the system preserves the target sheets' row/period structure as the recalculation scaffold
-- **AND** the system fills `Из_1С_Оклад` with period, payroll-slip factual worked days, Consultant production-calendar month workdays, and imported salary accruals
+- **AND** the system fills `Из_1С_Оклад` with period, payroll-slip factual worked days from salary rows, Consultant production-calendar month workdays, and imported salary accruals including separately parsed `Доплата до оклада`
 - **AND** the system fills premium reconstruction sheets with accrued premium amounts matched to accrual periods while leaving unmatched rows blank
 - **AND** the system fills `Из_1С_Отпуска` from accrued vacation rows, matching payment dates from vacation payment rows in the same file when possible
 - **AND** formulas inside `Из_1С_*` sheets reference other `Из_1С_*` sheets instead of the original target sheets

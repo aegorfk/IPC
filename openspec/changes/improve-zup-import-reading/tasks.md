@@ -55,3 +55,4 @@
 - [x] 9.6 Add resumable batch import for slow VLM/PDF recognition and Art. 236 payment-statement date wiring
 - [x] 9.7 Add non-blocking QG review sheet, current-run VLM audit reset, and automatic `Из_1С_*` recalculation
 - [x] 9.8 Add optional Langfuse traces for VLM extraction and quality-gate output
+- [x] 9.9 Add dynamic per-company payment-structure JSON and salary top-up treatment for `Доплата до оклада`
