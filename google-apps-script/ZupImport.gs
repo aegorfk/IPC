@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v11-qg-recalc',
+  PARSER_VERSION: 'zup-import-v12-langfuse',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -20,6 +20,10 @@ const ZUP_IMPORT_SETTINGS = {
   POLZA_API_KEY_PROPERTY: 'POLZA_API_KEY',
   VLM_MODEL_PROPERTY: 'ZUP_VLM_MODEL',
   VLM_FORCE_PATTERN_PROPERTY: 'ZUP_VLM_FORCE_PATTERN',
+  LANGFUSE_ENABLED_PROPERTY: 'ZUP_LANGFUSE_ENABLED',
+  LANGFUSE_BASE_URL_PROPERTY: 'LANGFUSE_BASE_URL',
+  LANGFUSE_PUBLIC_KEY_PROPERTY: 'LANGFUSE_PUBLIC_KEY',
+  LANGFUSE_SECRET_KEY_PROPERTY: 'LANGFUSE_SECRET_KEY',
   POLZA_ENDPOINT: 'https://polza.ai/api/v1/chat/completions',
   VLM_DEFAULT_MODEL: 'google/gemini-3.1-flash-lite',
   VLM_STRONG_MODEL: 'google/gemini-3.5-flash',
@@ -142,6 +146,7 @@ const ZUP_VLM_LOG_HEADERS = [
   'Prompt tokens',
   'Completion tokens',
   'Total tokens',
+  'Langfuse trace',
   'Предупреждения',
   'Сырой JSON',
 ];
@@ -317,6 +322,7 @@ function showZupVlmSettings() {
   const apiKeyConfigured = Boolean(getZupPolzaApiKey_());
   const model = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.VLM_MODEL_PROPERTY) || ZUP_IMPORT_SETTINGS.VLM_DEFAULT_MODEL;
   const forcePattern = getZupVlmForcePattern_();
+  const langfuse = getZupLangfuseConfig_();
   showMessage_(
     [
       `VLM fallback: ${ZUP_IMPORT_SETTINGS.ENABLE_VLM_FALLBACK ? 'включен' : 'выключен'}`,
@@ -324,7 +330,8 @@ function showZupVlmSettings() {
       `Модель: ${model}`,
       `Принудительный VLM: ${forcePattern || 'не задан'}`,
       `Лимит файла: ${Math.round(ZUP_IMPORT_SETTINGS.VLM_MAX_FILE_BYTES / 1024 / 1024)} МБ`,
-      'Ключ задается в Apps Script -> Project Settings -> Script properties.',
+      `Langfuse: ${langfuse.enabled ? 'включен' : 'выключен'}${langfuse.enabled ? ` (${langfuse.baseUrl})` : ''}`,
+      'Ключи задаются в Apps Script -> Project Settings -> Script properties.',
     ].join('\n')
   );
 }
@@ -2624,6 +2631,8 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
     return buildEmptyZupVlmParsed_(file, request.warning, model);
   }
 
+  const trace = createZupLangfuseTraceContext_(file, model, options || {});
+  const startedAt = new Date();
   const response = UrlFetchApp.fetch(ZUP_IMPORT_SETTINGS.POLZA_ENDPOINT, {
     method: 'post',
     contentType: 'application/json',
@@ -2637,14 +2646,34 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
   const code = response.getResponseCode();
   const body = response.getContentText('UTF-8');
   if (code < 200 || code >= 300) {
-    return buildEmptyZupVlmParsed_(file, `Polza VLM вернула HTTP ${code}: ${body.slice(0, 500)}`, model, body);
+    const warning = `Polza VLM вернула HTTP ${code}: ${body.slice(0, 500)}`;
+    sendZupLangfuseVlmTrace_(trace, {
+      status: 'ERROR',
+      statusMessage: warning,
+      request: request.payload,
+      response: body,
+      startedAt,
+      endedAt: new Date(),
+      warnings: [warning],
+    });
+    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
   }
 
   let envelope;
   try {
     envelope = JSON.parse(body);
   } catch (error) {
-    return buildEmptyZupVlmParsed_(file, `Polza VLM вернула не-JSON ответ: ${String(error)}`, model, body);
+    const warning = `Polza VLM вернула не-JSON ответ: ${String(error)}`;
+    sendZupLangfuseVlmTrace_(trace, {
+      status: 'ERROR',
+      statusMessage: warning,
+      request: request.payload,
+      response: body,
+      startedAt,
+      endedAt: new Date(),
+      warnings: [warning],
+    });
+    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
   }
 
   const content = envelope &&
@@ -2653,20 +2682,50 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
     envelope.choices[0].message &&
     envelope.choices[0].message.content;
   if (!content) {
-    return buildEmptyZupVlmParsed_(file, 'Polza VLM не вернула message.content.', model, body);
+    const warning = 'Polza VLM не вернула message.content.';
+    sendZupLangfuseVlmTrace_(trace, {
+      status: 'ERROR',
+      statusMessage: warning,
+      request: request.payload,
+      response: envelope,
+      startedAt,
+      endedAt: new Date(),
+      warnings: [warning],
+    });
+    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
   }
 
   let extracted;
   try {
     extracted = typeof content === 'string' ? JSON.parse(content) : content;
   } catch (error) {
-    return buildEmptyZupVlmParsed_(file, `Polza VLM вернула content, который не парсится как JSON: ${String(error)}`, model, content);
+    const warning = `Polza VLM вернула content, который не парсится как JSON: ${String(error)}`;
+    sendZupLangfuseVlmTrace_(trace, {
+      status: 'ERROR',
+      statusMessage: warning,
+      request: request.payload,
+      response: content,
+      startedAt,
+      endedAt: new Date(),
+      warnings: [warning],
+    });
+    return buildEmptyZupVlmParsed_(file, warning, model, content, trace.traceId);
   }
 
   envelope._zupForceVlm = Boolean(options && options.forceVlm);
   envelope._zupForceReason = options && options.forceReason;
   const parsedVlm = convertPolzaVlmPayloadToZupParsed_(file, extracted, model, envelope);
-  parsedVlm.vlmRows = [buildZupVlmLogRow_(file, model, 'OK', parsedVlm.rows.length, envelope, extracted, parsedVlm.warnings)];
+  sendZupLangfuseVlmTrace_(trace, {
+    status: 'OK',
+    request: request.payload,
+    response: extracted,
+    envelope,
+    startedAt,
+    endedAt: new Date(),
+    rows: parsedVlm.rows,
+    warnings: parsedVlm.warnings,
+  });
+  parsedVlm.vlmRows = [buildZupVlmLogRow_(file, model, 'OK', parsedVlm.rows.length, envelope, extracted, parsedVlm.warnings, trace.traceId)];
   return parsedVlm;
 }
 
@@ -2704,6 +2763,204 @@ function getZupScriptProperty_(name) {
   } catch (error) {
     return '';
   }
+}
+
+function getZupLangfuseConfig_() {
+  const baseUrl = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.LANGFUSE_BASE_URL_PROPERTY).replace(/\/+$/, '');
+  const publicKey = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.LANGFUSE_PUBLIC_KEY_PROPERTY);
+  const secretKey = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.LANGFUSE_SECRET_KEY_PROPERTY);
+  const enabledSetting = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.LANGFUSE_ENABLED_PROPERTY);
+  const disabled = /^(off|false|0|нет|выкл)$/i.test(String(enabledSetting || '').trim());
+  return {
+    enabled: Boolean(baseUrl && publicKey && secretKey && !disabled),
+    baseUrl,
+    publicKey,
+    secretKey,
+  };
+}
+
+function createZupLangfuseTraceContext_(file, model, options) {
+  const fileId = typeof file.getId === 'function' ? file.getId() : '';
+  return {
+    traceId: `zup-${fileId || 'file'}-${Utilities.getUuid()}`,
+    generationId: `zup-gen-${Utilities.getUuid()}`,
+    fileId,
+    fileName: file.getName(),
+    mimeType: file.getMimeType(),
+    model,
+    options: options || {},
+  };
+}
+
+function sendZupLangfuseVlmTrace_(trace, data) {
+  const config = getZupLangfuseConfig_();
+  if (!config.enabled || !trace) {
+    return;
+  }
+
+  const startedAt = data.startedAt || new Date();
+  const endedAt = data.endedAt || new Date();
+  const usage = data.envelope && data.envelope.usage ? data.envelope.usage : {};
+  const level = data.status === 'OK' ? 'DEFAULT' : 'ERROR';
+  const metadata = {
+    parserVersion: ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+    fileId: trace.fileId,
+    fileName: trace.fileName,
+    mimeType: trace.mimeType,
+    forceVlm: Boolean(trace.options && trace.options.forceVlm),
+    forceReason: trace.options && trace.options.forceReason || '',
+    sourceKind: trace.options && trace.options.sourceKind || '',
+    rowCount: data.rows ? data.rows.length : 0,
+    warnings: data.warnings || [],
+    costRub: usage.cost_rub || '',
+  };
+
+  sendZupLangfuseIngestion_(config, [
+    {
+      id: `evt-${Utilities.getUuid()}`,
+      type: 'trace-create',
+      timestamp: startedAt.toISOString(),
+      body: {
+        id: trace.traceId,
+        name: 'zup-vlm-extraction',
+        sessionId: 'zup-import',
+        tags: ['zup', 'vlm', data.status === 'OK' ? 'ok' : 'error'],
+        metadata,
+        input: buildZupLangfuseInput_(trace, data),
+        output: buildZupLangfuseOutput_(data),
+      },
+    },
+    {
+      id: `evt-${Utilities.getUuid()}`,
+      type: 'generation-create',
+      timestamp: startedAt.toISOString(),
+      body: {
+        id: trace.generationId,
+        traceId: trace.traceId,
+        name: 'polza-vlm-payroll-slip',
+        startTime: startedAt.toISOString(),
+        endTime: endedAt.toISOString(),
+        model: trace.model,
+        input: buildZupLangfuseInput_(trace, data),
+        output: buildZupLangfuseOutput_(data),
+        level,
+        statusMessage: data.statusMessage || '',
+        usage: {
+          input: usage.prompt_tokens || 0,
+          output: usage.completion_tokens || 0,
+          total: usage.total_tokens || 0,
+        },
+        usageDetails: {
+          input: usage.prompt_tokens || 0,
+          output: usage.completion_tokens || 0,
+          total: usage.total_tokens || 0,
+        },
+        metadata,
+      },
+    },
+  ]);
+}
+
+function sendZupLangfuseQualityGateTrace_(qgRows) {
+  const config = getZupLangfuseConfig_();
+  if (!config.enabled || !qgRows || !qgRows.length) {
+    return;
+  }
+
+  const traceId = `zup-qg-${Utilities.getUuid()}`;
+  const now = new Date();
+  sendZupLangfuseIngestion_(config, [{
+    id: `evt-${Utilities.getUuid()}`,
+    type: 'trace-create',
+    timestamp: now.toISOString(),
+    body: {
+      id: traceId,
+      name: 'zup-quality-gates',
+      sessionId: 'zup-import',
+      tags: ['zup', 'quality-gate'],
+      metadata: {
+        parserVersion: ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+        issueCount: qgRows.length,
+        issuesByCheck: countZupQGRowsByColumn_(qgRows, 0),
+        issuesBySeverity: countZupQGRowsByColumn_(qgRows, 1),
+      },
+      input: { sheet: ZUP_IMPORT_SETTINGS.QG_SHEET_NAME },
+      output: truncateZupLangfuseValue_(qgRows),
+    },
+  }]);
+}
+
+function countZupQGRowsByColumn_(rows, index) {
+  return rows.reduce((acc, row) => {
+    const key = String(row[index] || 'пусто');
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function sendZupLangfuseIngestion_(config, batch) {
+  try {
+    const response = UrlFetchApp.fetch(`${config.baseUrl}/api/public/ingestion`, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: `Basic ${Utilities.base64Encode(`${config.publicKey}:${config.secretKey}`)}`,
+      },
+      payload: JSON.stringify({ batch }),
+      muteHttpExceptions: true,
+    });
+    const code = response.getResponseCode();
+    if (code < 200 || code >= 300) {
+      Logger.log(`Langfuse ingestion HTTP ${code}: ${response.getContentText('UTF-8').slice(0, 500)}`);
+    }
+  } catch (error) {
+    Logger.log(`Langfuse ingestion skipped: ${String(error)}`);
+  }
+}
+
+function buildZupLangfuseInput_(trace, data) {
+  return {
+    fileName: trace.fileName,
+    mimeType: trace.mimeType,
+    model: trace.model,
+    sourceKind: trace.options && trace.options.sourceKind || '',
+    forceVlm: Boolean(trace.options && trace.options.forceVlm),
+    forceReason: trace.options && trace.options.forceReason || '',
+    prompt: extractZupLangfusePromptText_(data.request),
+  };
+}
+
+function buildZupLangfuseOutput_(data) {
+  return truncateZupLangfuseValue_({
+    status: data.status,
+    statusMessage: data.statusMessage || '',
+    warnings: data.warnings || [],
+    response: data.response || '',
+    rowCount: data.rows ? data.rows.length : '',
+  });
+}
+
+function extractZupLangfusePromptText_(request) {
+  const messages = request && request.messages ? request.messages : [];
+  return messages.map((message) => {
+    const parts = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }];
+    return parts
+      .filter((part) => part && part.type === 'text')
+      .map((part) => part.text || '')
+      .join('\n');
+  }).join('\n\n').slice(0, 12000);
+}
+
+function truncateZupLangfuseValue_(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  if (text.length <= 20000) {
+    return value;
+  }
+  return {
+    truncated: true,
+    chars: text.length,
+    preview: text.slice(0, 20000),
+  };
 }
 
 function buildZupVlmRequest_(file, model, options) {
@@ -3013,7 +3270,7 @@ function normalizeZupVlmTotals_(totals) {
   };
 }
 
-function buildEmptyZupVlmParsed_(file, warning, model, rawJson) {
+function buildEmptyZupVlmParsed_(file, warning, model, rawJson, traceId) {
   const usedModel = model || getZupVlmModel_(file, {});
   return {
     rows: [],
@@ -3022,11 +3279,11 @@ function buildEmptyZupVlmParsed_(file, warning, model, rawJson) {
     company: '',
     period: null,
     warnings: [warning],
-    vlmRows: [buildZupVlmLogRow_(file, usedModel, 'Ошибка', 0, null, rawJson || '', [warning])],
+    vlmRows: [buildZupVlmLogRow_(file, usedModel, 'Ошибка', 0, null, rawJson || '', [warning], traceId)],
   };
 }
 
-function buildZupVlmLogRow_(file, model, status, rowCount, envelope, payload, warnings) {
+function buildZupVlmLogRow_(file, model, status, rowCount, envelope, payload, warnings, traceId) {
   const usage = envelope && envelope.usage ? envelope.usage : {};
   return [
     file.getName(),
@@ -3038,6 +3295,7 @@ function buildZupVlmLogRow_(file, model, status, rowCount, envelope, payload, wa
     usage.prompt_tokens || '',
     usage.completion_tokens || '',
     usage.total_tokens || '',
+    traceId || '',
     (warnings || []).join('\n'),
     typeof payload === 'string' ? payload : JSON.stringify(payload || {}),
   ];
@@ -3991,6 +4249,7 @@ function writeZupQualityGateSheet_(spreadsheet, qgRows) {
       row[1] !== 'Инфо'
     );
   }
+  sendZupLangfuseQualityGateTrace_(qgRows || []);
 }
 
 function buildZupQualityGateRows_(rows, qualityRowsInput) {
@@ -4002,6 +4261,7 @@ function buildZupQualityGateRows_(rows, qualityRowsInput) {
   addZupMissingMonthIssues_(issues, quality);
   addZupFileQualityIssues_(issues, qualityRowsInput);
   addZupCompletenessIssues_(issues, rowObjects);
+  addZupPartialSalaryExplanationIssues_(issues, rowObjects);
   return dedupeZupQGRows_(issues);
 }
 
@@ -4026,9 +4286,12 @@ function convertZupImportArrayToIssueObject_(row) {
     section: row[ZUP_IMPORT_COLUMNS.section],
     category: row[ZUP_IMPORT_COLUMNS.category],
     kind: row[ZUP_IMPORT_COLUMNS.kind],
+    workDays: parseMoney_(row[ZUP_IMPORT_COLUMNS.workDays]),
+    paidDays: parseMoney_(row[ZUP_IMPORT_COLUMNS.paidDays]),
     accrued: parseMoney_(row[ZUP_IMPORT_COLUMNS.accrued]),
     paid: parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]),
     withheld: parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]),
+    sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
   };
 }
 
@@ -4112,6 +4375,64 @@ function addZupCompletenessIssues_(issues, rows) {
     const percent = total ? Math.round(found / total * 100) : 100;
     issues.push(buildZupQGRow_('Заполняемость данных', 'Инфо', '', '', '', '', `${check.name}: найдено ${found} из ${total || found} ожидаемых строк (${percent}%).`, 'Это диагностическая метрика; отсутствие премий может быть нормой.'));
   });
+}
+
+function addZupPartialSalaryExplanationIssues_(issues, rows) {
+  const periods = {};
+  rows.forEach((row) => {
+    if (!row.period || !row.period.year || !row.period.month) {
+      return;
+    }
+    const key = buildZupPeriodKey_(row.period);
+    if (!periods[key]) {
+      periods[key] = {
+        period: row.period,
+        files: {},
+        salaryRows: [],
+        explanationRows: [],
+      };
+    }
+    if (row.file) {
+      periods[key].files[row.file] = true;
+    }
+    if (row.category === 'Оклад' && row.section === 'Начислено') {
+      periods[key].salaryRows.push(row);
+    }
+    if (isZupSalaryAbsenceExplanationRow_(row)) {
+      periods[key].explanationRows.push(row);
+    }
+  });
+
+  Object.keys(periods).forEach((key) => {
+    const group = periods[key];
+    if (!group.salaryRows.length || !group.explanationRows.length) {
+      return;
+    }
+    const details = group.explanationRows
+      .map((row) => {
+        const days = row.workDays || row.paidDays;
+        return `${row.kind || row.category}${days ? ` (${days} дн.)` : ''}`;
+      })
+      .filter(Boolean);
+    issues.push(buildZupQGRow_(
+      'Неполный оклад',
+      'Инфо',
+      Object.keys(group.files).join('\n'),
+      formatZupPeriod_(group.period),
+      '',
+      '',
+      `Окладные дни могут быть меньше рабочих дней месяца: найдены строки ${details.join('; ')}.`,
+      'Это не ошибка распознавания, если сумма оклада рассчитана только за фактически оплаченные окладом дни.'
+    ));
+  });
+}
+
+function isZupSalaryAbsenceExplanationRow_(row) {
+  const text = normalizeText_(`${row.category || ''} ${row.kind || ''} ${row.sourceRow || ''}`);
+  return row.section === 'Начислено' && (
+    row.category === 'Отпуска' ||
+    /больнич|нетрудоспособн|командиров|отпуск без|без сохранения|компенсац.*отпуск/.test(text)
+  );
 }
 
 function buildZupQGRow_(check, severity, file, period, company, employee, problem, action) {

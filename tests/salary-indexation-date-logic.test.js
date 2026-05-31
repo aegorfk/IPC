@@ -682,6 +682,35 @@ const calendar = {
 }
 
 {
+  const fakeFile = {
+    getName: () => '2026_Апрель.png',
+    getMimeType: () => 'image/png',
+  };
+  const row = context.buildZupVlmLogRow_(
+    fakeFile,
+    'google/gemini-3.5-flash',
+    'OK',
+    6,
+    { usage: { cost_rub: 1.23, prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 } },
+    { rows: [] },
+    ['review'],
+    'trace-123'
+  );
+  assert.strictEqual(row[9], 'trace-123');
+  assert.strictEqual(row[10], 'review');
+}
+
+{
+  const rows = [
+    ['2024_Сентябрь.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '09.2024', '', 2024, 9, 19, 19, '', '', '', 'Начислено', 'Оклад', 'Оплата по окладу', 80614.29, '', '', ''],
+    ['2024_Сентябрь.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '09.2024', '', 2024, 9, 1, 1, '', '', '', 'Начислено', 'Отпуска', 'Отпуск основной', 4172.31, '', '', ''],
+    ['2024_Сентябрь.png', 'Polza VLM', 'О2 КЛАУД ООО', 'Вентнагель Ирина Николаевна', '09.2024', '', 2024, 9, 1, 1, '', '', '', 'Начислено', 'Прочее', 'Командировка', 4313.4, '', '', ''],
+  ];
+  const qgRows = context.buildZupQualityGateRows_(rows, []);
+  assert.ok(qgRows.some((row) => row[0] === 'Неполный оклад' && /Отпуск основной/.test(row[8]) && /Командировка/.test(row[8])));
+}
+
+{
   const model = context.buildZupReconstructionModel_([
     {
       period: { year: 2024, month: 2 },

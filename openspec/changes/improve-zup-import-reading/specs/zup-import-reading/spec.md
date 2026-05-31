@@ -100,7 +100,7 @@ The system SHALL populate `Из_1С_*` sheets from normalized payroll-slip impor
 - **WHEN** payroll-slip rows are imported
 - **THEN** each row stores organization, employee, period, accrual date, year, and month
 - **AND** the quality sheet reports organization, employee, and missing-month checks as warnings instead of blocking import
-- **AND** `Импорт_1С_QG` lists company mismatches, blank company periods, employee raw-name variants, file warnings, and data-completeness metrics for manual review
+- **AND** `Импорт_1С_QG` lists company mismatches, blank company periods, employee raw-name variants, file warnings, data-completeness metrics, and partial salary month explanations for manual review
 - **AND** reconstruction cells for periods with company or employee quality issues are highlighted with orange fill
 
 ### Requirement: Polza VLM extraction fallback
@@ -120,9 +120,15 @@ The system SHALL optionally use Polza.ai multimodal extraction when deterministi
 
 #### Scenario: VLM fallback is used
 - **WHEN** Polza.ai returns structured extraction data
-- **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, warnings, and the raw structured JSON
+- **THEN** the system writes a row to `Импорт_1С_VLM` with file, MIME, model, status, row count, usage/cost when supplied, Langfuse trace id when configured, warnings, and the raw structured JSON
 - **AND** a new normal or forced batch import clears the previous VLM audit rows before writing current-run rows
 - **AND** quality warnings mark the rows as VLM-derived and require review against `sourceText` and section-total validation
+
+#### Scenario: Optional Langfuse tracing is configured
+- **WHEN** Script properties contain `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY`
+- **THEN** every VLM extraction emits a Langfuse trace/generation with file metadata, model, token usage, cost, warnings, and structured output preview
+- **AND** every quality-gate write emits a compact Langfuse trace with issue counts by check and severity
+- **AND** Langfuse delivery failures are logged but do not abort import or reconstruction
 
 #### Scenario: VLM import exceeds one Apps Script execution
 - **WHEN** the user starts normal or forced payroll-slip import and the folder requires slow VLM/PDF processing
