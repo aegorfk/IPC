@@ -186,6 +186,8 @@ const MONTHS = {
 
 const AVERAGE_EARNINGS_540_START_DATE = new Date(2025, 8, 1); // 1 сентября 2025
 const STANDARD_ANNUAL_VACATION_DAYS = 28;
+const CLAIM_CALCULATION_START_MARKER = '[[AUTO_CLAIM_CALCULATION_START]]';
+const CLAIM_CALCULATION_END_MARKER = '[[AUTO_CLAIM_CALCULATION_END]]';
 const SALARY_PAYMENT_PARTS = [
   { id: 'firstHalf', label: 'Первая половина месяца' },
   { id: 'secondHalf', label: 'Вторая половина месяца' },
@@ -1891,11 +1893,12 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
   }
   const document = DocumentApp.openById(documentId);
   const body = document.getBody();
-  body.clear();
-  body.appendParagraph('Расчет требований').setHeading(DocumentApp.ParagraphHeading.HEADING1);
+  replaceClaimCalculationAutoBlock_(body);
+  body.appendParagraph(CLAIM_CALCULATION_START_MARKER);
+  body.appendParagraph('Автоматически обновляемый расчет').setHeading(DocumentApp.ParagraphHeading.HEADING2);
   body.appendParagraph(`Дата формирования: ${formatDate_(todayInSpreadsheetTimezone_(Session.getScriptTimeZone()))}`);
 
-  body.appendParagraph('1. Исходные данные').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Исходные данные').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendTable([
     ['Показатель', 'Значение'],
     ['Средний дневной заработок', formatMoneyRu_(params.averageDailyEarning, 2)],
@@ -1904,18 +1907,18 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
     ['Годовая норма отпуска', String(params.annualVacationDays || STANDARD_ANNUAL_VACATION_DAYS)],
   ]);
 
-  body.appendParagraph('2. Вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendParagraph(
     `Сумма среднего заработка за время вынужденного прогула: ${formatMoneyRu_(params.averageDailyEarning, 2)} x ${result.workingDays} раб. дн. = ${formatMoneyRu_(result.wageAmount, 2)}.`
   );
 
-  body.appendParagraph('3. Материальная ответственность по ст. 236 ТК РФ').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Материальная ответственность по ст. 236 ТК РФ').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendParagraph(
     `Долг по среднему заработку возникает ежедневно. Пени считаются отдельно по каждому дневному долгу со следующего календарного дня после соответствующего рабочего дня. Итого пени: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
   );
   body.appendTable(buildForcedAbsenceDocTableRows_(result, params));
 
-  body.appendParagraph('4. Накопленные отпуска за вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Накопленные отпуска за вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendParagraph(
     `Накопленные дни отпуска: ${formatMoneyRu_(result.annualVacationDays, 0)} / 365 x ${inclusiveDays_(params.startDate, params.endDate)} кал. дн. = ${formatMoneyRu_(result.vacationDays, 6)} дн.`
   );
@@ -1923,7 +1926,7 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
     `Денежная оценка накопленного отпуска: ${formatMoneyRu_(params.averageDailyEarning, 2)} x ${formatMoneyRu_(result.vacationDays, 6)} = ${formatMoneyRu_(result.vacationAmount, 2)}.`
   );
 
-  body.appendParagraph('5. Итого').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph('Итого').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendTable([
     ['Требование', 'Сумма'],
     ['Средний заработок за вынужденный прогул', formatMoneyRu_(result.wageAmount, 2)],
@@ -1931,7 +1934,33 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
     ['Накопленные отпуска', formatMoneyRu_(result.vacationAmount, 2)],
     ['Итого', formatMoneyRu_(result.amount, 2)],
   ]);
+  body.appendParagraph(CLAIM_CALCULATION_END_MARKER);
   document.saveAndClose();
+}
+
+function replaceClaimCalculationAutoBlock_(body) {
+  const start = findBodyParagraphByText_(body, CLAIM_CALCULATION_START_MARKER);
+  const end = findBodyParagraphByText_(body, CLAIM_CALCULATION_END_MARKER);
+  if (!start || !end || start.index > end.index) {
+    return;
+  }
+  for (let index = end.index; index >= start.index; index--) {
+    body.removeChild(body.getChild(index));
+  }
+}
+
+function findBodyParagraphByText_(body, text) {
+  for (let index = 0; index < body.getNumChildren(); index++) {
+    const child = body.getChild(index);
+    if (
+      child.getType &&
+      child.getType() === DocumentApp.ElementType.PARAGRAPH &&
+      child.asParagraph().getText() === text
+    ) {
+      return { child, index };
+    }
+  }
+  return null;
 }
 
 function buildForcedAbsenceDocTableRows_(result, params) {
