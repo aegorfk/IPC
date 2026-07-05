@@ -353,7 +353,7 @@ function fillClaimCalculationDocs() {
   );
 }
 
-function calculateClaimCalculationResult_(spreadsheet, params) {
+function calculateClaimCalculationResult_(spreadsheet, params, labelValues) {
   if (!params.startDate || !params.endDate || params.endDate < params.startDate) {
     return {
       ready: false,
@@ -362,7 +362,7 @@ function calculateClaimCalculationResult_(spreadsheet, params) {
   }
   const productionCalendar = loadProductionCalendar_();
   const averageDailyEarning = params.averageDailyEarning ||
-    inferAverageDailyEarningFromSheet_(spreadsheet, params.startDate, params.endDate, productionCalendar);
+    inferAverageDailyEarningFromSheet_(spreadsheet, params.startDate, params.endDate, productionCalendar, labelValues);
   if (!averageDailyEarning) {
     return {
       ready: false,
@@ -384,13 +384,20 @@ function calculateClaimCalculationResult_(spreadsheet, params) {
 
 function recalculateForcedAbsenceLiabilityAndVacations() {
   const spreadsheet = getTargetSpreadsheet_();
-  const params = readClaimCalculationParams_(spreadsheet);
-  const calculated = calculateClaimCalculationResult_(spreadsheet, params);
+  const sheet = getTargetSheet_();
+  const labelValues = scanSheetLabelValues_(sheet, {
+    rows: 80,
+    columns: 25,
+    includeRichText: false,
+  });
+  const params = readClaimCalculationParamsFromLabelValues_(labelValues);
+  const calculated = calculateClaimCalculationResult_(spreadsheet, params, labelValues);
   if (!calculated.ready) {
     showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета.');
     return;
   }
-  const written = writeClaimCalculationResultToSheet_(spreadsheet, calculated.result);
+  const written = writeClaimCalculationResultToSheet_(sheet, calculated.result, labelValues);
+  SpreadsheetApp.flush();
   showMessage_(
     `Таблица пересчитана: прогул ${formatMoneyRu_(calculated.result.wageAmount, 2)}, матответственность ${formatMoneyRu_(calculated.result.penaltyAmount, 2)}, отпуск ${formatMoneyRu_(calculated.result.vacationAmount, 2)}. Обновлено ячеек: ${written}.`
   );
@@ -1828,6 +1835,10 @@ function formatSalaryPaymentScheduleItem_(item) {
 
 function readClaimCalculationParams_(spreadsheet) {
   const labelValues = scanSpreadsheetLabelValues_(spreadsheet);
+  return readClaimCalculationParamsFromLabelValues_(labelValues);
+}
+
+function readClaimCalculationParamsFromLabelValues_(labelValues) {
   return {
     docUrl: findFirstLabeledDocUrl_(labelValues, [
       'расчет требований',
@@ -1883,8 +1894,8 @@ function collectClaimSummaryValues_(labelValues) {
     .filter(Boolean);
 }
 
-function inferAverageDailyEarningFromSheet_(spreadsheet, startDate, endDate, productionCalendar) {
-  const currentForcedAbsenceAmount = findFirstLabeledMoney_(scanSpreadsheetLabelValues_(spreadsheet), [
+function inferAverageDailyEarningFromSheet_(spreadsheet, startDate, endDate, productionCalendar, labelValues) {
+  const currentForcedAbsenceAmount = findFirstLabeledMoney_(labelValues || scanSpreadsheetLabelValues_(spreadsheet), [
     'сумма прогул',
     'сумма прогула',
   ]);
@@ -1895,19 +1906,23 @@ function inferAverageDailyEarningFromSheet_(spreadsheet, startDate, endDate, pro
   return workingDays > 0 ? roundMoney_(currentForcedAbsenceAmount / workingDays) : null;
 }
 
-function writeClaimCalculationResultToSheet_(spreadsheet, result) {
-  const labelValues = scanSpreadsheetLabelValues_(spreadsheet);
+function writeClaimCalculationResultToSheet_(sheetOrSpreadsheet, result, labelValues) {
+  const effectiveLabelValues = labelValues || (
+    sheetOrSpreadsheet && sheetOrSpreadsheet.getSheets
+      ? scanSpreadsheetLabelValues_(sheetOrSpreadsheet)
+      : scanSheetLabelValues_(sheetOrSpreadsheet, { rows: 80, columns: 25, includeRichText: false })
+  );
   let written = 0;
-  written += writeFirstLabeledValue_(labelValues, [
+  written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма прогул',
     'сумма прогула',
   ], result.wageAmount);
-  written += writeFirstLabeledValue_(labelValues, [
+  written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма матотв',
     'сумма материальной ответственности',
     'матответствен',
   ], result.penaltyAmount);
-  written += writeFirstLabeledValue_(labelValues, [
+  written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма отпуска',
     'сумма отпуск',
   ], result.vacationAmount);
@@ -1926,34 +1941,45 @@ function writeFirstLabeledValue_(labelValues, aliases, value) {
 function scanSpreadsheetLabelValues_(spreadsheet) {
   const result = [];
   spreadsheet.getSheets().forEach((sheet) => {
-    const rows = Math.min(sheet.getLastRow(), 120);
-    const columns = Math.min(sheet.getLastColumn(), 30);
-    if (rows <= 0 || columns <= 0) {
-      return;
-    }
-    const range = sheet.getRange(1, 1, rows, columns);
-    const values = range.getValues();
-    const displayValues = range.getDisplayValues();
-    const richTextValues = range.getRichTextValues ? range.getRichTextValues() : null;
-    for (let row = 0; row < rows; row++) {
-      for (let column = 0; column < columns; column++) {
-        const label = normalizeText_(displayValues[row][column]).replace(/:$/, '');
-        if (!label) {
-          continue;
-        }
-        const candidates = [];
-        collectNearbyLabelCandidates_(candidates, values, displayValues, richTextValues, row, column, rows, columns);
-        result.push({
-          sheet,
-          sheetName: sheet.getName(),
-          row,
-          column,
-          label,
-          values: candidates.filter((value) => value !== null && value !== undefined && value !== ''),
-        });
-      }
-    }
+    Array.prototype.push.apply(result, scanSheetLabelValues_(sheet, {
+      rows: 120,
+      columns: 30,
+      includeRichText: true,
+    }));
   });
+  return result;
+}
+
+function scanSheetLabelValues_(sheet, options) {
+  const settings = options || {};
+  const rows = Math.min(sheet.getLastRow(), settings.rows || 120);
+  const columns = Math.min(sheet.getLastColumn(), settings.columns || 30);
+  if (rows <= 0 || columns <= 0) {
+    return [];
+  }
+  const range = sheet.getRange(1, 1, rows, columns);
+  const values = range.getValues();
+  const displayValues = range.getDisplayValues();
+  const richTextValues = settings.includeRichText && range.getRichTextValues ? range.getRichTextValues() : null;
+  const result = [];
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const label = normalizeText_(displayValues[row][column]).replace(/:$/, '');
+      if (!label) {
+        continue;
+      }
+      const candidates = [];
+      collectNearbyLabelCandidates_(candidates, values, displayValues, richTextValues, row, column, rows, columns);
+      result.push({
+        sheet,
+        sheetName: sheet.getName(),
+        row,
+        column,
+        label,
+        values: candidates.filter((value) => value !== null && value !== undefined && value !== ''),
+      });
+    }
+  }
   return result;
 }
 

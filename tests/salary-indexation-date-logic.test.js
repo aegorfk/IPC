@@ -1547,6 +1547,59 @@ const calendar = {
 }
 
 {
+  const values = [
+    ['', 'СУММА ПРОГУЛ:', ''],
+    ['', 'СУММА МАТОТВ:', ''],
+    ['', 'СУММА ОТПУСКА:', ''],
+  ];
+  const formats = {};
+  const fakeSheet = {
+    getName: () => 'Расчет',
+    getLastRow: () => values.length,
+    getLastColumn: () => values[0].length,
+    getRange(row, column, rowCount, columnCount) {
+      if (rowCount && columnCount) {
+        return {
+          getValues: () => values
+            .slice(row - 1, row - 1 + rowCount)
+            .map((sourceRow) => sourceRow.slice(column - 1, column - 1 + columnCount)),
+          getDisplayValues: () => values
+            .slice(row - 1, row - 1 + rowCount)
+            .map((sourceRow) => sourceRow
+              .slice(column - 1, column - 1 + columnCount)
+              .map((value) => String(value || ''))),
+        };
+      }
+      return {
+        setValue(value) {
+          values[row - 1][column - 1] = value;
+          return this;
+        },
+        setNumberFormat(format) {
+          formats[`${row}:${column}`] = format;
+          return this;
+        },
+      };
+    },
+  };
+  const labelValues = context.scanSheetLabelValues_(fakeSheet, {
+    rows: 20,
+    columns: 10,
+    includeRichText: false,
+  });
+  const written = context.writeClaimCalculationResultToSheet_(fakeSheet, {
+    wageAmount: 9463331.26,
+    penaltyAmount: 4350082.78,
+    vacationAmount: 1075992.12,
+  }, labelValues);
+  assert.strictEqual(written, 3);
+  assert.strictEqual(values[0][2], 9463331.26);
+  assert.strictEqual(values[1][2], 4350082.78);
+  assert.strictEqual(values[2][2], 1075992.12);
+  assert.strictEqual(formats['1:3'], '#,##0.00');
+}
+
+{
   assert.strictEqual(
     context.extractGoogleDocUrl_('https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit?usp=sharing'),
     'https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit'
