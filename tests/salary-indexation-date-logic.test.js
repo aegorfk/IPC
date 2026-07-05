@@ -1431,6 +1431,16 @@ const calendar = {
   const expectedVacationAmount = Math.round((1000 * expectedVacationDays + Number.EPSILON) * 100) / 100;
   assert.strictEqual(result.vacationAmount, expectedVacationAmount);
   assert.strictEqual(result.amount, 4000 + 4 + expectedVacationAmount);
+  const tableRows = context.buildForcedAbsenceCalculationTableRows_(
+    result,
+    new Date(2024, 1, 24),
+    new Date(2024, 1, 29),
+    28
+  );
+  assert.strictEqual(tableRows.length, 4);
+  assert.strictEqual(context.formatDate_(tableRows[0][0]), '26.02.2024');
+  assert.strictEqual(tableRows[0][1], 1000);
+  assert.strictEqual(tableRows[0][5], 2);
 }
 
 {
@@ -1513,6 +1523,10 @@ const calendar = {
     'https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit'
   );
   assert.strictEqual(context.isDetailedCompensationDocLabel_('Расписанный расчёт:'), true);
+  assert.strictEqual(
+    context.extractGoogleDocId_('https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit?tab=t.0#heading=h.gu6y48a4iy08'),
+    '1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE'
+  );
   assert.strictEqual(context.formatMoneyRu_(7624537.92, 2), '7 624 537,92');
   assert.strictEqual(context.formatMoneyRu_(3626.6667, 3), '3 626,667');
   assert.strictEqual(

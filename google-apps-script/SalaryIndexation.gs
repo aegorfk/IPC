@@ -3,6 +3,7 @@ const SETTINGS = {
   SHEET_NAME: '',
   SOURCE_PAGE_URL: 'https://calc.consultant.ru/ind',
   SALARY_COMPENSATION_PAGE_URL: 'https://calc.consultant.ru/kompensaciya-zarplata',
+  CLAIM_CALCULATION_DOC_URL: 'https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit',
   INDEX_URLS: [
     'https://calc.consultant.ru/conf/calc_ind/indexes.json',
     'https://calc.consultant.ru/conf/calc_ind/indexes_from_2022.json',
@@ -204,6 +205,9 @@ function onOpen() {
     .addItem('Обновить квартальные премии', 'updateQuarterlyPremiumIndexation')
     .addItem('Обновить ежегодные премии', 'updateAnnualPremiumIndexation')
     .addItem('Обновить отпуска', 'updateVacationIndexation')
+    .addSeparator()
+    .addItem('Заполнить Docs "Расчет требований"', 'fillClaimCalculationDocs')
+    .addItem('Пересчитать вынужденный прогул, ст. 236 и отпуска в Docs', 'recalculateForcedAbsenceLiabilityAndVacations')
     .addToUi();
 
   ui.createMenu('Импорт 1С')
@@ -320,6 +324,42 @@ function updateVacationIndexation() {
   });
 
   showUpdateResult_(result);
+}
+
+function fillClaimCalculationTable() {
+  fillClaimCalculationDocs();
+}
+
+function fillClaimCalculationDocs() {
+  const spreadsheet = getTargetSpreadsheet_();
+  const params = readClaimCalculationParams_(spreadsheet);
+  if (!params.docUrl) {
+    showMessage_('Не нашел ссылку на Google Doc. Добавьте в таблицу подпись "Расчет требований:" или "Расписанный расчет:" и рядом ссылку на документ.');
+    return;
+  }
+  if (!params.averageDailyEarning || !params.startDate || !params.endDate) {
+    showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета.');
+    return;
+  }
+
+  const productionCalendar = loadProductionCalendar_();
+  const compensationRates = loadSalaryCompensationRates_();
+  const result = calculateForcedAbsenceCompensation_(
+    params.averageDailyEarning,
+    params.startDate,
+    params.endDate,
+    productionCalendar,
+    compensationRates,
+    { annualVacationDays: params.annualVacationDays || STANDARD_ANNUAL_VACATION_DAYS }
+  );
+  writeClaimCalculationDoc_(params.docUrl, params, result);
+  showMessage_(
+    `Docs "Расчет требований" заполнен. Рабочих дней прогула: ${result.workingDays}. Сумма за прогул: ${formatMoneyRu_(result.wageAmount, 2)}. Пени ст. 236: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
+  );
+}
+
+function recalculateForcedAbsenceLiabilityAndVacations() {
+  fillClaimCalculationDocs();
 }
 
 function updateZupReconstructionIndexation() {
@@ -1541,7 +1581,10 @@ function sameCalendarDate_(left, right) {
     left.getDate() === right.getDate();
 }
 
-function calculateForcedAbsenceCompensation_(averageDailyEarning, startDate, endDate, productionCalendar, rates) {
+function calculateForcedAbsenceCompensation_(averageDailyEarning, startDate, endDate, productionCalendar, rates, options) {
+  const annualVacationDays = options && options.annualVacationDays
+    ? options.annualVacationDays
+    : STANDARD_ANNUAL_VACATION_DAYS;
   const workDates = [];
   const dailyDebts = [];
   for (let cursor = new Date(startDate); cursor <= endDate; cursor = addDays_(cursor, 1)) {
@@ -1556,10 +1599,12 @@ function calculateForcedAbsenceCompensation_(averageDailyEarning, startDate, end
   }
   const wageAmount = roundMoney_(averageDailyEarning * workDates.length);
   const penaltyAmount = roundMoney_(dailyDebts.reduce((sum, item) => sum + item.result.amount, 0));
-  const vacationDays = STANDARD_ANNUAL_VACATION_DAYS / 365 * inclusiveDays_(startDate, endDate);
+  const vacationDays = annualVacationDays / 365 * inclusiveDays_(startDate, endDate);
   const vacationAmount = roundMoney_(averageDailyEarning * vacationDays);
 
   return {
+    averageDailyEarning,
+    annualVacationDays,
     workingDays: workDates.length,
     workDates,
     dailyDebts,
@@ -1745,6 +1790,186 @@ function formatSalaryPaymentScheduleItem_(item) {
     return 'не восстановлено';
   }
   return `${item.day}-е число ${item.monthOffset ? 'следующего' : 'текущего'} месяца (${item.matches}/${item.observations} наблюдений)`;
+}
+
+function readClaimCalculationParams_(spreadsheet) {
+  const labelValues = scanSpreadsheetLabelValues_(spreadsheet);
+  return {
+    docUrl: findFirstLabeledValue_(labelValues, [
+      'расчет требований',
+      'расчёт требований',
+      'расписанный расчет',
+      'расписанный расчёт',
+    ]) || SETTINGS.CLAIM_CALCULATION_DOC_URL,
+    averageDailyEarning: parseMoney_(findFirstLabeledValue_(labelValues, [
+      'средний дневной заработок',
+      'среднедневной заработок',
+    ])),
+    startDate: parseDateValue_(findFirstLabeledValue_(labelValues, [
+      'дата начала вынужденного прогула',
+      'начало вынужденного прогула',
+      'начало прогула',
+    ])),
+    endDate: parseDateValue_(findFirstLabeledValue_(labelValues, [
+      'дата окончания расчета',
+      'дата окончания расчёта',
+      'окончание расчета',
+      'окончание расчёта',
+      'дата окончания вынужденного прогула',
+    ])),
+    annualVacationDays: parseMoney_(findFirstLabeledValue_(labelValues, [
+      'годовая норма отпуска',
+      'норма отпуска',
+      'дней отпуска в год',
+    ])) || STANDARD_ANNUAL_VACATION_DAYS,
+  };
+}
+
+function scanSpreadsheetLabelValues_(spreadsheet) {
+  const result = [];
+  spreadsheet.getSheets().forEach((sheet) => {
+    const rows = Math.min(sheet.getLastRow(), 120);
+    const columns = Math.min(sheet.getLastColumn(), 30);
+    if (rows <= 0 || columns <= 0) {
+      return;
+    }
+    const range = sheet.getRange(1, 1, rows, columns);
+    const values = range.getValues();
+    const displayValues = range.getDisplayValues();
+    const richTextValues = range.getRichTextValues ? range.getRichTextValues() : null;
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < columns; column++) {
+        const label = normalizeText_(displayValues[row][column]).replace(/:$/, '');
+        if (!label) {
+          continue;
+        }
+        const candidates = [];
+        if (column + 1 < columns) {
+          candidates.push(values[row][column + 1]);
+          candidates.push(displayValues[row][column + 1]);
+          if (richTextValues && richTextValues[row][column + 1]) {
+            const link = richTextValues[row][column + 1].getLinkUrl();
+            if (link) {
+              candidates.push(link);
+            }
+          }
+        }
+        if (row + 1 < rows) {
+          candidates.push(values[row + 1][column]);
+          candidates.push(displayValues[row + 1][column]);
+          if (richTextValues && richTextValues[row + 1][column]) {
+            const link = richTextValues[row + 1][column].getLinkUrl();
+            if (link) {
+              candidates.push(link);
+            }
+          }
+        }
+        result.push({
+          sheetName: sheet.getName(),
+          label,
+          values: candidates.filter((value) => value !== null && value !== undefined && value !== ''),
+        });
+      }
+    }
+  });
+  return result;
+}
+
+function findFirstLabeledValue_(labelValues, aliases) {
+  const normalizedAliases = aliases.map((alias) => normalizeText_(alias));
+  const found = (labelValues || []).find((entry) =>
+    normalizedAliases.some((alias) => entry.label.indexOf(alias) >= 0) &&
+    entry.values.length
+  );
+  return found ? found.values[0] : '';
+}
+
+function writeClaimCalculationDoc_(docUrl, params, result) {
+  const documentId = extractGoogleDocId_(docUrl);
+  if (!documentId) {
+    throw new Error('Не удалось определить ID Google Doc для расчета требований.');
+  }
+  const document = DocumentApp.openById(documentId);
+  const body = document.getBody();
+  body.clear();
+  body.appendParagraph('Расчет требований').setHeading(DocumentApp.ParagraphHeading.HEADING1);
+  body.appendParagraph(`Дата формирования: ${formatDate_(todayInSpreadsheetTimezone_(Session.getScriptTimeZone()))}`);
+
+  body.appendParagraph('1. Исходные данные').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendTable([
+    ['Показатель', 'Значение'],
+    ['Средний дневной заработок', formatMoneyRu_(params.averageDailyEarning, 2)],
+    ['Дата начала вынужденного прогула', formatDate_(params.startDate)],
+    ['Дата окончания расчета', formatDate_(params.endDate)],
+    ['Годовая норма отпуска', String(params.annualVacationDays || STANDARD_ANNUAL_VACATION_DAYS)],
+  ]);
+
+  body.appendParagraph('2. Вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph(
+    `Сумма среднего заработка за время вынужденного прогула: ${formatMoneyRu_(params.averageDailyEarning, 2)} x ${result.workingDays} раб. дн. = ${formatMoneyRu_(result.wageAmount, 2)}.`
+  );
+
+  body.appendParagraph('3. Материальная ответственность по ст. 236 ТК РФ').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph(
+    `Долг по среднему заработку возникает ежедневно. Пени считаются отдельно по каждому дневному долгу со следующего календарного дня после соответствующего рабочего дня. Итого пени: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
+  );
+  body.appendTable(buildForcedAbsenceDocTableRows_(result, params));
+
+  body.appendParagraph('4. Накопленные отпуска за вынужденный прогул').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendParagraph(
+    `Накопленные дни отпуска: ${formatMoneyRu_(result.annualVacationDays, 0)} / 365 x ${inclusiveDays_(params.startDate, params.endDate)} кал. дн. = ${formatMoneyRu_(result.vacationDays, 6)} дн.`
+  );
+  body.appendParagraph(
+    `Денежная оценка накопленного отпуска: ${formatMoneyRu_(params.averageDailyEarning, 2)} x ${formatMoneyRu_(result.vacationDays, 6)} = ${formatMoneyRu_(result.vacationAmount, 2)}.`
+  );
+
+  body.appendParagraph('5. Итого').setHeading(DocumentApp.ParagraphHeading.HEADING2);
+  body.appendTable([
+    ['Требование', 'Сумма'],
+    ['Средний заработок за вынужденный прогул', formatMoneyRu_(result.wageAmount, 2)],
+    ['Пени ст. 236 ТК РФ', formatMoneyRu_(result.penaltyAmount, 2)],
+    ['Накопленные отпуска', formatMoneyRu_(result.vacationAmount, 2)],
+    ['Итого', formatMoneyRu_(result.amount, 2)],
+  ]);
+  document.saveAndClose();
+}
+
+function buildForcedAbsenceDocTableRows_(result, params) {
+  const rows = [[
+    'Дата',
+    'Долг за день',
+    'Начало просрочки',
+    'Окончание',
+    'Пени',
+  ]];
+  (result.dailyDebts || []).forEach((item) => {
+    rows.push([
+      formatDate_(item.date),
+      formatMoneyRu_(result.averageDailyEarning, 2),
+      formatDate_(addDays_(item.date, 1)),
+      formatDate_(params.endDate),
+      formatMoneyRu_(item.result.amount, 2),
+    ]);
+  });
+  return rows;
+}
+
+function extractGoogleDocId_(value) {
+  const match = String(value || '').match(/\/document\/d\/([^/]+)/);
+  return match ? match[1] : '';
+}
+
+function buildForcedAbsenceCalculationTableRows_(result, startDate, endDate, annualVacationDays) {
+  const vacationDaysPerCalendarDay = annualVacationDays / 365;
+  return (result.dailyDebts || []).map((item) => [
+    item.date,
+    result.averageDailyEarning,
+    result.averageDailyEarning,
+    addDays_(item.date, 1),
+    endDate,
+    item.result.amount,
+    roundNumber_(vacationDaysPerCalendarDay * inclusiveDays_(startDate, item.date), 8),
+  ]);
 }
 
 function deleteSalaryAuxiliaryColumns_(sheet, layout) {
