@@ -36,8 +36,9 @@ const ZUP_IMPORT_SETTINGS = {
   BATCH_STATE_PROPERTY: 'ZUP_IMPORT_BATCH_STATE',
   BATCH_TRIGGER_FUNCTION: 'resumeZupFolderImport_',
   BATCH_TRIGGER_DELAY_MS: 60 * 1000,
-  BATCH_TIME_BUDGET_MS: 240 * 1000,
-  BATCH_MAX_FILES: 3,
+  BATCH_TIME_BUDGET_MS: 210 * 1000,
+  BATCH_TIME_MARGIN_MS: 30 * 1000,
+  BATCH_MAX_FILES: 1,
   REVIEW_FILL: '#f4b183',
   SOURCE_FILL: '#d9ead3',
 };
@@ -219,7 +220,7 @@ const ZUP_RECONSTRUCTION_SHEETS = [
     clearColumns: ['C', 'F', 'H', 'I', 'J', 'K'],
   },
   {
-    sourceSheetName: 'Отпуска',
+    sourceSheetName: 'Отпуска и расчет',
     targetSheetName: 'Из_1С_Отпуска',
     dataStartRow: 2,
     clearColumns: ['A', 'B', 'D', 'G', 'H', 'K', 'L', 'M', 'N', 'O'],
@@ -307,10 +308,8 @@ function importZupFolder_() {
 function previewZupFolderImport() {
   const spreadsheet = getTargetSpreadsheet_();
   const folder = resolveZupFolderFromSpreadsheet_(spreadsheet);
-  const result = importZupFolderCore_(spreadsheet, folder.id, { force: false, dryRun: true });
-  showMessage_(
-    `Проверка импорта 1С завершена без перезаписи строк. Источник: ${folder.source}. Файлов проверено: ${result.filesRead}. Потенциальных строк: ${result.rows.length}.`
-  );
+  const result = startZupFolderImportBatch_(spreadsheet, folder, { force: false, dryRun: true });
+  showZupBatchImportMessage_(result, 'Проверка импорта 1С без перезаписи');
 }
 
 function forceZupFolderImport() {
@@ -376,26 +375,6 @@ function createZupReconstructionSheets() {
   );
 }
 
-function createZupSalaryReconstructionSheet() {
-  createNamedZupReconstructionSheet_('Оклад');
-}
-
-function createZupMonthlyReconstructionSheet() {
-  createNamedZupReconstructionSheet_('Ежемесячные');
-}
-
-function createZupQuarterlyReconstructionSheet() {
-  createNamedZupReconstructionSheet_('Ежеквартальные');
-}
-
-function createZupAnnualReconstructionSheet() {
-  createNamedZupReconstructionSheet_('Ежегодные');
-}
-
-function createZupVacationReconstructionSheet() {
-  createNamedZupReconstructionSheet_('Отпуска');
-}
-
 function populateZupReconstructionSheets() {
   const spreadsheet = getTargetSpreadsheet_();
   const importRows = readZupImportObjects_(spreadsheet);
@@ -430,21 +409,6 @@ function populateZupReconstructionSheets() {
       `Пересчет Из_1С выполнен: ${calculationResults.map((item) => `${item.sheetName}: ${item.calculated} строк, пропущено ${item.skipped}`).join('; ')}`,
     ].join('\n')
   );
-}
-
-function createNamedZupReconstructionSheet_(sourceSheetName) {
-  const spreadsheet = getTargetSpreadsheet_();
-  const config = getZupReconstructionConfigs_().find((candidate) =>
-    candidate.sourceSheetName === sourceSheetName
-  );
-  if (!config) {
-    throw new Error(`Не найдена настройка вкладки ${sourceSheetName}.`);
-  }
-
-  const result = createSingleZupReconstructionSheet_(spreadsheet, config);
-  showMessage_(result.created
-    ? `Вкладка структуры 1С создана: ${result.sheetName}`
-    : `Вкладка структуры 1С не создана: ${result.reason}`);
 }
 
 function clearZupImportSheets() {
@@ -619,7 +583,7 @@ function continueZupFolderImportBatch_() {
     while (
       session.nextIndex < groups.length &&
       processedNow < ZUP_IMPORT_SETTINGS.BATCH_MAX_FILES &&
-      Date.now() - started < ZUP_IMPORT_SETTINGS.BATCH_TIME_BUDGET_MS
+      hasZupBatchTimeLeft_(started)
     ) {
       const group = groups[session.nextIndex];
       const processed = processZupImportGroup_(group, previousState, rowsByFile, session);
@@ -667,7 +631,10 @@ function continueZupFolderImportBatch_() {
       processed: session.nextIndex,
       filesRead: session.filesRead,
       rows: allRows,
+      rowsRecognized: session.rowsRecognized,
       skippedFiles: allSkippedFiles,
+      skippedCount: session.skippedCount,
+      dryRun: Boolean(session.dryRun),
       processedNow,
     };
   } finally {
@@ -676,11 +643,15 @@ function continueZupFolderImportBatch_() {
 }
 
 function writeZupBatchImportOutputs_(spreadsheet, rows, skippedFiles, qualityRowsByGroup, stateRowsByGroup, vlmRows, session, complete) {
-  const qualityRows = buildZupGlobalQualityRows_(rows)
+  const qualityRows = (complete && !session.dryRun ? buildZupGlobalQualityRows_(rows) : [])
     .concat([buildZupBatchStatusQualityRow_(session, complete)])
     .concat(Object.keys(qualityRowsByGroup).sort().map((key) => qualityRowsByGroup[key]));
   writeZupQualitySheet_(spreadsheet, qualityRows, session.dryRun);
-  writeZupQualityGateSheet_(spreadsheet, buildZupQualityGateRows_(rows, qualityRowsByGroup));
+  if (complete && !session.dryRun) {
+    writeZupQualityGateSheet_(spreadsheet, buildZupQualityGateRows_(rows, qualityRowsByGroup));
+  } else {
+    writeZupBatchProgressQualityGateSheet_(spreadsheet, session, complete);
+  }
   writeZupVlmLogSheet_(spreadsheet, vlmRows, session.dryRun);
 
   if (session.dryRun) {
@@ -694,6 +665,32 @@ function writeZupBatchImportOutputs_(spreadsheet, rows, skippedFiles, qualityRow
     writeZupPaymentStructureSheet_(spreadsheet, rows);
     writeZupDiagnosticSheet_(spreadsheet, rows);
   }
+}
+
+function hasZupBatchTimeLeft_(startedAtMs) {
+  const budget = ZUP_IMPORT_SETTINGS.BATCH_TIME_BUDGET_MS;
+  const margin = ZUP_IMPORT_SETTINGS.BATCH_TIME_MARGIN_MS || 0;
+  return Date.now() - startedAtMs < Math.max(0, budget - margin);
+}
+
+function writeZupBatchProgressQualityGateSheet_(spreadsheet, session, complete) {
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.QG_SHEET_NAME);
+  writeZupSheetData_(sheet, [ZUP_QG_HEADERS].concat([[
+    'Пакетный импорт',
+    'Инфо',
+    complete ? 'OK' : 'В работе',
+    '',
+    '',
+    '',
+    '',
+    '',
+    complete && session.dryRun
+      ? `Проверка без перезаписи завершена: обработано ${session.nextIndex || 0} из ${session.total || 0} групп.`
+      : `Обработано ${session.nextIndex || 0} из ${session.total || 0} групп. Полные quality gates будут построены после завершения импорта.`,
+    complete
+      ? 'Сверить строки на листе качества.'
+      : 'Дождаться автоматического продолжения или запустить "Продолжить пакетный импорт".',
+  ]]));
 }
 
 function buildZupBatchStatusQualityRow_(session, complete) {
@@ -720,8 +717,10 @@ function showZupBatchImportMessage_(result, title) {
     [
       `${prefix}. Источник: ${result.source || 'не указан'}.`,
       `Прогресс: ${progress}.`,
-      `Файлов прочитано: ${result.filesRead}. Строк сейчас в импорте: ${result.rows.length}. Пропущено файлов: ${result.skippedFiles.length}.`,
-      result.complete ? 'Свод и диагностика обновлены.' : 'Продолжение поставлено автоматически через триггер; можно закрыть окно и вернуться позже.',
+      `Файлов прочитано: ${result.filesRead}. Распознано строк: ${Number.isFinite(result.rowsRecognized) ? result.rowsRecognized : result.rows.length}. Пропущено файлов: ${Number.isFinite(result.skippedCount) ? result.skippedCount : result.skippedFiles.length}.`,
+      result.complete
+        ? (result.dryRun ? 'Проверка завершена без перезаписи основных листов.' : 'Свод и диагностика обновлены.')
+        : 'Продолжение поставлено автоматически через триггер; можно закрыть окно и вернуться позже.',
     ].join('\n')
   );
 }
@@ -1254,6 +1253,7 @@ function buildEmptyZupSalaryItem_(period) {
     files: {},
     statements: {},
     statementDates: {},
+    statementEntries: [],
   };
 }
 
@@ -1278,6 +1278,14 @@ function addZupStatementFromRow_(target, row) {
   if (date) {
     target.statementDates[formatDate_(date)] = true;
   }
+  if (Array.isArray(target.statementEntries) && (statement || date)) {
+    target.statementEntries.push({
+      statement,
+      date,
+      paid: row.paid,
+      file: row.file,
+    });
+  }
 }
 
 function formatZupStatements_(item) {
@@ -1288,6 +1296,101 @@ function formatZupStatementDates_(item) {
   return Object.keys(item && item.statementDates ? item.statementDates : {})
     .sort((left, right) => Number(parseDateValue_(left)) - Number(parseDateValue_(right)))
     .join('\n');
+}
+
+function inferZupSalaryPaymentScheduleFromItems_(items, productionCalendar) {
+  const layout = getSheetLayout_('Оклад');
+  const table = {
+    layout,
+    columns: {
+      year: columnLetterToIndex_(layout.yearColumn),
+      month: columnLetterToIndex_(layout.monthColumn),
+      paymentDate: columnLetterToIndex_('R'),
+    },
+  };
+  const rows = (items || []).map((item) => {
+    const row = [];
+    row[table.columns.year] = item.period.year;
+    row[table.columns.month] = formatZupMonthName_(item.period.month);
+    row[table.columns.paymentDate] = formatZupStatementDates_(item);
+    return row;
+  });
+  return inferSalaryPaymentScheduleFromRows_(rows, table, productionCalendar || {});
+}
+
+function buildZupSalaryDiscreteRows_(scaffold, itemMap, productionCalendar, salaryPaymentSchedule) {
+  const rows = [];
+  (scaffold || []).forEach((scaffoldRow) => {
+    const item = itemMap[buildZupPeriodKey_(scaffoldRow.period)] || null;
+    rows.push(...buildZupSalaryDiscreteRowsForPeriod_(scaffoldRow.period, item, productionCalendar || {}, salaryPaymentSchedule));
+  });
+  return rows;
+}
+
+function buildZupSalaryDiscreteRowsForPeriod_(period, item, productionCalendar, salaryPaymentSchedule) {
+  const calendarWorkDays = getZupWorkingDaysForPeriod_(period, productionCalendar);
+  const totalWorkDays = calendarWorkDays || (item && item.hasWorkDays ? item.workDays : 0);
+  const totalWorkedDays = item && item.hasPaidDays
+    ? item.paidDays
+    : null;
+  const totalAmount = item && item.amount ? item.amount : null;
+  const paymentDates = parsePaymentDatesCell_(formatZupStatementDates_(item)).dates;
+  const rawPartData = SALARY_PAYMENT_PARTS.map((part, index) => {
+    const statementDate = chooseSalaryStatementDate_(paymentDates, period, index);
+    const inferredPayment = statementDate
+      ? null
+      : getInferredSalaryPaymentDate_(salaryPaymentSchedule, period, part.id, productionCalendar);
+    const dueDate = statementDate || (inferredPayment && inferredPayment.date) || null;
+    return {
+      part,
+      dueDate,
+      statementDate,
+      statement: formatZupStatementForSalaryPart_(item, part, dueDate),
+    };
+  });
+  const ranges = getSalaryPaymentWorkRanges_(period, rawPartData, productionCalendar);
+  const rawWorkDays = ranges.map((range) => countWorkingDaysBetween_(range.start, range.end, productionCalendar));
+  const fallbackWorkDays = totalWorkDays || rawWorkDays.reduce((sum, value) => sum + value, 0);
+  const shares = buildZupSalaryPartShares_(rawWorkDays, fallbackWorkDays);
+  const workedParts = splitAmountByShares_(totalWorkedDays, shares);
+  const amountParts = splitAmountByShares_(totalAmount, shares);
+
+  return rawPartData.map((partData, index) => ({
+    period,
+    part: partData.part,
+    item,
+    workDays: rawWorkDays[index] || roundNumber_((fallbackWorkDays || 0) * shares[index], 4),
+    workedDays: workedParts[index],
+    amount: amountParts[index],
+    dueDate: partData.dueDate,
+    statement: partData.statement,
+  }));
+}
+
+function buildZupSalaryPartShares_(workDays, totalWorkDays) {
+  const total = (workDays || []).reduce((sum, value) => sum + (value || 0), 0);
+  if (total > 0) {
+    return workDays.map((value) => (value || 0) / total);
+  }
+  if (totalWorkDays > 0) {
+    return SALARY_PAYMENT_PARTS.map(() => 1 / SALARY_PAYMENT_PARTS.length);
+  }
+  return SALARY_PAYMENT_PARTS.map(() => 1 / SALARY_PAYMENT_PARTS.length);
+}
+
+function formatZupStatementForSalaryPart_(item, part, dueDate) {
+  const entries = item && Array.isArray(item.statementEntries)
+    ? item.statementEntries.filter((entry) =>
+        dueDate && entry.date && sameCalendarDate_(entry.date, dueDate)
+      )
+    : [];
+  const statements = entries
+    .map((entry) => entry.statement)
+    .filter(Boolean);
+  if (!statements.length) {
+    return part.label;
+  }
+  return `${part.label}\n${Array.from(new Set(statements)).sort().join('\n')}`;
 }
 
 function buildZupPremiumModel_(rows, category) {
@@ -1454,37 +1557,30 @@ function fillZupSalaryReconstruction_(spreadsheet, items, productionCalendar, co
   }
   const scaffold = mergeZupSalaryScaffoldWithItems_(readZupSalaryScaffold_(spreadsheet), items);
   const itemMap = buildZupModelMapByPeriod_(items);
+  const salaryPaymentSchedule = inferZupSalaryPaymentScheduleFromItems_(items, productionCalendar);
+  const salaryRows = buildZupSalaryDiscreteRows_(scaffold, itemMap, productionCalendar, salaryPaymentSchedule);
   retargetZupReconstructionFormulas_(sheet);
   ensureZupAuxiliaryHeaders_(sheet, 2, [
     ['Q', 'Ведомости выплат'],
     ['R', 'Дата ведомости выплат'],
   ]);
-  prepareZupOutputRows_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L', 'Q', 'R']);
-  clearZupReviewMarks_(sheet, 3, scaffold.length, ['A', 'B', 'I']);
-  clearZupSourceMarks_(sheet, 3, scaffold.length, ['A', 'B', 'D', 'E', 'I', 'Q', 'R']);
-  writeZupColumn_(sheet, 3, 'A', scaffold.map((row) => {
-    const item = itemMap[buildZupPeriodKey_(row.period)];
-    return item && item.hasPaidDays ? item.paidDays : '';
-  }));
-  writeZupColumn_(sheet, 3, 'B', scaffold.map((row) => {
-    const item = itemMap[buildZupPeriodKey_(row.period)];
-    return getZupWorkingDaysForPeriod_(row.period, productionCalendar) || (item && item.hasWorkDays ? item.workDays : '');
-  }));
-  writeZupColumn_(sheet, 3, 'D', scaffold.map((row) => row.period.year));
-  writeZupColumn_(sheet, 3, 'E', scaffold.map((row) => formatZupMonthName_(row.period.month)));
-  writeZupColumn_(sheet, 3, 'I', scaffold.map((row) => {
-    const item = itemMap[buildZupPeriodKey_(row.period)];
-    return item && item.amount ? roundMoney_(item.amount) : '';
-  }));
-  writeZupColumn_(sheet, 3, 'Q', scaffold.map((row) => formatZupStatements_(itemMap[buildZupPeriodKey_(row.period)])));
-  writeZupColumn_(sheet, 3, 'R', scaffold.map((row) => formatZupStatementDates_(itemMap[buildZupPeriodKey_(row.period)])));
-  markZupSalarySourceCells_(sheet, scaffold, itemMap, productionCalendar);
-  markZupSalaryReviewCells_(sheet, scaffold, itemMap, productionCalendar);
-  markZupPeriodQualityCells_(sheet, scaffold, 3, 'D', quality);
+  prepareZupOutputRows_(sheet, 3, salaryRows.length, ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L', 'Q', 'R']);
+  clearZupReviewMarks_(sheet, 3, salaryRows.length, ['A', 'B', 'I', 'R']);
+  clearZupSourceMarks_(sheet, 3, salaryRows.length, ['A', 'B', 'D', 'E', 'I', 'Q', 'R']);
+  writeZupColumn_(sheet, 3, 'A', salaryRows.map((row) => numberOrBlank_(row.workedDays)));
+  writeZupColumn_(sheet, 3, 'B', salaryRows.map((row) => numberOrBlank_(row.workDays)));
+  writeZupColumn_(sheet, 3, 'D', salaryRows.map((row) => row.period.year));
+  writeZupColumn_(sheet, 3, 'E', salaryRows.map((row) => formatZupMonthName_(row.period.month)));
+  writeZupColumn_(sheet, 3, 'I', salaryRows.map((row) => row.amount ? roundMoney_(row.amount) : ''));
+  writeZupColumn_(sheet, 3, 'Q', salaryRows.map((row) => row.statement || row.part.label));
+  writeZupColumn_(sheet, 3, 'R', salaryRows.map((row) => row.dueDate || ''));
+  markZupSalarySourceCells_(sheet, salaryRows, itemMap, productionCalendar);
+  markZupSalaryReviewCells_(sheet, salaryRows, itemMap, productionCalendar);
+  markZupPeriodQualityCells_(sheet, salaryRows, 3, 'D', quality);
   if (company) {
     sheet.getRange('P2').setValue(company);
   }
-  return { sheet: 'Из_1С_Оклад', rows: scaffold.length };
+  return { sheet: 'Из_1С_Оклад', rows: salaryRows.length };
 }
 
 function fillZupPremiumReconstruction_(spreadsheet, sheetName, items, type, quality) {
@@ -1683,12 +1779,12 @@ function markZupSalarySourceCells_(sheet, scaffold, itemMap, productionCalendar)
   scaffold.forEach((row, index) => {
     const sheetRow = 3 + index;
     const key = buildZupPeriodKey_(row.period);
-    const item = itemMap[key];
+    const item = row.item || itemMap[key];
     if (item && item.hasPaidDays) {
-      markZupSourceCell_(sheet, sheetRow, 'A', `Фактически отработанные дни из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
+      markZupSourceCell_(sheet, sheetRow, 'A', `Фактически отработанные дни распределены на выплату "${row.part ? row.part.label : ''}" по рабочим дням периода. Источники: ${Object.keys(item.files).join(', ')}`);
     }
-    if (getZupWorkingDaysForPeriod_(row.period, productionCalendar)) {
-      markZupSourceCell_(sheet, sheetRow, 'B', 'Рабочие дни месяца дозаполнены из производственного календаря КонсультантПлюс.');
+    if (row.workDays) {
+      markZupSourceCell_(sheet, sheetRow, 'B', `Рабочие дни выплаты "${row.part ? row.part.label : ''}" рассчитаны по производственному календарю КонсультантПлюс.`);
     } else if (item && item.hasWorkDays) {
       markZupSourceCell_(sheet, sheetRow, 'B', `Рабочие дни из расчетного листка. Источники: ${Object.keys(item.files).join(', ')}`);
     }
@@ -1696,11 +1792,13 @@ function markZupSalarySourceCells_(sheet, scaffold, itemMap, productionCalendar)
       const topUpNote = item.salaryTopUpAmount
         ? ` Включена отдельная категория "Доплата до оклада": ${roundMoney_(item.salaryTopUpAmount)}.`
         : '';
-      markZupSourceCell_(sheet, sheetRow, 'I', `Оклад и окладные доначисления из расчетного листка.${topUpNote} Источники: ${Object.keys(item.files).join(', ')}`);
+      markZupSourceCell_(sheet, sheetRow, 'I', `Оклад и окладные доначисления распределены на выплату "${row.part ? row.part.label : ''}".${topUpNote} Источники: ${Object.keys(item.files).join(', ')}`);
     }
-    if (formatZupStatements_(item)) {
-      markZupSourceCell_(sheet, sheetRow, 'Q', 'Ведомости выплат из расчетного листка.');
-      markZupSourceCell_(sheet, sheetRow, 'R', 'Даты ведомостей выплат из расчетного листка; используются для проверки пеней по ст. 236 ТК РФ.');
+    if (row.statement) {
+      markZupSourceCell_(sheet, sheetRow, 'Q', 'Ведомость выплаты из расчетного листка или восстановленная часть графика.');
+    }
+    if (row.dueDate) {
+      markZupSourceCell_(sheet, sheetRow, 'R', 'Дата ведомости выплаты; используется для индексации и пеней по этой строке оклада.');
     }
   });
 }
@@ -1709,7 +1807,7 @@ function markZupSalaryReviewCells_(sheet, scaffold, itemMap, productionCalendar)
   scaffold.forEach((row, index) => {
     const sheetRow = 3 + index;
     const key = buildZupPeriodKey_(row.period);
-    const item = itemMap[key];
+    const item = row.item || itemMap[key];
     const hasCalendarWorkDays = Boolean(getZupWorkingDaysForPeriod_(row.period, productionCalendar));
     if (!item) {
       markZupReviewCell_(sheet, sheetRow, 'A', 'Нет оплаченных дней из расчетного листка за этот период.');
@@ -1730,6 +1828,9 @@ function markZupSalaryReviewCells_(sheet, scaffold, itemMap, productionCalendar)
     }
     if (item.hasVlm) {
       markZupReviewCell_(sheet, sheetRow, 'I', `Оклад заполнен через VLM. Источники: ${Object.keys(item.files).join(', ')}`);
+    }
+    if (!row.dueDate) {
+      markZupReviewCell_(sheet, sheetRow, 'R', `Не установлена дата выплаты для строки "${row.part ? row.part.label : ''}".`);
     }
   });
 }
@@ -1878,6 +1979,7 @@ function retargetZupReconstructionFormulas_(sheet) {
     ['Ежемесячные', 'Из_1С_Ежемесячные'],
     ['Ежеквартальные', 'Из_1С_Ежеквартальные'],
     ['Ежегодные', 'Из_1С_Ежегодные'],
+    ['Отпуска и расчет', 'Из_1С_Отпуска'],
     ['Отпуска', 'Из_1С_Отпуска'],
   ];
   const range = sheet.getDataRange();

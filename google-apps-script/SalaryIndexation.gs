@@ -184,6 +184,11 @@ const MONTHS = {
 };
 
 const AVERAGE_EARNINGS_540_START_DATE = new Date(2025, 8, 1); // 1 сентября 2025
+const STANDARD_ANNUAL_VACATION_DAYS = 28;
+const SALARY_PAYMENT_PARTS = [
+  { id: 'firstHalf', label: 'Первая половина месяца' },
+  { id: 'secondHalf', label: 'Вторая половина месяца' },
+];
 
 function onOpen() {
   const ui = getSpreadsheetUi_();
@@ -418,6 +423,9 @@ function updateUnpaidSalaryIndexationCore_(params) {
   const rowCount = lastRow - table.headerRow;
   const range = sheet.getRange(table.headerRow + 1, 1, rowCount, sheet.getLastColumn());
   const values = range.getValues();
+  const inferredPaymentSchedule = table.layout.id === 'salary'
+    ? inferSalaryPaymentScheduleForSheet_(spreadsheet, values, table, productionCalendar)
+    : null;
   const hasMonthlyIpcColumn = Number.isInteger(table.columns.monthlyIpc);
   const existingOutput = {
     monthlyIpc: hasMonthlyIpcColumn
@@ -566,15 +574,29 @@ function updateUnpaidSalaryIndexationCore_(params) {
       return;
     }
 
-    const penaltyDue = getRowPenaltyDueDate_(row, table, productionCalendar);
-    const penaltyResult = calculateSalaryCompensation_(
-      totalUnderpayment,
-      penaltyDue.date,
-      penaltyEnd.date,
-      compensationRates
-    );
-    penaltyValues.push([penaltyResult.amount]);
-    penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+    if (table.layout.id === 'salary') {
+      const schedule = buildSalaryDebtSchedule_(row, table, productionCalendar, {
+        totalUnderpayment,
+        principal: unpaidSalary,
+        correctAmount: Number.isInteger(table.columns.correctAmount)
+          ? parseMoney_(row[table.columns.correctAmount])
+          : null,
+        inferredPaymentSchedule,
+      });
+      const penaltyResult = calculateSalaryScheduleCompensation_(schedule, penaltyEnd.date, compensationRates);
+      penaltyValues.push([penaltyResult.amount]);
+      penaltyNotes.push([buildSalarySchedulePenaltyNote_(penaltyResult, schedule, penaltyEnd, totalUnderpayment, table.layout)]);
+    } else {
+      const penaltyDue = getRowPenaltyDueDate_(row, table, productionCalendar);
+      const penaltyResult = calculateSalaryCompensation_(
+        totalUnderpayment,
+        penaltyDue.date,
+        penaltyEnd.date,
+        compensationRates
+      );
+      penaltyValues.push([penaltyResult.amount]);
+      penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+    }
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
     calculated++;
   });
@@ -660,14 +682,28 @@ function updateUnpaidSalaryIndexationCore_(params) {
       return;
     }
 
-    const penaltyResult = calculateSalaryCompensation_(
-      totalUnderpayment,
-      penaltyDue.date,
-      penaltyEnd.date,
-      compensationRates
-    );
-    penaltyValues.push([penaltyResult.amount]);
-    penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+    if (table.layout.id === 'salary') {
+      const schedule = buildSalaryDebtSchedule_(row, table, productionCalendar, {
+        totalUnderpayment,
+        principal: unpaidSalary,
+        correctAmount: Number.isInteger(table.columns.correctAmount)
+          ? parseMoney_(row[table.columns.correctAmount])
+          : null,
+        inferredPaymentSchedule,
+      });
+      const penaltyResult = calculateSalaryScheduleCompensation_(schedule, penaltyEnd.date, compensationRates);
+      penaltyValues.push([penaltyResult.amount]);
+      penaltyNotes.push([buildSalarySchedulePenaltyNote_(penaltyResult, schedule, penaltyEnd, totalUnderpayment, table.layout)]);
+    } else {
+      const penaltyResult = calculateSalaryCompensation_(
+        totalUnderpayment,
+        penaltyDue.date,
+        penaltyEnd.date,
+        compensationRates
+      );
+      penaltyValues.push([penaltyResult.amount]);
+      penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+    }
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
   });
 
@@ -1145,6 +1181,411 @@ function buildMonthlyIpcNote_(monthlyIpc) {
   return lines.join('\n');
 }
 
+function buildSalaryDebtSchedule_(row, table, productionCalendar, options) {
+  const period = parseRowPeriod_(row, table.columns);
+  const paymentDates = Number.isInteger(table.columns.paymentDate)
+    ? parsePaymentDatesCell_(row[table.columns.paymentDate]).dates
+    : [];
+  const inferredPaymentSchedule = options && options.inferredPaymentSchedule;
+  const totalWorkDays = Number.isInteger(table.columns.workDays)
+    ? parseMoney_(row[table.columns.workDays])
+    : null;
+  const totalWorkedDays = Number.isInteger(table.columns.workedDays)
+    ? parseMoney_(row[table.columns.workedDays])
+    : null;
+  const correctAmount = options && options.correctAmount !== undefined
+    ? options.correctAmount
+    : (Number.isInteger(table.columns.correctAmount) ? parseMoney_(row[table.columns.correctAmount]) : null);
+  const underpaymentAmount = options && options.totalUnderpayment !== undefined
+    ? options.totalUnderpayment
+    : (options && options.principal !== undefined ? options.principal : null);
+
+  if (!period) {
+    return {
+      period: null,
+      slices: [],
+      missingReason: 'не определен расчетный период строки',
+    };
+  }
+
+  let partData;
+  if (paymentDates.length >= 2) {
+    partData = SALARY_PAYMENT_PARTS.map((part, index) => ({
+      part,
+      dueDate: chooseSalaryStatementDate_(paymentDates, period, index),
+      dateSource: `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
+    }));
+  } else if (paymentDates.length === 1) {
+    const part = classifySalaryPaymentPart_(paymentDates[0], period, inferredPaymentSchedule) || SALARY_PAYMENT_PARTS[1];
+    partData = [{
+      part,
+      dueDate: paymentDates[0],
+      dateSource: `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
+    }];
+  } else {
+    partData = SALARY_PAYMENT_PARTS.map((part) => {
+      const inferred = getInferredSalaryPaymentDate_(inferredPaymentSchedule, period, part.id, productionCalendar);
+      return {
+        part,
+        dueDate: inferred ? inferred.date : null,
+        dateSource: inferred ? inferred.source : '',
+      };
+    });
+  }
+
+  const ranges = getSalaryPaymentWorkRanges_(period, partData, productionCalendar);
+  const rawWorkDays = ranges.map((range) => countWorkingDaysBetween_(range.start, range.end, productionCalendar));
+  const fallbackWorkDays = totalWorkDays || rawWorkDays.reduce((sum, value) => sum + value, 0);
+  const shares = buildSalaryPartShares_(rawWorkDays, fallbackWorkDays, partData.length);
+  const workedParts = splitAmountByShares_(totalWorkedDays, shares);
+  const correctParts = splitAmountByShares_(correctAmount, shares);
+  const underpaymentParts = splitAmountByShares_(underpaymentAmount, shares);
+
+  return {
+    period,
+    slices: partData.map((item, index) => ({
+      id: item.part.id,
+      label: item.part.label,
+      dueDate: item.dueDate,
+      dateSource: item.dateSource,
+      workDays: rawWorkDays[index] || roundNumber_((fallbackWorkDays || 0) * shares[index], 4),
+      workedDays: workedParts[index],
+      correctAmount: correctParts[index],
+      underpaymentAmount: underpaymentParts[index],
+    })),
+    missingReason: '',
+  };
+}
+
+function calculateSalaryScheduleCompensation_(schedule, actualPaymentDate, rates) {
+  const parts = (schedule.slices || []).map((slice) => {
+    if (!slice.dueDate || !slice.underpaymentAmount || slice.underpaymentAmount <= 0) {
+      return {
+        slice,
+        result: {
+          amount: 0,
+          intervals: [],
+          skipped: true,
+        },
+      };
+    }
+    return {
+      slice,
+      result: calculateSalaryCompensation_(slice.underpaymentAmount, slice.dueDate, actualPaymentDate, rates),
+    };
+  });
+
+  return {
+    amount: roundMoney_(parts.reduce((sum, part) => sum + part.result.amount, 0)),
+    parts,
+  };
+}
+
+function isSalaryScheduleReady_(schedule) {
+  return Boolean(schedule && schedule.slices && schedule.slices.length && schedule.slices.every((slice) => slice.dueDate));
+}
+
+function buildSalaryMissingPaymentDatesMessage_(schedule) {
+  if (schedule && schedule.missingReason) {
+    return `Пени не рассчитаны: ${schedule.missingReason}.`;
+  }
+  return 'Пени не рассчитаны: не установлены даты выплаты зарплаты по частям месяца.';
+}
+
+function buildSalarySchedulePenaltyNote_(result, schedule, penaltyEnd, principal, layout) {
+  const lines = [
+    `Сумма для пеней: ${principal} (колонка ${layout.totalUnderpaymentColumn}, "${layout.totalLabel}")`,
+    `Дата окончания: ${penaltyEnd.source}`,
+    `Формула: часть долга x ставка / 100 / 150 x дни задержки`,
+  ];
+  if (!isSalaryScheduleReady_(schedule)) {
+    lines.push(buildSalaryMissingPaymentDatesMessage_(schedule));
+  }
+  (result.parts || []).forEach((part) => {
+    const slice = part.slice;
+    lines.push(
+      `${slice.label}: долг ${slice.underpaymentAmount || 0}, дата выплаты ${slice.dueDate ? formatDate_(slice.dueDate) : 'не установлена'} (${slice.dateSource || 'нет источника'}), пени ${part.result.amount}.`
+    );
+  });
+  return lines.join('\n');
+}
+
+function inferSalaryPaymentScheduleForSheet_(spreadsheet, rows, table, productionCalendar) {
+  const importedSheet = spreadsheet && spreadsheet.getSheetByName
+    ? spreadsheet.getSheetByName('Из_1С_Оклад')
+    : null;
+  if (importedSheet) {
+    try {
+      const importedTable = findTable_(importedSheet);
+      const lastRow = importedSheet.getLastRow();
+      if (lastRow > importedTable.headerRow) {
+        const importedRows = importedSheet
+          .getRange(importedTable.headerRow + 1, 1, lastRow - importedTable.headerRow, importedSheet.getLastColumn())
+          .getValues();
+        const inferred = inferSalaryPaymentScheduleFromRows_(importedRows, importedTable, productionCalendar);
+        if (inferred.firstHalf || inferred.secondHalf) {
+          return inferred;
+        }
+      }
+    } catch (error) {
+      // Fall through to the current sheet values.
+    }
+  }
+  return inferSalaryPaymentScheduleFromRows_(rows, table, productionCalendar);
+}
+
+function inferSalaryPaymentScheduleFromRows_(rows, table, productionCalendar) {
+  const buckets = {
+    firstHalf: [],
+    secondHalf: [],
+  };
+  if (Number.isInteger(table.columns.paymentDate) && table.columns.paymentDate !== columnLetterToIndex_('R')) {
+    return {
+      firstHalf: null,
+      secondHalf: null,
+    };
+  }
+  (rows || []).forEach((row) => {
+    const period = parseRowPeriod_(row, table.columns);
+    if (!period || !Number.isInteger(table.columns.paymentDate)) {
+      return;
+    }
+    const dates = parsePaymentDatesCell_(row[table.columns.paymentDate]).dates;
+    dates.forEach((date) => {
+      const part = classifySalaryPaymentPart_(date, period, null);
+      if (!part) {
+        return;
+      }
+      const normalized = normalizeObservedSalaryPaymentDate_(date, part.id, productionCalendar);
+      buckets[part.id].push({
+        day: normalized.day,
+        monthOffset: getMonthOffset_(period, normalized.date),
+      });
+    });
+  });
+
+  return {
+    firstHalf: summarizeSalaryPaymentBucket_(buckets.firstHalf),
+    secondHalf: summarizeSalaryPaymentBucket_(buckets.secondHalf),
+  };
+}
+
+function summarizeSalaryPaymentBucket_(items) {
+  if (!items.length) {
+    return null;
+  }
+  const counts = {};
+  items.forEach((item) => {
+    const key = `${item.day}|${item.monthOffset}`;
+    if (!counts[key]) {
+      counts[key] = {
+        day: item.day,
+        monthOffset: item.monthOffset,
+        matches: 0,
+        observations: items.length,
+      };
+    }
+    counts[key].matches++;
+  });
+  return Object.keys(counts)
+    .map((key) => counts[key])
+    .sort((left, right) => right.matches - left.matches || left.monthOffset - right.monthOffset || left.day - right.day)[0];
+}
+
+function classifySalaryPaymentPart_(date, period, inferredPaymentSchedule) {
+  const offset = getMonthOffset_(period, date);
+  if (offset === 0 && date.getDate() >= 10) {
+    return SALARY_PAYMENT_PARTS[0];
+  }
+  if (offset === 1 && date.getDate() <= 15) {
+    return SALARY_PAYMENT_PARTS[1];
+  }
+  if (inferredPaymentSchedule) {
+    const byDistance = SALARY_PAYMENT_PARTS
+      .map((part) => {
+        const inferred = getInferredSalaryPaymentDate_(inferredPaymentSchedule, period, part.id, {});
+        return inferred ? { part, distance: Math.abs(Number(inferred.date) - Number(date)) } : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.distance - right.distance)[0];
+    return byDistance ? byDistance.part : null;
+  }
+  return null;
+}
+
+function normalizeObservedSalaryPaymentDate_(date, partId, productionCalendar) {
+  if (partId === 'firstHalf') {
+    const nextDay = addDays_(date, 1);
+    if (isNonWorkingDay_(nextDay, productionCalendar)) {
+      return {
+        date: nextDay,
+        day: nextDay.getDate(),
+      };
+    }
+  }
+  return {
+    date,
+    day: date.getDate(),
+  };
+}
+
+function getInferredSalaryPaymentDate_(schedule, period, partId, productionCalendar) {
+  const item = schedule && schedule[partId];
+  if (!item || !period) {
+    return null;
+  }
+  const date = new Date(period.year, period.month - 1 + item.monthOffset, item.day);
+  while (isNonWorkingDay_(date, productionCalendar)) {
+    date.setDate(date.getDate() - 1);
+  }
+  return {
+    date,
+    source: `восстановлено по графику выплат: ${item.day}-е число ${item.monthOffset ? 'следующего' : 'текущего'} месяца`,
+  };
+}
+
+function chooseSalaryStatementDate_(paymentDates, period, index) {
+  const part = SALARY_PAYMENT_PARTS[index];
+  const matching = (paymentDates || []).find((date) => {
+    const classified = classifySalaryPaymentPart_(date, period, null);
+    return classified && classified.id === part.id;
+  });
+  return matching || (paymentDates || [])[index] || null;
+}
+
+function getSalaryPaymentWorkRanges_(period, partData, productionCalendar) {
+  const monthStart = new Date(period.year, period.month - 1, 1);
+  const monthEnd = new Date(period.year, period.month, 0);
+  if (!partData.length) {
+    return [];
+  }
+  if (partData.length === 1) {
+    const id = partData[0].part.id;
+    const start = id === 'secondHalf' && partData[0].dueDate
+      ? clampDateToMonth_(partData[0].dueDate, monthStart, monthEnd)
+      : monthStart;
+    const end = id === 'firstHalf' && partData[0].dueDate
+      ? addDays_(clampDateToMonth_(partData[0].dueDate, monthStart, monthEnd), -1)
+      : monthEnd;
+    return [{ start, end: end < start ? start : end }];
+  }
+  const firstDue = partData[0].dueDate
+    ? clampDateToMonth_(partData[0].dueDate, monthStart, monthEnd)
+    : new Date(period.year, period.month - 1, 16);
+  return [
+    { start: monthStart, end: addDays_(firstDue, -1) },
+    { start: firstDue, end: monthEnd },
+  ];
+}
+
+function clampDateToMonth_(date, monthStart, monthEnd) {
+  if (!date || date < monthStart) {
+    return monthStart;
+  }
+  if (date > monthEnd) {
+    return monthEnd;
+  }
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function countWorkingDaysBetween_(startDate, endDate, productionCalendar) {
+  if (!startDate || !endDate || endDate < startDate) {
+    return 0;
+  }
+  let count = 0;
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor = addDays_(cursor, 1)) {
+    if (!isNonWorkingDay_(cursor, productionCalendar)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function buildSalaryPartShares_(workDays, totalWorkDays, partCount) {
+  const total = (workDays || []).reduce((sum, value) => sum + (value || 0), 0);
+  if (total > 0) {
+    return workDays.map((value) => (value || 0) / total);
+  }
+  const count = partCount || SALARY_PAYMENT_PARTS.length;
+  return new Array(count).fill(1 / count);
+}
+
+function splitAmountByShares_(amount, shares) {
+  if (amount === null || amount === undefined || amount === '') {
+    return shares.map(() => null);
+  }
+  const numeric = Number(amount);
+  if (Number.isNaN(numeric)) {
+    return shares.map(() => null);
+  }
+  let distributed = 0;
+  return shares.map((share, index) => {
+    if (index === shares.length - 1) {
+      return roundMoney_(numeric - distributed);
+    }
+    const value = roundMoney_(numeric * share);
+    distributed += value;
+    return value;
+  });
+}
+
+function getMonthOffset_(period, date) {
+  return (date.getFullYear() * 12 + date.getMonth()) - (period.year * 12 + period.month - 1);
+}
+
+function sameCalendarDate_(left, right) {
+  return left instanceof Date &&
+    right instanceof Date &&
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate();
+}
+
+function calculateForcedAbsenceCompensation_(averageDailyEarning, startDate, endDate, productionCalendar, rates) {
+  const workDates = [];
+  const dailyDebts = [];
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor = addDays_(cursor, 1)) {
+    if (!isNonWorkingDay_(cursor, productionCalendar)) {
+      const workDate = new Date(cursor);
+      workDates.push(workDate);
+      dailyDebts.push({
+        date: workDate,
+        result: calculateSalaryCompensation_(averageDailyEarning, workDate, endDate, rates),
+      });
+    }
+  }
+  const wageAmount = roundMoney_(averageDailyEarning * workDates.length);
+  const penaltyAmount = roundMoney_(dailyDebts.reduce((sum, item) => sum + item.result.amount, 0));
+  const vacationDays = STANDARD_ANNUAL_VACATION_DAYS / 365 * inclusiveDays_(startDate, endDate);
+  const vacationAmount = roundMoney_(averageDailyEarning * vacationDays);
+
+  return {
+    workingDays: workDates.length,
+    workDates,
+    dailyDebts,
+    dailyRows: buildForcedAbsenceDailyRows_(dailyDebts, averageDailyEarning, endDate),
+    wageAmount,
+    penaltyAmount,
+    vacationDays,
+    vacationAmount,
+    amount: roundMoney_(wageAmount + penaltyAmount + vacationAmount),
+  };
+}
+
+function buildForcedAbsenceDailyRows_(dailyDebts, averageDailyEarning, endDate) {
+  return (dailyDebts || [])
+    .filter((item) => item.result && !item.result.skipped)
+    .map((item) => ({
+      workDate: item.date,
+      averageDailyEarning,
+      accruedDebt: averageDailyEarning,
+      delayStart: addDays_(item.date, 1),
+      delayEnd: endDate,
+      penalty: item.result.amount,
+      intervals: item.result.intervals,
+    }));
+}
+
 function calculateSalaryCompensation_(sum, dueDate, actualPaymentDate, rates) {
   const startDate = addDays_(dueDate, 1);
   const endDate = new Date(
@@ -1163,7 +1604,9 @@ function calculateSalaryCompensation_(sum, dueDate, actualPaymentDate, rates) {
 
   const intervals = splitByRatePeriods_(startDate, endDate, rates);
   const amount = intervals.reduce((total, interval) => {
-    const compensation = roundMoney_(sum * interval.rate / 100 / 150 * interval.days);
+    const precise = sum * interval.rate / 100 / 150 * interval.days;
+    const compensation = roundMoney_(precise);
+    interval.compensationPrecise = precise;
     interval.compensation = compensation;
     return total + compensation;
   }, 0);
@@ -1288,6 +1731,252 @@ function buildPenaltyNote_(result, dueDate, penaltyEnd, principal, layout, dueDa
   return lines.join('\n');
 }
 
+function buildSalaryPaymentScheduleSummaryRows_(schedule, runDate) {
+  return [
+    ['Даты выплаты зарплаты', 'Восстановленный график по датам ведомостей'],
+    ['Первая половина месяца', formatSalaryPaymentScheduleItem_(schedule && schedule.firstHalf)],
+    ['Вторая половина месяца', formatSalaryPaymentScheduleItem_(schedule && schedule.secondHalf)],
+    ['Обновлено', formatDate_(runDate)],
+  ];
+}
+
+function formatSalaryPaymentScheduleItem_(item) {
+  if (!item) {
+    return 'не восстановлено';
+  }
+  return `${item.day}-е число ${item.monthOffset ? 'следующего' : 'текущего'} месяца (${item.matches}/${item.observations} наблюдений)`;
+}
+
+function deleteSalaryAuxiliaryColumns_(sheet, layout) {
+  const startColumn = columnLetterToIndex_('S') + 1;
+  const count = 5;
+  if (isSalaryAuxiliaryColumnsDeleted_(sheet, layout)) {
+    return;
+  }
+  if (sheet.getMaxColumns && sheet.getMaxColumns() >= startColumn + count - 1) {
+    sheet.deleteColumns(startColumn, count);
+    sheet.getRange(1, columnLetterToIndex_('Q') + 1).setNote('Служебные колонки S:W удалены после перехода на компактную сводку графика выплат.');
+  }
+}
+
+function isSalaryAuxiliaryColumnsDeleted_(sheet, layout) {
+  const note = sheet.getRange(1, columnLetterToIndex_('Q') + 1).getNote();
+  return /S:W/.test(note || '');
+}
+
+function isAutoIndexationInputEdit_(table, startColumn, endColumn) {
+  const outputColumns = [
+    table.columns.monthlyIpc,
+    table.columns.target,
+    table.columns.penalty,
+    table.columns.correctAnnualSalary,
+  ].filter(Number.isInteger);
+  for (let column = startColumn; column <= endColumn; column++) {
+    if (outputColumns.indexOf(column) >= 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function renameLegacyVacationSheet_(spreadsheet) {
+  const oldSheet = spreadsheet.getSheetByName('Отпуска');
+  const targetSheet = spreadsheet.getSheetByName('Отпуска и расчет');
+  if (oldSheet && !targetSheet) {
+    oldSheet.setName('Отпуска и расчет');
+  }
+}
+
+function isFinalSettlementRow_(row, table, finalSettlementDate) {
+  if (!(finalSettlementDate instanceof Date)) {
+    return false;
+  }
+  const periodDate = Number.isInteger(table.columns.period)
+    ? parseDateValue_(row[table.columns.period])
+    : null;
+  const paymentDate = Number.isInteger(table.columns.paymentDate)
+    ? parseDateValue_(row[table.columns.paymentDate])
+    : null;
+  return sameCalendarDate_(periodDate, finalSettlementDate) ||
+    sameCalendarDate_(paymentDate, finalSettlementDate);
+}
+
+function getRowIndexationStart_(row, table, productionCalendar, finalSettlementDate) {
+  if (isFinalSettlementRow_(row, table, finalSettlementDate)) {
+    return {
+      date: finalSettlementDate,
+      source: 'дата окончательного расчета при увольнении',
+    };
+  }
+  return {
+    date: getRowStartDate_(row, table.columns, table.layout, productionCalendar),
+    source: 'период строки, 5-е число следующего месяца с переносом на рабочий день',
+  };
+}
+
+function collectCurrentCalculationRowsFromSheet_(sheet, table, finalSettlementDate) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= table.headerRow) {
+    return [];
+  }
+  const values = sheet
+    .getRange(table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn())
+    .getValues();
+  return values
+    .map((row, index) => {
+      const finalSettlement = isFinalSettlementRow_(row, table, finalSettlementDate);
+      const eventDate = finalSettlement
+        ? finalSettlementDate
+        : (getVacationEventDate_(row, table) || {}).date;
+      return {
+        sheetName: sheet.getName(),
+        rowNumber: table.headerRow + 1 + index,
+        sectionId: finalSettlement ? 'finalSettlement' : table.layout.id,
+        eventDate,
+        underpayment: Number.isInteger(table.columns.unpaidSalary)
+          ? parseMoney_(row[table.columns.unpaidSalary])
+          : null,
+        indexation: Number.isInteger(table.columns.target)
+          ? parseMoney_(row[table.columns.target])
+          : null,
+        penalty: Number.isInteger(table.columns.penalty)
+          ? parseMoney_(row[table.columns.penalty])
+          : null,
+      };
+    })
+    .filter((item) => item.eventDate || item.underpayment !== null);
+}
+
+function isReportSummaryRow_(row, table) {
+  const periodColumns = [
+    table && table.columns ? table.columns.year : null,
+    table && table.columns ? table.columns.month : null,
+    table && table.columns ? table.columns.period : null,
+  ].filter(Number.isInteger);
+  if (periodColumns.some((column) => row[column] !== null && row[column] !== undefined && row[column] !== '')) {
+    return false;
+  }
+  const leadingText = normalizeText_((row || []).slice(0, 3).join(' '));
+  return /(^|\s)итого([\s,:]|$)/.test(leadingText);
+}
+
+function parseA1Cell_(value) {
+  const match = String(value || '').trim().match(/^([A-Za-z]+)(\d+)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    row: Number(match[2]),
+    column: columnLetterToIndex_(match[1]) + 1,
+  };
+}
+
+function buildDetailedCompensationEntryTitle_(layout, periodLabel, suffix) {
+  const titles = {
+    salary: 'Оклад',
+    monthlyPremiums: 'Ежемесячные премии',
+    quarterlyPremiums: 'Ежеквартальные премии',
+    annualPremiums: 'Ежегодные премии',
+    vacation: 'Отпуска',
+  };
+  const base = titles[layout.id] || 'Расчет';
+  return `${base}${periodLabel ? ` (${periodLabel})` : ''}${suffix || ''}`;
+}
+
+function buildDetailedCompensationDelayHeading_(entry, index) {
+  const label = entry.groupId === 'vacation'
+    ? `Задержка отпускных${entry.periodLabel ? ` (${entry.periodLabel})` : ''}`
+    : `Задержка заработной платы - ${String(entry.title || '').toLowerCase()}`;
+  return `7.${index + 1}. ${label}`;
+}
+
+function extractGoogleDocUrl_(value) {
+  const match = String(value || '').match(/https:\/\/docs[.]google[.]com\/document\/d\/[^/\s]+\/edit/);
+  return match ? match[0] : '';
+}
+
+function isDetailedCompensationDocLabel_(value) {
+  return /^расписанный расч[её]т:?$/i.test(normalizeText_(value));
+}
+
+function formatMoneyRu_(value, digits) {
+  const fixed = roundNumber_(value, digits).toFixed(digits);
+  const parts = fixed.split('.');
+  const integer = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return digits > 0 ? `${integer},${parts[1]}` : integer;
+}
+
+function formatMoneyWordsRu_(value) {
+  const rubles = Math.floor(Math.abs(value));
+  const kopecks = Math.round((Math.abs(value) - rubles) * 100);
+  return `${numberToWordsRu_(rubles, true)} ${declineRu_(rubles, ['рубль', 'рубля', 'рублей'])} ${pad2_(kopecks)} ${declineRu_(kopecks, ['копейка', 'копейки', 'копеек'])}`;
+}
+
+function numberToWordsRu_(number, feminine) {
+  if (number === 0) {
+    return 'ноль';
+  }
+  const units = feminine
+    ? ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
+    : ['', 'один', 'два', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять'];
+  const teens = ['десять', 'одиннадцать', 'двенадцать', 'тринадцать', 'четырнадцать', 'пятнадцать', 'шестнадцать', 'семнадцать', 'восемнадцать', 'девятнадцать'];
+  const tens = ['', '', 'двадцать', 'тридцать', 'сорок', 'пятьдесят', 'шестьдесят', 'семьдесят', 'восемьдесят', 'девяносто'];
+  const hundreds = ['', 'сто', 'двести', 'триста', 'четыреста', 'пятьсот', 'шестьсот', 'семьсот', 'восемьсот', 'девятьсот'];
+  const scales = [
+    { forms: ['', '', ''], feminine },
+    { forms: ['тысяча', 'тысячи', 'тысяч'], feminine: true },
+    { forms: ['миллион', 'миллиона', 'миллионов'], feminine: false },
+  ];
+  const words = [];
+  let rest = number;
+  let scale = 0;
+  while (rest > 0) {
+    const chunk = rest % 1000;
+    if (chunk) {
+      const scaleInfo = scales[scale] || scales[0];
+      const chunkWords = numberChunkToWordsRu_(chunk, scaleInfo.feminine, units, teens, tens, hundreds);
+      if (scale > 0) {
+        chunkWords.push(declineRu_(chunk, scaleInfo.forms));
+      }
+      words.unshift(chunkWords.join(' '));
+    }
+    rest = Math.floor(rest / 1000);
+    scale++;
+  }
+  return words.join(' ');
+}
+
+function numberChunkToWordsRu_(number, feminine, defaultUnits, teens, tens, hundreds) {
+  const units = feminine
+    ? ['', 'одна', 'две', 'три', 'четыре', 'пять', 'шесть', 'семь', 'восемь', 'девять']
+    : defaultUnits;
+  const words = [];
+  words.push(hundreds[Math.floor(number / 100)]);
+  const lastTwo = number % 100;
+  if (lastTwo >= 10 && lastTwo <= 19) {
+    words.push(teens[lastTwo - 10]);
+  } else {
+    words.push(tens[Math.floor(lastTwo / 10)]);
+    words.push(units[lastTwo % 10]);
+  }
+  return words.filter(Boolean);
+}
+
+function declineRu_(number, forms) {
+  const lastTwo = Math.abs(number) % 100;
+  const last = Math.abs(number) % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) {
+    return forms[2];
+  }
+  if (last === 1) {
+    return forms[0];
+  }
+  if (last >= 2 && last <= 4) {
+    return forms[1];
+  }
+  return forms[2];
+}
+
 function parseYear_(value) {
   const number = Number(String(value).replace(/[^\d]/g, ''));
   return number >= 2002 && number <= 2100 ? number : null;
@@ -1337,9 +2026,9 @@ function getRowPenaltyDueDate_(row, table, productionCalendar) {
   };
 }
 
-function parsePaymentDateCell_(value) {
+function parsePaymentDatesCell_(value) {
   if (value instanceof Date) {
-    return { date: value, count: 1 };
+    return { date: value, dates: [value], count: 1 };
   }
 
   const text = String(value || '');
@@ -1355,11 +2044,19 @@ function parsePaymentDateCell_(value) {
 
   if (dates.length) {
     dates.sort((left, right) => Number(left) - Number(right));
-    return { date: dates[dates.length - 1], count: dates.length };
+    return { date: dates[dates.length - 1], dates, count: dates.length };
   }
 
   const fallback = parseDateValue_(value);
-  return { date: fallback, count: fallback ? 1 : 0 };
+  return { date: fallback, dates: fallback ? [fallback] : [], count: fallback ? 1 : 0 };
+}
+
+function parsePaymentDateCell_(value) {
+  const parsed = parsePaymentDatesCell_(value);
+  return {
+    date: parsed.date,
+    count: parsed.count,
+  };
 }
 
 function getVacationEventDate_(row, table) {
