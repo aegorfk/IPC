@@ -1518,6 +1518,35 @@ const calendar = {
 }
 
 {
+  const values = [
+    ['', 'ДАТА УВОЛЬНЕНИЯ', '', 'ДАТА РЕШЕНИЯ СУДА'],
+    ['', new Date(2024, 3, 21), '', new Date(2026, 5, 19)],
+    ['Среднедневной заработок', '', '', ''],
+    [17754.84, '', '', ''],
+  ];
+  const fakeSheet = {
+    getName: () => 'Основной',
+    getLastRow: () => values.length,
+    getLastColumn: () => values[0].length,
+    getRange() {
+      return {
+        getValues: () => values,
+        getDisplayValues: () => values.map((row) => row.map((value) =>
+          value instanceof Date ? context.formatDate_(value) : String(value || '')
+        )),
+        getRichTextValues: () => values.map((row) => row.map(() => ({ getLinkUrl: () => '' }))),
+      };
+    },
+  };
+  const params = context.readClaimCalculationParams_({
+    getSheets: () => [fakeSheet],
+  });
+  assert.strictEqual(context.formatDate_(params.startDate), '21.04.2024');
+  assert.strictEqual(context.formatDate_(params.endDate), '19.06.2026');
+  assert.strictEqual(params.averageDailyEarning, 17754.84);
+}
+
+{
   assert.strictEqual(
     context.extractGoogleDocUrl_('https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit?usp=sharing'),
     'https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit'

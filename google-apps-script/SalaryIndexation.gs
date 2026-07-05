@@ -1797,33 +1797,37 @@ function formatSalaryPaymentScheduleItem_(item) {
 function readClaimCalculationParams_(spreadsheet) {
   const labelValues = scanSpreadsheetLabelValues_(spreadsheet);
   return {
-    docUrl: findFirstLabeledValue_(labelValues, [
+    docUrl: findFirstLabeledDocUrl_(labelValues, [
       'расчет требований',
       'расчёт требований',
       'расписанный расчет',
       'расписанный расчёт',
     ]) || SETTINGS.CLAIM_CALCULATION_DOC_URL,
-    averageDailyEarning: parseMoney_(findFirstLabeledValue_(labelValues, [
+    averageDailyEarning: findFirstLabeledMoney_(labelValues, [
       'средний дневной заработок',
       'среднедневной заработок',
-    ])),
-    startDate: parseDateValue_(findFirstLabeledValue_(labelValues, [
+    ]),
+    startDate: findFirstLabeledDate_(labelValues, [
       'дата начала вынужденного прогула',
       'начало вынужденного прогула',
       'начало прогула',
-    ])),
-    endDate: parseDateValue_(findFirstLabeledValue_(labelValues, [
+      'дата увольнения',
+      'увольнения',
+    ]),
+    endDate: findFirstLabeledDate_(labelValues, [
       'дата окончания расчета',
       'дата окончания расчёта',
       'окончание расчета',
       'окончание расчёта',
       'дата окончания вынужденного прогула',
-    ])),
-    annualVacationDays: parseMoney_(findFirstLabeledValue_(labelValues, [
+      'дата решения суда',
+      'решения суда',
+    ]),
+    annualVacationDays: findFirstLabeledMoney_(labelValues, [
       'годовая норма отпуска',
       'норма отпуска',
       'дней отпуска в год',
-    ])) || STANDARD_ANNUAL_VACATION_DAYS,
+    ]) || STANDARD_ANNUAL_VACATION_DAYS,
   };
 }
 
@@ -1846,26 +1850,7 @@ function scanSpreadsheetLabelValues_(spreadsheet) {
           continue;
         }
         const candidates = [];
-        if (column + 1 < columns) {
-          candidates.push(values[row][column + 1]);
-          candidates.push(displayValues[row][column + 1]);
-          if (richTextValues && richTextValues[row][column + 1]) {
-            const link = richTextValues[row][column + 1].getLinkUrl();
-            if (link) {
-              candidates.push(link);
-            }
-          }
-        }
-        if (row + 1 < rows) {
-          candidates.push(values[row + 1][column]);
-          candidates.push(displayValues[row + 1][column]);
-          if (richTextValues && richTextValues[row + 1][column]) {
-            const link = richTextValues[row + 1][column].getLinkUrl();
-            if (link) {
-              candidates.push(link);
-            }
-          }
-        }
+        collectNearbyLabelCandidates_(candidates, values, displayValues, richTextValues, row, column, rows, columns);
         result.push({
           sheetName: sheet.getName(),
           label,
@@ -1877,6 +1862,26 @@ function scanSpreadsheetLabelValues_(spreadsheet) {
   return result;
 }
 
+function collectNearbyLabelCandidates_(candidates, values, displayValues, richTextValues, row, column, rowCount, columnCount) {
+  for (let offset = 1; offset <= 5 && column + offset < columnCount; offset++) {
+    collectLabelCandidateCell_(candidates, values, displayValues, richTextValues, row, column + offset);
+  }
+  for (let offset = 1; offset <= 30 && row + offset < rowCount; offset++) {
+    collectLabelCandidateCell_(candidates, values, displayValues, richTextValues, row + offset, column);
+  }
+}
+
+function collectLabelCandidateCell_(candidates, values, displayValues, richTextValues, row, column) {
+  candidates.push(values[row][column]);
+  candidates.push(displayValues[row][column]);
+  if (richTextValues && richTextValues[row][column]) {
+    const link = richTextValues[row][column].getLinkUrl();
+    if (link) {
+      candidates.push(link);
+    }
+  }
+}
+
 function findFirstLabeledValue_(labelValues, aliases) {
   const normalizedAliases = aliases.map((alias) => normalizeText_(alias));
   const found = (labelValues || []).find((entry) =>
@@ -1884,6 +1889,37 @@ function findFirstLabeledValue_(labelValues, aliases) {
     entry.values.length
   );
   return found ? found.values[0] : '';
+}
+
+function findFirstLabeledDate_(labelValues, aliases) {
+  return findFirstParsedLabeledValue_(labelValues, aliases, parseDateValue_);
+}
+
+function findFirstLabeledMoney_(labelValues, aliases) {
+  return findFirstParsedLabeledValue_(labelValues, aliases, parseMoney_);
+}
+
+function findFirstLabeledDocUrl_(labelValues, aliases) {
+  return findFirstParsedLabeledValue_(labelValues, aliases, (value) => {
+    const text = String(value || '');
+    return extractGoogleDocId_(text) ? extractGoogleDocUrl_(text) || text : null;
+  });
+}
+
+function findFirstParsedLabeledValue_(labelValues, aliases, parser) {
+  const normalizedAliases = aliases.map((alias) => normalizeText_(alias));
+  for (const entry of (labelValues || [])) {
+    if (!normalizedAliases.some((alias) => entry.label.indexOf(alias) >= 0)) {
+      continue;
+    }
+    for (const value of entry.values) {
+      const parsed = parser(value);
+      if (parsed !== null && parsed !== undefined && parsed !== '') {
+        return parsed;
+      }
+    }
+  }
+  return null;
 }
 
 function writeClaimCalculationDoc_(docUrl, params, result) {
