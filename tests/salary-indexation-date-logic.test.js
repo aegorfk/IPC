@@ -1552,6 +1552,50 @@ const calendar = {
 }
 
 {
+  const averageDailyColumnValues = [
+    [15000],
+    [''],
+    [17754.84],
+    [''],
+  ];
+  const vacationSheet = {
+    getName: () => 'Отпуска и расчет',
+    getLastRow: () => 1 + averageDailyColumnValues.length,
+    getRange(row, column, rowCount, columnCount) {
+      assert.strictEqual(row, 2);
+      assert.strictEqual(column, 5);
+      assert.strictEqual(rowCount, averageDailyColumnValues.length);
+      assert.strictEqual(columnCount, 1);
+      return {
+        getValues: () => averageDailyColumnValues,
+      };
+    },
+  };
+  const spreadsheet = {
+    getSheetByName(name) {
+      return name === 'Отпуска и расчет' ? vacationSheet : null;
+    },
+  };
+  assert.strictEqual(context.readAverageDailyEarningFromVacationSheet_(spreadsheet), 17754.84);
+}
+
+{
+  const calculated = context.calculateClaimCalculationResult_({
+    getSheetByName: () => null,
+  }, {
+    startDate: new Date(2026, 3, 21),
+    endDate: new Date(2026, 5, 19),
+    averageDailyEarning: null,
+  }, [
+    {
+      label: 'сумма прогул',
+      values: [9463329.72],
+    },
+  ]);
+  assert.strictEqual(calculated.ready, false);
+}
+
+{
   const values = [
     ['', 'ИТОГО МАТОТВЕТСТВЕННОСТЬ:', 7617007.39],
     ['', 'СУММА ПРОГУЛ:', ''],

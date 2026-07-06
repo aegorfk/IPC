@@ -67,6 +67,7 @@ const SETTINGS = {
       dataStartRow: 2,
       periodColumn: 'A',
       correctAnnualSalaryColumn: 'B',
+      averageDailyEarningColumn: 'E',
       underpaymentColumn: 'J',
       targetColumn: 'K',
       totalUnderpaymentColumn: 'J',
@@ -341,7 +342,7 @@ function fillClaimCalculationDocs() {
   }
   const calculated = calculateClaimCalculationResult_(spreadsheet, params);
   if (!calculated.ready) {
-    showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета.');
+    showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета. Средний заработок берется из явной подписи или из последней строки вкладки "Отпуска и расчет"; сумма прогула не используется как источник.');
     return;
   }
 
@@ -360,15 +361,15 @@ function calculateClaimCalculationResult_(spreadsheet, params, labelValues) {
       result: null,
     };
   }
-  const productionCalendar = loadProductionCalendar_();
   const averageDailyEarning = params.averageDailyEarning ||
-    inferAverageDailyEarningFromSheet_(spreadsheet, params.startDate, params.endDate, productionCalendar, labelValues);
+    readAverageDailyEarningFromVacationSheet_(spreadsheet);
   if (!averageDailyEarning) {
     return {
       ready: false,
       result: null,
     };
   }
+  const productionCalendar = loadProductionCalendar_();
   return {
     ready: true,
     result: calculateForcedAbsenceCompensation_(
@@ -393,7 +394,7 @@ function recalculateForcedAbsenceLiabilityAndVacations() {
   const params = readClaimCalculationParamsFromLabelValues_(labelValues);
   const calculated = calculateClaimCalculationResult_(spreadsheet, params, labelValues);
   if (!calculated.ready) {
-    showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета.');
+    showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета. Средний заработок берется из явной подписи или из последней строки вкладки "Отпуска и расчет"; сумма прогула не используется как источник.');
     return;
   }
   const written = writeClaimCalculationResultToSheet_(sheet, calculated.result, labelValues);
@@ -1894,16 +1895,33 @@ function collectClaimSummaryValues_(labelValues) {
     .filter(Boolean);
 }
 
-function inferAverageDailyEarningFromSheet_(spreadsheet, startDate, endDate, productionCalendar, labelValues) {
-  const currentForcedAbsenceAmount = findFirstLabeledMoney_(labelValues || scanSpreadsheetLabelValues_(spreadsheet), [
-    'сумма прогул',
-    'сумма прогула',
-  ]);
-  if (!currentForcedAbsenceAmount) {
+function readAverageDailyEarningFromVacationSheet_(spreadsheet) {
+  if (!spreadsheet || !spreadsheet.getSheetByName) {
     return null;
   }
-  const workingDays = countWorkingDaysBetween_(startDate, endDate, productionCalendar);
-  return workingDays > 0 ? roundMoney_(currentForcedAbsenceAmount / workingDays) : null;
+  const sheet = spreadsheet.getSheetByName('Отпуска и расчет') || spreadsheet.getSheetByName('Отпуска');
+  if (!sheet) {
+    return null;
+  }
+  const layout = getSheetLayout_(sheet.getName());
+  const column = layout.averageDailyEarningColumn
+    ? columnLetterToIndex_(layout.averageDailyEarningColumn)
+    : columnLetterToIndex_('E');
+  const startRow = layout.dataStartRow || 2;
+  const lastRow = sheet.getLastRow();
+  if (lastRow < startRow) {
+    return null;
+  }
+  const values = sheet
+    .getRange(startRow, column + 1, lastRow - startRow + 1, 1)
+    .getValues();
+  for (let index = values.length - 1; index >= 0; index--) {
+    const averageDailyEarning = parseMoney_(values[index][0]);
+    if (averageDailyEarning) {
+      return averageDailyEarning;
+    }
+  }
+  return null;
 }
 
 function writeClaimCalculationResultToSheet_(sheetOrSpreadsheet, result, labelValues) {
