@@ -1553,6 +1553,7 @@ const calendar = {
 
 {
   const values = [
+    ['', 'ИТОГО МАТОТВЕТСТВЕННОСТЬ:', 7617007.39],
     ['', 'СУММА ПРОГУЛ:', ''],
     ['', 'СУММА МАТОТВ:', ''],
     ['', 'СУММА ОТПУСКА:', ''],
@@ -1598,10 +1599,11 @@ const calendar = {
     vacationAmount: 1075992.12,
   }, labelValues);
   assert.strictEqual(written, 3);
-  assert.strictEqual(values[0][2], 9463331.26);
-  assert.strictEqual(values[1][2], 4350082.78);
-  assert.strictEqual(values[2][2], 1075992.12);
-  assert.strictEqual(formats['1:3'], '#,##0.00');
+  assert.strictEqual(values[0][2], 7617007.39);
+  assert.strictEqual(values[1][2], 9463331.26);
+  assert.strictEqual(values[2][2], 4350082.78);
+  assert.strictEqual(values[3][2], 1075992.12);
+  assert.strictEqual(formats['2:3'], '#,##0.00');
 }
 
 {

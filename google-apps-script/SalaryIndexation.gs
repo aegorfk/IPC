@@ -1920,7 +1920,6 @@ function writeClaimCalculationResultToSheet_(sheetOrSpreadsheet, result, labelVa
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма матотв',
     'сумма материальной ответственности',
-    'матответствен',
   ], result.penaltyAmount);
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма отпуска',
