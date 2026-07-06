@@ -8,6 +8,11 @@ const zupImportCode = fs.readFileSync('google-apps-script/ZupImport.gs', 'utf8')
 const context = {
   console,
   Date,
+  DocumentApp: {
+    ElementType: {
+      PARAGRAPH: 'PARAGRAPH',
+    },
+  },
   JSON,
   Logger: { log() {} },
   Math,
@@ -1597,6 +1602,39 @@ const calendar = {
   assert.strictEqual(values[1][2], 4350082.78);
   assert.strictEqual(values[2][2], 1075992.12);
   assert.strictEqual(formats['1:3'], '#,##0.00');
+}
+
+{
+  const makeParagraph = (text) => ({
+    getType: () => 'PARAGRAPH',
+    asParagraph: () => ({
+      getText: () => text,
+    }),
+  });
+  const children = [
+    makeParagraph('[[AUTO_CLAIM_CALCULATION_START]]'),
+    makeParagraph('Автоматически обновляемый расчет'),
+    makeParagraph('[[AUTO_CLAIM_CALCULATION_END]]'),
+  ];
+  const body = {
+    getNumChildren: () => children.length,
+    getChild: (index) => children[index],
+    appendParagraph(text) {
+      children.push(makeParagraph(text));
+      return children[children.length - 1];
+    },
+    removeChild(child) {
+      if (children.length === 1) {
+        throw new Error("Can't remove the last paragraph in a document section.");
+      }
+      const index = children.indexOf(child);
+      assert.notStrictEqual(index, -1);
+      children.splice(index, 1);
+    },
+  };
+  context.replaceClaimCalculationAutoBlock_(body);
+  assert.strictEqual(children.length, 1);
+  assert.strictEqual(children[0].asParagraph().getText(), '');
 }
 
 {

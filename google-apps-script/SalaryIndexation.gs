@@ -2112,6 +2112,9 @@ function replaceClaimCalculationAutoBlock_(body) {
   if (!start || !end || start.index > end.index) {
     return;
   }
+  if (body.getNumChildren() === end.index - start.index + 1) {
+    body.appendParagraph('');
+  }
   for (let index = end.index; index >= start.index; index--) {
     body.removeChild(body.getChild(index));
   }
