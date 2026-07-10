@@ -1665,9 +1665,14 @@ const calendar = {
 
 {
   const makeParagraph = (text) => ({
+    text,
     getType: () => 'PARAGRAPH',
     asParagraph: () => ({
       getText: () => text,
+      setText(value) {
+        this.text = value;
+        return this;
+      },
     }),
   });
   const children = [
@@ -1694,6 +1699,42 @@ const calendar = {
   context.replaceClaimCalculationAutoBlock_(body);
   assert.strictEqual(children.length, 1);
   assert.strictEqual(children[0].asParagraph().getText(), '');
+}
+
+{
+  const makeParagraph = (text) => ({
+    getType: () => 'PARAGRAPH',
+    asParagraph: () => ({
+      getText: () => text,
+      setText: () => this,
+    }),
+  });
+  const children = [
+    makeParagraph('Ручной текст'),
+    makeParagraph('[[AUTO_CLAIM_CALCULATION_START]]'),
+    makeParagraph('Автоматически обновляемый расчет'),
+    makeParagraph('[[AUTO_CLAIM_CALCULATION_END]]'),
+  ];
+  let appended = 0;
+  const body = {
+    getNumChildren: () => children.length,
+    getChild: (index) => children[index],
+    appendParagraph(text) {
+      appended += 1;
+      children.push(makeParagraph(text));
+      return children[children.length - 1];
+    },
+    removeChild(child) {
+      const index = children.indexOf(child);
+      assert.notStrictEqual(index, -1);
+      children.splice(index, 1);
+    },
+  };
+  context.replaceClaimCalculationAutoBlock_(body);
+  assert.strictEqual(appended, 1);
+  assert.strictEqual(children.length, 2);
+  assert.strictEqual(children[0].asParagraph().getText(), 'Ручной текст');
+  assert.strictEqual(children[1].asParagraph().getText(), '');
 }
 
 {

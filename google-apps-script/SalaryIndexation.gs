@@ -2157,11 +2157,34 @@ function replaceClaimCalculationAutoBlock_(body) {
   if (!start || !end || start.index > end.index) {
     return;
   }
-  if (body.getNumChildren() === end.index - start.index + 1) {
+  if (end.index === body.getNumChildren() - 1) {
     body.appendParagraph('');
   }
   for (let index = end.index; index >= start.index; index--) {
-    body.removeChild(body.getChild(index));
+    removeBodyChildSafely_(body, index);
+  }
+}
+
+function removeBodyChildSafely_(body, index) {
+  const child = body.getChild(index);
+  if (body.getNumChildren && body.getNumChildren() <= 1) {
+    body.appendParagraph('');
+  }
+  try {
+    body.removeChild(child);
+  } catch (error) {
+    if (
+      /last paragraph in a document section/i.test(String(error && error.message ? error.message : error)) &&
+      child &&
+      child.getType &&
+      child.getType() === DocumentApp.ElementType.PARAGRAPH &&
+      child.asParagraph &&
+      child.asParagraph().setText
+    ) {
+      child.asParagraph().setText('');
+      return;
+    }
+    throw error;
   }
 }
 
