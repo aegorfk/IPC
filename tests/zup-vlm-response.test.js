@@ -189,12 +189,35 @@ function assertSuccessfulResponse(content) {
   assert.strictEqual(parsed.rows[0][16], 100);
   assert.strictEqual(parsed.vlmRows[0][3], 'OK');
   assert.strictEqual(parsed.vlmRows[0][9], 'trace-1');
+  assert.strictEqual(parsed.vlmRows[0][11], JSON.stringify(createExtractedPayload()));
   assert.strictEqual(harness.state.fetches.length, 1);
-  assert.strictEqual(harness.state.fetches[0].options.payload, JSON.stringify(harness.state.requestResult.payload));
+  assert.strictEqual(
+    harness.state.fetches[0].url,
+    vm.runInContext('ZUP_IMPORT_SETTINGS.POLZA_ENDPOINT', harness.context)
+  );
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(harness.state.fetches[0].options)),
+    {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer test-key' },
+      payload: JSON.stringify(harness.state.requestResult.payload),
+      muteHttpExceptions: true,
+    }
+  );
   assert.strictEqual(harness.state.traces.length, 1);
   assert.strictEqual(harness.state.traces[0].data.status, 'OK');
   assert.deepStrictEqual(harness.state.traces[0].data.request, harness.state.requestResult.payload);
   assert.deepStrictEqual(harness.state.traces[0].data.response, createExtractedPayload());
+  assert.strictEqual(harness.state.traces[0].data.envelope._zupForceVlm, false);
+  assert.strictEqual(harness.state.traces[0].data.envelope._zupForceReason, undefined);
+  assert.strictEqual(harness.state.traces[0].data.rows.length, 1);
+  assert.deepStrictEqual(
+    Array.from(harness.state.traces[0].data.warnings),
+    Array.from(parsed.warnings)
+  );
+  assert.ok(harness.state.traces[0].data.startedAt instanceof Date);
+  assert.ok(harness.state.traces[0].data.endedAt instanceof Date);
 }
 
 function assertFailedResponse({ response, warning, traceResponse, logPayload }) {

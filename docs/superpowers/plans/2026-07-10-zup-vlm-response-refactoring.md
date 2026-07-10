@@ -211,7 +211,7 @@ Expected: all exit with code 0.
 
 Confirm exact warning strings, trace payload fields, raw log payloads, force metadata, success path, and fetch options are unchanged. Confirm no unrelated source files changed.
 
-- [ ] **Step 7: Commit the production refactoring**
+- [x] **Step 7: Commit the production refactoring**
 
 ```bash
 git add google-apps-script/ZupImport.gs docs/superpowers/plans/2026-07-10-zup-vlm-response-refactoring.md
