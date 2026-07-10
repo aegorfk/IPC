@@ -2355,7 +2355,9 @@ function selectZupImportFiles_(files) {
 function selectZupImportFileGroups_(files) {
   const groups = {};
   files.forEach((file) => {
-    const key = normalizeZupSourceFileKey_(file.getName());
+    const sourceKey = normalizeZupSourceFileKey_(file.getName());
+    const parentKey = getZupSourceParentKey_(file);
+    const key = parentKey ? `${parentKey}::${sourceKey}` : sourceKey;
     if (!groups[key]) {
       groups[key] = [];
     }
@@ -2370,6 +2372,27 @@ function selectZupImportFileGroups_(files) {
       selected: chooseZupImportFile_(groups[key]),
       variants: groups[key].map(formatZupFileVariant_).sort(),
     }));
+}
+
+function getZupSourceParentKey_(file) {
+  if (!file || typeof file.getParents !== 'function') {
+    return '';
+  }
+
+  try {
+    const parentIds = [];
+    const parents = file.getParents();
+    while (parents.hasNext()) {
+      const parent = parents.next();
+      const id = parent && typeof parent.getId === 'function' ? parent.getId() : '';
+      if (id) {
+        parentIds.push(String(id));
+      }
+    }
+    return parentIds.sort().join('|');
+  } catch (error) {
+    return '';
+  }
 }
 
 function normalizeZupSourceFileKey_(fileName) {

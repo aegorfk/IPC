@@ -1027,13 +1027,23 @@ const calendar = {
 }
 
 {
-  function makeFakeFile(name, mimeType, content) {
+  function makeFakeFile(name, mimeType, content, parentId) {
     return {
       getId: () => `${name}-id`,
       getName: () => name,
       getMimeType: () => mimeType,
       getLastUpdated: () => new Date(2026, 0, 1),
       getSize: () => content.length,
+      getParents: () => {
+        let consumed = false;
+        return {
+          hasNext: () => Boolean(parentId) && !consumed,
+          next: () => {
+            consumed = true;
+            return { getId: () => parentId };
+          },
+        };
+      },
       getBlob: () => ({
         getDataAsString: () => content,
       }),
@@ -1054,6 +1064,12 @@ const calendar = {
   assert.strictEqual(groups.length, 1);
   assert.strictEqual(groups[0].selected.getMimeType(), 'application/vnd.google-apps.document');
   assert.strictEqual(groups[0].variants.length, 2);
+
+  const equalNameDifferentFolders = context.selectZupImportFileGroups_([
+    makeFakeFile('2023.10.pdf', 'application/pdf', '', 'employee-a'),
+    makeFakeFile('2023.10.pdf', 'application/pdf', '', 'employee-b'),
+  ]);
+  assert.strictEqual(equalNameDifferentFolders.length, 2);
   assert.strictEqual(context.isZupGeneratedSheet_('Из_1С_Оклад'), true);
   const reconstructionConfigs = context.getZupReconstructionConfigs_();
   assert.strictEqual(reconstructionConfigs.length, 5);
