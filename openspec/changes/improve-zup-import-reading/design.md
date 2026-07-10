@@ -26,21 +26,26 @@ The current parser now handles real 1C HTML table structure, but the import stil
    - Rationale: Apps Script `DriveApp` cannot OCR PDF content directly; Advanced Drive service exposes Drive API conversion/OCR behavior.
    - Alternative considered: require users to manually provide Google Docs duplicates. This remains a fallback, but not the only path.
 
-2. **Keep source variants grouped by normalized file name and choose one canonical variant.**
+2. **Keep source variants grouped by parent folder and normalized file name, then choose one canonical variant.**
    - Priority: Google Docs, HTML, Google Sheets, CSV, PDF, Excel/other.
-   - Rationale: Google Docs exports are generally easiest to parse, HTML is next-best, PDF is slower and OCR-dependent.
+   - Rationale: Google Docs exports are generally easiest to parse, HTML is next-best, PDF is slower and OCR-dependent. Parent-folder identity prevents equal month-based names belonging to different employees or cases from being collapsed into one source group.
 
-3. **Add `Импорт_1С_Качество` and `Импорт_1С_Состояние` sheets.**
+3. **Parse header values within explicit field boundaries.**
+   - Organization and employee labels may appear in separate cells or in a merged OCR line.
+   - Extraction stops at the next known header label and normalizes employee service suffixes such as personnel codes in parentheses.
+   - Rationale: greedy whole-row matching can absorb department, period, or table content and silently assign it to every normalized row.
+
+4. **Add `Импорт_1С_Качество` and `Импорт_1С_Состояние` sheets.**
    - Quality sheet is user-facing and summarizes correctness signals.
    - State sheet is machine-facing and stores file ids, modified timestamps, size, selected variant, row count, and signature.
 
-4. **Dry-run writes preview/quality only.**
+5. **Dry-run writes preview/quality only.**
    - Rationale: users can inspect parser quality without destroying the last accepted import.
 
-5. **Section totals are diagnostic, not blocking.**
+6. **Section totals are diagnostic, not blocking.**
    - Rationale: partial OCR or ambiguous layout should still expose parsed rows; mismatches are warnings in quality output.
 
-6. **Use a hybrid deterministic + VLM pipeline.**
+7. **Use a hybrid deterministic + VLM pipeline.**
    - Default: deterministic parsing for Google Docs/HTML/CSV/Sheets and Drive OCR for PDF.
    - Fallback: if no normalized rows are found, call Polza.ai Chat Completions with a strict JSON Schema.
    - Default model: `google/gemini-3.1-flash-lite`, because the live Polza catalog lists file/image input, structured outputs, long context, and a low prompt/completion price relative to stronger file-capable models.

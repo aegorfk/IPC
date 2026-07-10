@@ -56,3 +56,9 @@
 - [x] 9.7 Add non-blocking QG review sheet, current-run VLM audit reset, and automatic `Из_1С_*` recalculation
 - [x] 9.8 Add optional Langfuse traces for VLM extraction and quality-gate output
 - [x] 9.9 Add dynamic per-company payment-structure JSON and salary top-up treatment for `Доплата до оклада`
+
+## 10. Source Isolation And OCR Headers
+
+- [ ] 10.1 Scope duplicate source grouping by parent Drive folder
+- [ ] 10.2 Bound organization and employee extraction to known header fields
+- [ ] 10.3 Add regression tests and run the import test suite

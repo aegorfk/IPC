@@ -14,6 +14,18 @@ The system SHALL group source variants of the same payroll slip and import only 
 - **WHEN** a Google Docs file and `.html` file normalize to the same payroll-slip key
 - **THEN** the importer reads one canonical file and records the skipped duplicate variants in quality output
 
+#### Scenario: Equal file names belong to different source folders
+- **WHEN** payroll-slip files normalize to the same name but have different parent Drive folders
+- **THEN** the importer keeps them in separate source groups and imports one canonical variant from each folder
+
+### Requirement: Bounded header extraction
+The system SHALL extract organization and employee values without absorbing adjacent header fields or payroll rows.
+
+#### Scenario: OCR merges several header fields into one line
+- **WHEN** an OCR row contains organization or employee followed by department, period, position, or another known header label
+- **THEN** extraction stops at that next label
+- **AND** the employee value excludes a trailing personnel code in parentheses
+
 ### Requirement: PDF OCR fallback
 The system SHALL attempt to convert PDF payroll slips to Google Docs using Advanced Drive service OCR when no better duplicate exists.
 
