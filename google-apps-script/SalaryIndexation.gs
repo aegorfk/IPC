@@ -2127,7 +2127,10 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
 
   body.appendParagraph('Материальная ответственность по ст. 236 ТК РФ').setHeading(DocumentApp.ParagraphHeading.HEADING3);
   body.appendParagraph(
-    `Долг по среднему заработку возникает ежедневно. Пени считаются отдельно по каждому дневному долгу со следующего календарного дня после соответствующего рабочего дня. Итого пени: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
+    `Долг по среднему заработку возникает ежедневно: каждый рабочий день формирует новый долг в размере среднего дневного заработка ${formatMoneyRu_(result.averageDailyEarning, 2)}. Пени считаются отдельно по каждому дневному долгу со следующего календарного дня после соответствующего рабочего дня до ${formatDate_(params.endDate)}.`
+  );
+  body.appendParagraph(
+    `Накопительный итог считается последовательным суммированием: накопительно по строке N = пени строки 1 + ... + пени строки N. Последний накопительный итог равен общей сумме пеней: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
   );
   body.appendTable(buildForcedAbsenceDocTableRows_(result, params));
 
@@ -2220,22 +2223,31 @@ function findBodyParagraphByText_(body, text) {
 }
 
 function buildForcedAbsenceDocTableRows_(result, params) {
-  const rows = [[
-    'Дата',
-    'Долг за день',
-    'Начало просрочки',
-    'Окончание',
-    'Пени',
-  ]];
+  const entries = [];
+  let cumulativePenalty = 0;
   (result.dailyDebts || []).forEach((item) => {
-    rows.push([
+    cumulativePenalty = roundMoney_(cumulativePenalty + item.result.amount);
+    entries.push([
       formatDate_(item.date),
-      formatMoneyRu_(result.averageDailyEarning, 2),
-      formatDate_(addDays_(item.date, 1)),
-      formatDate_(params.endDate),
+      `${formatDate_(addDays_(item.date, 1))} - ${formatDate_(params.endDate)}`,
       formatMoneyRu_(item.result.amount, 2),
+      formatMoneyRu_(cumulativePenalty, 2),
     ]);
   });
+
+  const rows = [[
+    'Дата',
+    'Просрочка',
+    'Пени',
+    'Накопительно',
+    'Дата',
+    'Просрочка',
+    'Пени',
+    'Накопительно',
+  ]];
+  for (let index = 0; index < entries.length; index += 2) {
+    rows.push(entries[index].concat(entries[index + 1] || ['', '', '', '']));
+  }
   return rows;
 }
 

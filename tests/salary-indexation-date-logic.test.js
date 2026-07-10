@@ -1449,6 +1449,27 @@ const calendar = {
   assert.strictEqual(context.formatDate_(tableRows[0][0]), '26.02.2024');
   assert.strictEqual(tableRows[0][1], 1000);
   assert.strictEqual(tableRows[0][5], 2);
+  const docRows = context.buildForcedAbsenceDocTableRows_(result, {
+    endDate: new Date(2024, 1, 29),
+  });
+  assert.deepStrictEqual(Array.from(docRows[0]), [
+    'Дата',
+    'Просрочка',
+    'Пени',
+    'Накопительно',
+    'Дата',
+    'Просрочка',
+    'Пени',
+    'Накопительно',
+  ]);
+  assert.strictEqual(docRows.length, 3);
+  assert.strictEqual(docRows[1][0], '26.02.2024');
+  assert.strictEqual(docRows[1][2], '2,00');
+  assert.strictEqual(docRows[1][3], '2,00');
+  assert.strictEqual(docRows[1][4], '27.02.2024');
+  assert.strictEqual(docRows[1][6], '1,33');
+  assert.strictEqual(docRows[1][7], '3,33');
+  assert.strictEqual(docRows[2][3], '4,00');
 }
 
 {
