@@ -1070,6 +1070,34 @@ const calendar = {
     makeFakeFile('2023.10.pdf', 'application/pdf', '', 'employee-b'),
   ]);
   assert.strictEqual(equalNameDifferentFolders.length, 2);
+  assert.strictEqual(
+    vm.runInContext('ZUP_IMPORT_SETTINGS.PARSER_VERSION', context),
+    'zup-import-v15-source-isolation-headers'
+  );
+
+  assert.strictEqual(
+    context.extractZupCompany_([['Организация: ООО Ромашка Период: 10.2023']]),
+    'ООО Ромашка'
+  );
+  assert.strictEqual(
+    context.extractZupCompany_([['Организация ООО Ромашка Период 10.2023']]),
+    'ООО Ромашка'
+  );
+  assert.strictEqual(
+    context.extractZupCompany_([['Расчетный листок Организация: ООО Ромашка Период: 10.2023']]),
+    'ООО Ромашка'
+  );
+  assert.strictEqual(
+    context.extractZupEmployee_([['Сотрудник: Иванов Иван Иванович (00042) Период: 10.2023']]),
+    'Иванов Иван Иванович'
+  );
+  assert.strictEqual(
+    context.extractZupEmployee_([
+      ['РАСЧЕТНЫЙ ЛИСТОК ЗА ОКТЯБРЬ 2023'],
+      ['Отсутствие по болезни (больничный)'],
+    ]),
+    ''
+  );
   assert.strictEqual(context.isZupGeneratedSheet_('Из_1С_Оклад'), true);
   const reconstructionConfigs = context.getZupReconstructionConfigs_();
   assert.strictEqual(reconstructionConfigs.length, 5);

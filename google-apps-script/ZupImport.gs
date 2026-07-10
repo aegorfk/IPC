@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v14-multi-slip-vlm',
+  PARSER_VERSION: 'zup-import-v15-source-isolation-headers',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -4190,52 +4190,87 @@ function detectZupCategory_(rowText) {
 function extractZupCompany_(values) {
   for (let rowIndex = 0; rowIndex < Math.min(values.length, 30); rowIndex++) {
     const row = values[rowIndex] || [];
-    const joined = row.join(' ').replace(/\s+/g, ' ').trim();
-    const inline = joined.match(/(?:организация|работодатель)\s*:?\s*(.+)$/i);
+    const company = extractZupLabeledHeaderValue_(row, /организация|работодатель/i);
+    if (company) {
+      return company;
+    }
+  }
+  return '';
+}
+
+function extractZupEmployee_(values) {
+  for (let rowIndex = 0; rowIndex < Math.min(values.length, 30); rowIndex++) {
+    const row = values[rowIndex] || [];
+    const employee = extractZupLabeledHeaderValue_(row, /сотрудник|фио/i);
+    if (employee) {
+      return cleanZupEmployeeHeaderValue_(employee);
+    }
+
+    if (
+      rowIndex <= 5 &&
+      looksLikeZupEmployeeHeader_(row[0])
+    ) {
+      return cleanZupEmployeeHeaderValue_(row[0]);
+    }
+  }
+  return '';
+}
+
+function extractZupLabeledHeaderValue_(row, labelPattern) {
+  const exactPattern = new RegExp(`^(?:${labelPattern.source})\\s*:?$`, 'i');
+  const inlinePattern = new RegExp(`(?:^|\\s)(?:${labelPattern.source})\\s*:?\\s*(.*)$`, 'i');
+  const cells = (row || []).map((cell) => String(cell || '').replace(/\s+/g, ' ').trim());
+
+  for (let columnIndex = 0; columnIndex < cells.length; columnIndex++) {
+    const cell = cells[columnIndex];
+    if (!cell) {
+      continue;
+    }
+
+    if (exactPattern.test(cell)) {
+      for (let nextIndex = columnIndex + 1; nextIndex < cells.length; nextIndex++) {
+        if (cells[nextIndex]) {
+          return cleanZupHeaderValue_(cells[nextIndex]);
+        }
+      }
+      return '';
+    }
+
+    const inline = cell.match(inlinePattern);
     if (inline && inline[1]) {
       return cleanZupHeaderValue_(inline[1]);
     }
-
-    for (let columnIndex = 0; columnIndex < row.length - 1; columnIndex++) {
-      if (/^(организация|работодатель)$/i.test(String(row[columnIndex]).trim())) {
-        return cleanZupHeaderValue_(row[columnIndex + 1]);
-      }
-    }
   }
+
   return '';
 }
 
 function cleanZupHeaderValue_(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
-    .replace(/\s+(подразделение|сотрудник|фио)\s*:.*$/i, '')
+    .replace(
+      /\s+(?:организация|работодатель|подразделение|сотрудник|фио|расчетный\s+период|период|месяц|должность|табельный(?:\s+номер)?|кадровый(?:\s+номер)?|начислено|удержано|выплачено)\s*:?.*$/i,
+      ''
+    )
     .trim();
 }
 
-function extractZupEmployee_(values) {
-  for (let rowIndex = 0; rowIndex < Math.min(values.length, 30); rowIndex++) {
-    const row = values[rowIndex];
-    const joined = row.join(' ').replace(/\s+/g, ' ').trim();
-    const inline = joined.match(/(?:сотрудник|фио)\s*:?\s*(.+)$/i);
-    if (inline && inline[1]) {
-      return inline[1].trim();
-    }
+function cleanZupEmployeeHeaderValue_(value) {
+  return cleanZupHeaderValue_(value)
+    .replace(/\s*\([^)]+\)\s*$/, '')
+    .trim();
+}
 
-    for (let columnIndex = 0; columnIndex < row.length - 1; columnIndex++) {
-      if (/^(сотрудник|фио)$/i.test(String(row[columnIndex]).trim())) {
-        return String(row[columnIndex + 1]).trim();
-      }
-    }
-
-    if (
-      rowIndex <= 5 &&
-      /\([^)]+\)/.test(String(row[0] || '')) &&
-      !/организация|расчетный листок|к выплате/i.test(String(row[0] || ''))
-    ) {
-      return String(row[0]).replace(/\s*\([^)]+\)\s*$/, '').trim();
-    }
+function looksLikeZupEmployeeHeader_(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!/\([^)]+\)\s*$/.test(text)) {
+    return false;
   }
-  return '';
+  const name = text.replace(/\s*\([^)]+\)\s*$/, '').trim();
+  const words = name.split(/\s+/).filter(Boolean);
+  return words.length >= 2 && words.length <= 4 && words.every((word) =>
+    /^[А-ЯЁ][А-ЯЁа-яё'-]+$/.test(word)
+  );
 }
 
 function extractZupPeriod_(values, sourceFileName) {
