@@ -1645,6 +1645,8 @@ function calculateForcedAbsenceCompensation_(averageDailyEarning, startDate, end
   const vacationAmount = roundMoney_(averageDailyEarning * vacationDays);
 
   return {
+    startDate,
+    endDate,
     averageDailyEarning,
     annualVacationDays,
     workingDays: workDates.length,
@@ -1934,25 +1936,51 @@ function writeClaimCalculationResultToSheet_(sheetOrSpreadsheet, result, labelVa
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма прогул',
     'сумма прогула',
-  ], result.wageAmount);
+  ], result.wageAmount, buildClaimCalculationSheetNote_(result, 'wage'));
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма матотв',
     'сумма материальной ответственности',
-  ], result.penaltyAmount);
+  ], result.penaltyAmount, buildClaimCalculationSheetNote_(result, 'penalty'));
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма отпуска',
     'сумма отпуск',
-  ], result.vacationAmount);
+  ], result.vacationAmount, buildClaimCalculationSheetNote_(result, 'vacation'));
   return written;
 }
 
-function writeFirstLabeledValue_(labelValues, aliases, value) {
+function writeFirstLabeledValue_(labelValues, aliases, value, note) {
   const entry = findFirstLabelEntry_(labelValues, aliases, false);
   if (!entry || !entry.sheet) {
     return 0;
   }
-  entry.sheet.getRange(entry.row + 1, entry.column + 2).setValue(value).setNumberFormat(SETTINGS.MONEY_FORMAT);
+  const range = entry.sheet
+    .getRange(entry.row + 1, entry.column + 2)
+    .setValue(value)
+    .setNumberFormat(SETTINGS.MONEY_FORMAT);
+  if (note && range.setNote) {
+    range.setNote(note);
+  }
   return 1;
+}
+
+function buildClaimCalculationSheetNote_(result, type) {
+  const lines = [
+    `Период расчета: ${formatDate_(result.startDate)} - ${formatDate_(result.endDate)}`,
+    `Средний дневной заработок: ${formatMoneyRu_(result.averageDailyEarning, 2)}`,
+  ];
+  if (type === 'wage') {
+    lines.push(`Рабочих дней вынужденного прогула: ${result.workingDays}`);
+    lines.push(`Формула: ${formatMoneyRu_(result.averageDailyEarning, 2)} x ${result.workingDays} = ${formatMoneyRu_(result.wageAmount, 2)}`);
+  } else if (type === 'penalty') {
+    lines.push('Пени ст. 236 ТК РФ считаются по каждому дневному долгу отдельно.');
+    lines.push('Просрочка по каждому рабочему дню начинается со следующего календарного дня.');
+    lines.push(`Итого пени: ${formatMoneyRu_(result.penaltyAmount, 2)}`);
+  } else if (type === 'vacation') {
+    lines.push(`Календарных дней периода: ${inclusiveDays_(result.startDate, result.endDate)}`);
+    lines.push(`Накопленные дни отпуска: ${formatMoneyRu_(result.vacationDays, 6)}`);
+    lines.push(`Формула: ${formatMoneyRu_(result.averageDailyEarning, 2)} x ${formatMoneyRu_(result.vacationDays, 6)} = ${formatMoneyRu_(result.vacationAmount, 2)}`);
+  }
+  return lines.join('\n');
 }
 
 function scanSpreadsheetLabelValues_(spreadsheet) {

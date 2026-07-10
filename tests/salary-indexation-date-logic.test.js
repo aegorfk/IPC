@@ -1603,6 +1603,7 @@ const calendar = {
     ['', 'СУММА ОТПУСКА:', ''],
   ];
   const formats = {};
+  const notes = {};
   const fakeSheet = {
     getName: () => 'Расчет',
     getLastRow: () => values.length,
@@ -1629,6 +1630,10 @@ const calendar = {
           formats[`${row}:${column}`] = format;
           return this;
         },
+        setNote(note) {
+          notes[`${row}:${column}`] = note;
+          return this;
+        },
       };
     },
   };
@@ -1638,8 +1643,13 @@ const calendar = {
     includeRichText: false,
   });
   const written = context.writeClaimCalculationResultToSheet_(fakeSheet, {
+    startDate: new Date(2026, 3, 21),
+    endDate: new Date(2026, 5, 19),
+    averageDailyEarning: 17754.84,
+    workingDays: 40,
     wageAmount: 9463331.26,
     penaltyAmount: 4350082.78,
+    vacationDays: 4.602739726027397,
     vacationAmount: 1075992.12,
   }, labelValues);
   assert.strictEqual(written, 3);
@@ -1648,6 +1658,9 @@ const calendar = {
   assert.strictEqual(values[2][2], 4350082.78);
   assert.strictEqual(values[3][2], 1075992.12);
   assert.strictEqual(formats['2:3'], '#,##0.00');
+  assert.match(notes['2:3'], /Период расчета: 21\.04\.2026 - 19\.06\.2026/);
+  assert.match(notes['3:3'], /Пени ст\. 236 ТК РФ/);
+  assert.match(notes['4:3'], /Календарных дней периода: 60/);
 }
 
 {
