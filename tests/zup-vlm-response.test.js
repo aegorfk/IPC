@@ -124,6 +124,57 @@ function parseErrorText(value) {
   throw new Error('Expected invalid JSON');
 }
 
+{
+  const payload = createExtractedPayload();
+  const envelope = { choices: [{ message: { content: JSON.stringify(payload) } }] };
+  const decoded = createHarness().context.decodeZupVlmResponse_(
+    createResponse(200, JSON.stringify(envelope))
+  );
+
+  assert.strictEqual(decoded.ok, true);
+  assert.strictEqual(JSON.stringify(decoded.envelope), JSON.stringify(envelope));
+  assert.strictEqual(JSON.stringify(decoded.extracted), JSON.stringify(payload));
+}
+
+{
+  const envelope = { choices: [{ message: {} }] };
+  const body = JSON.stringify(envelope);
+  const decoded = createHarness().context.decodeZupVlmResponse_(createResponse(200, body));
+
+  assert.strictEqual(decoded.ok, false);
+  assert.strictEqual(decoded.warning, 'Polza VLM не вернула message.content.');
+  assert.strictEqual(JSON.stringify(decoded.traceResponse), JSON.stringify(envelope));
+  assert.strictEqual(decoded.logPayload, body);
+}
+
+{
+  const harness = createHarness();
+  const startedAt = new Date(2026, 6, 10, 12, 0, 0);
+  const failure = {
+    warning: 'Ошибка декодирования',
+    traceResponse: { invalid: true },
+    logPayload: 'raw failure payload',
+  };
+
+  const parsed = harness.context.buildZupVlmResponseFailure_(
+    harness.file,
+    'test-model',
+    { traceId: 'trace-1' },
+    harness.state.requestResult.payload,
+    startedAt,
+    failure
+  );
+
+  assert.deepStrictEqual(Array.from(parsed.warnings), [failure.warning]);
+  assert.strictEqual(parsed.vlmRows[0][9], 'trace-1');
+  assert.strictEqual(parsed.vlmRows[0][11], failure.logPayload);
+  assert.strictEqual(harness.state.traces.length, 1);
+  assert.strictEqual(harness.state.traces[0].data.status, 'ERROR');
+  assert.strictEqual(harness.state.traces[0].data.statusMessage, failure.warning);
+  assert.deepStrictEqual(harness.state.traces[0].data.response, failure.traceResponse);
+  assert.strictEqual(harness.state.traces[0].data.startedAt, startedAt);
+}
+
 function assertSuccessfulResponse(content) {
   const harness = createHarness();
   const envelope = {

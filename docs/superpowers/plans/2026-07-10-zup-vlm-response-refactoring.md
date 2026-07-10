@@ -93,7 +93,7 @@ Run:
 
 Expected: PASS; the first command prints `date logic ok` and both exit with code 0.
 
-- [ ] **Step 7: Commit the characterization safety net**
+- [x] **Step 7: Commit the characterization safety net**
 
 ```bash
 git add tests/zup-vlm-response.test.js docs/superpowers/plans/2026-07-10-zup-vlm-response-refactoring.md
@@ -106,7 +106,7 @@ git commit -m "test: characterize ZUP VLM responses"
 - Modify: `google-apps-script/ZupImport.gs:2813-2923`
 - Test: `tests/zup-vlm-response.test.js`
 
-- [ ] **Step 1: Extract a response decoder**
+- [x] **Step 1: Extract a response decoder**
 
 Add `decodeZupVlmResponse_(response)` near `parseZupWithPolzaVlm_`. It reads the response status/body and returns one of these stable shapes:
 
@@ -138,7 +138,7 @@ if (code < 200 || code >= 300) {
 
 Use a small local construction pattern or helper only if it makes these fields clearer; do not add classes, new files, or generic abstractions.
 
-- [ ] **Step 2: Extract the post-request failure handler**
+- [x] **Step 2: Extract the post-request failure handler**
 
 Add `buildZupVlmResponseFailure_(file, model, trace, requestPayload, startedAt, failure)`. It must:
 
@@ -162,7 +162,7 @@ return buildEmptyZupVlmParsed_(
 );
 ```
 
-- [ ] **Step 3: Simplify `parseZupWithPolzaVlm_`**
+- [x] **Step 3: Simplify `parseZupWithPolzaVlm_`**
 
 Keep the API-key and request-warning early returns unchanged. After `UrlFetchApp.fetch`, replace the duplicated branches with:
 
@@ -185,7 +185,7 @@ const extracted = decoded.extracted;
 
 Leave force metadata, conversion, success tracing, and VLM log construction unchanged.
 
-- [ ] **Step 4: Run the focused characterization test**
+- [x] **Step 4: Run the focused characterization test**
 
 Run:
 
@@ -195,7 +195,7 @@ Run:
 
 Expected: PASS and `vlm response logic ok`.
 
-- [ ] **Step 5: Run all regression tests**
+- [x] **Step 5: Run all regression tests**
 
 Run:
 
@@ -207,7 +207,7 @@ Run:
 
 Expected: all exit with code 0.
 
-- [ ] **Step 6: Review the production diff for semantic drift**
+- [x] **Step 6: Review the production diff for semantic drift**
 
 Confirm exact warning strings, trace payload fields, raw log payloads, force metadata, success path, and fetch options are unchanged. Confirm no unrelated source files changed.
 

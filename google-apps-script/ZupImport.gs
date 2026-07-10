@@ -2810,6 +2810,83 @@ function getZupVlmForcePattern_() {
   return override || ZUP_IMPORT_SETTINGS.VLM_FORCE_PATTERN || '';
 }
 
+function decodeZupVlmResponse_(response) {
+  const code = response.getResponseCode();
+  const body = response.getContentText('UTF-8');
+  if (code < 200 || code >= 300) {
+    return {
+      ok: false,
+      warning: `Polza VLM вернула HTTP ${code}: ${body.slice(0, 500)}`,
+      traceResponse: body,
+      logPayload: body,
+    };
+  }
+
+  let envelope;
+  try {
+    envelope = JSON.parse(body);
+  } catch (error) {
+    return {
+      ok: false,
+      warning: `Polza VLM вернула не-JSON ответ: ${String(error)}`,
+      traceResponse: body,
+      logPayload: body,
+    };
+  }
+
+  const content = envelope &&
+    envelope.choices &&
+    envelope.choices[0] &&
+    envelope.choices[0].message &&
+    envelope.choices[0].message.content;
+  if (!content) {
+    return {
+      ok: false,
+      warning: 'Polza VLM не вернула message.content.',
+      traceResponse: envelope,
+      logPayload: body,
+    };
+  }
+
+  let extracted;
+  try {
+    extracted = typeof content === 'string' ? JSON.parse(content) : content;
+  } catch (error) {
+    return {
+      ok: false,
+      warning: `Polza VLM вернула content, который не парсится как JSON: ${String(error)}`,
+      traceResponse: content,
+      logPayload: content,
+    };
+  }
+
+  return {
+    ok: true,
+    envelope,
+    extracted,
+  };
+}
+
+function buildZupVlmResponseFailure_(file, model, trace, requestPayload, startedAt, failure) {
+  sendZupLangfuseVlmTrace_(trace, {
+    status: 'ERROR',
+    statusMessage: failure.warning,
+    request: requestPayload,
+    response: failure.traceResponse,
+    startedAt,
+    endedAt: new Date(),
+    warnings: [failure.warning],
+  });
+
+  return buildEmptyZupVlmParsed_(
+    file,
+    failure.warning,
+    model,
+    failure.logPayload,
+    trace.traceId
+  );
+}
+
 function parseZupWithPolzaVlm_(file, parsed, options) {
   const apiKey = getZupPolzaApiKey_();
   if (!apiKey) {
@@ -2835,75 +2912,20 @@ function parseZupWithPolzaVlm_(file, parsed, options) {
     muteHttpExceptions: true,
   });
 
-  const code = response.getResponseCode();
-  const body = response.getContentText('UTF-8');
-  if (code < 200 || code >= 300) {
-    const warning = `Polza VLM вернула HTTP ${code}: ${body.slice(0, 500)}`;
-    sendZupLangfuseVlmTrace_(trace, {
-      status: 'ERROR',
-      statusMessage: warning,
-      request: request.payload,
-      response: body,
+  const decoded = decodeZupVlmResponse_(response);
+  if (!decoded.ok) {
+    return buildZupVlmResponseFailure_(
+      file,
+      model,
+      trace,
+      request.payload,
       startedAt,
-      endedAt: new Date(),
-      warnings: [warning],
-    });
-    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
+      decoded
+    );
   }
 
-  let envelope;
-  try {
-    envelope = JSON.parse(body);
-  } catch (error) {
-    const warning = `Polza VLM вернула не-JSON ответ: ${String(error)}`;
-    sendZupLangfuseVlmTrace_(trace, {
-      status: 'ERROR',
-      statusMessage: warning,
-      request: request.payload,
-      response: body,
-      startedAt,
-      endedAt: new Date(),
-      warnings: [warning],
-    });
-    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
-  }
-
-  const content = envelope &&
-    envelope.choices &&
-    envelope.choices[0] &&
-    envelope.choices[0].message &&
-    envelope.choices[0].message.content;
-  if (!content) {
-    const warning = 'Polza VLM не вернула message.content.';
-    sendZupLangfuseVlmTrace_(trace, {
-      status: 'ERROR',
-      statusMessage: warning,
-      request: request.payload,
-      response: envelope,
-      startedAt,
-      endedAt: new Date(),
-      warnings: [warning],
-    });
-    return buildEmptyZupVlmParsed_(file, warning, model, body, trace.traceId);
-  }
-
-  let extracted;
-  try {
-    extracted = typeof content === 'string' ? JSON.parse(content) : content;
-  } catch (error) {
-    const warning = `Polza VLM вернула content, который не парсится как JSON: ${String(error)}`;
-    sendZupLangfuseVlmTrace_(trace, {
-      status: 'ERROR',
-      statusMessage: warning,
-      request: request.payload,
-      response: content,
-      startedAt,
-      endedAt: new Date(),
-      warnings: [warning],
-    });
-    return buildEmptyZupVlmParsed_(file, warning, model, content, trace.traceId);
-  }
-
+  const envelope = decoded.envelope;
+  const extracted = decoded.extracted;
   envelope._zupForceVlm = Boolean(options && options.forceVlm);
   envelope._zupForceReason = options && options.forceReason;
   const parsedVlm = convertPolzaVlmPayloadToZupParsed_(file, extracted, model, envelope);
