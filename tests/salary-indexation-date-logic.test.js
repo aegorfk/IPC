@@ -12,6 +12,9 @@ const context = {
     ElementType: {
       PARAGRAPH: 'PARAGRAPH',
     },
+    ParagraphHeading: {
+      NORMAL: 'NORMAL',
+    },
   },
   JSON,
   Logger: { log() {} },
@@ -1661,6 +1664,50 @@ const calendar = {
   assert.match(notes['2:3'], /Период расчета: 21\.04\.2026 - 19\.06\.2026/);
   assert.match(notes['3:3'], /Пени ст\. 236 ТК РФ/);
   assert.match(notes['4:3'], /Календарных дней периода: 60/);
+}
+
+{
+  const calls = [];
+  const body = {
+    appendParagraph(text) {
+      calls.push(['appendParagraph', text]);
+      return {
+        setHeading(value) {
+          calls.push(['setHeading', value]);
+          return this;
+        },
+        setSpacingBefore(value) {
+          calls.push(['setSpacingBefore', value]);
+          return this;
+        },
+        setSpacingAfter(value) {
+          calls.push(['setSpacingAfter', value]);
+          return this;
+        },
+        editAsText() {
+          return {
+            setFontSize(value) {
+              calls.push(['setFontSize', value]);
+              return this;
+            },
+            setForegroundColor(value) {
+              calls.push(['setForegroundColor', value]);
+              return this;
+            },
+          };
+        },
+      };
+    },
+  };
+  context.appendHiddenClaimMarker_(body, '[[AUTO_CLAIM_CALCULATION_START]]');
+  assert.deepStrictEqual(calls, [
+    ['appendParagraph', '[[AUTO_CLAIM_CALCULATION_START]]'],
+    ['setHeading', 'NORMAL'],
+    ['setSpacingBefore', 0],
+    ['setSpacingAfter', 0],
+    ['setFontSize', 1],
+    ['setForegroundColor', '#ffffff'],
+  ]);
 }
 
 {

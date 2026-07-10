@@ -2100,7 +2100,7 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
   const document = DocumentApp.openById(documentId);
   const body = document.getBody();
   replaceClaimCalculationAutoBlock_(body);
-  body.appendParagraph(CLAIM_CALCULATION_START_MARKER);
+  appendHiddenClaimMarker_(body, CLAIM_CALCULATION_START_MARKER);
   body.appendParagraph('Автоматически обновляемый расчет').setHeading(DocumentApp.ParagraphHeading.HEADING2);
   body.appendParagraph(`Дата формирования: ${formatDate_(todayInSpreadsheetTimezone_(Session.getScriptTimeZone()))}`);
 
@@ -2147,8 +2147,25 @@ function writeClaimCalculationDoc_(docUrl, params, result) {
     ['Накопленные отпуска', formatMoneyRu_(result.vacationAmount, 2)],
     ['Итого', formatMoneyRu_(result.amount, 2)],
   ]);
-  body.appendParagraph(CLAIM_CALCULATION_END_MARKER);
+  appendHiddenClaimMarker_(body, CLAIM_CALCULATION_END_MARKER);
   document.saveAndClose();
+}
+
+function appendHiddenClaimMarker_(body, marker) {
+  const paragraph = body
+    .appendParagraph(marker)
+    .setHeading(DocumentApp.ParagraphHeading.NORMAL)
+    .setSpacingBefore(0)
+    .setSpacingAfter(0);
+  try {
+    paragraph
+      .editAsText()
+      .setFontSize(1)
+      .setForegroundColor('#ffffff');
+  } catch (error) {
+    Logger.log(`Не удалось скрыть технический маркер Docs: ${error && error.message ? error.message : error}`);
+  }
+  return paragraph;
 }
 
 function replaceClaimCalculationAutoBlock_(body) {
