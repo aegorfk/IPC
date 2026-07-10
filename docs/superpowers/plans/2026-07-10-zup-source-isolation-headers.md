@@ -16,10 +16,10 @@
 - Modify: `google-apps-script/ZupImport.gs`
 - Test: `tests/salary-indexation-date-logic.test.js`
 
-- [ ] Add a failing test with equal filenames in two fake parent folders and verify two groups are returned.
-- [ ] Run `node tests/salary-indexation-date-logic.test.js` and confirm the group-count assertion fails.
-- [ ] Add a parent-folder key helper and compose it with `normalizeZupSourceFileKey_`.
-- [ ] Re-run the test and confirm it passes while same-folder variants still collapse to one group.
+- [x] Add a failing test with equal filenames in two fake parent folders and verify two groups are returned.
+- [x] Run `node tests/salary-indexation-date-logic.test.js` and confirm the group-count assertion fails.
+- [x] Add a parent-folder key helper and compose it with `normalizeZupSourceFileKey_`.
+- [x] Re-run the test and confirm it passes while same-folder variants still collapse to one group.
 
 ### Task 2: Bounded OCR header extraction
 
@@ -27,16 +27,16 @@
 - Modify: `google-apps-script/ZupImport.gs`
 - Test: `tests/salary-indexation-date-logic.test.js`
 
-- [ ] Add failing tests for merged organization/employee OCR lines and a misleading early data row.
-- [ ] Run the focused test and confirm the extracted values contain unwanted trailing text.
-- [ ] Add a shared bounded header-value extractor and use it in `extractZupCompany_` and `extractZupEmployee_`.
-- [ ] Re-run the focused and multi-slip tests and confirm all pass.
+- [x] Add failing tests for merged organization/employee OCR lines and a misleading early data row.
+- [x] Run the focused test and confirm the extracted values contain unwanted trailing text.
+- [x] Add a shared bounded header-value extractor and use it in `extractZupCompany_` and `extractZupEmployee_`.
+- [x] Re-run the focused and multi-slip tests and confirm all pass.
 
 ### Task 3: Contract and verification
 
 **Files:**
 - Modify: `openspec/changes/improve-zup-import-reading/tasks.md`
 
-- [ ] Mark tasks 10.1-10.3 complete.
-- [ ] Run both local test files and `git diff --check`.
-- [ ] Review the diff for unrelated files and leave `google-apps-script/.clasp.json` untouched.
+- [x] Mark tasks 10.1-10.3 complete.
+- [x] Run both local test files and `git diff --check`.
+- [x] Review the diff for unrelated files and leave `google-apps-script/.clasp.json` untouched.

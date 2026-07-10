@@ -59,6 +59,6 @@
 
 ## 10. Source Isolation And OCR Headers
 
-- [ ] 10.1 Scope duplicate source grouping by parent Drive folder
-- [ ] 10.2 Bound organization and employee extraction to known header fields
-- [ ] 10.3 Add regression tests and run the import test suite
+- [x] 10.1 Scope duplicate source grouping by parent Drive folder
+- [x] 10.2 Bound organization and employee extraction to known header fields
+- [x] 10.3 Add regression tests and run the import test suite
