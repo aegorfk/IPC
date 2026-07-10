@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'zup-import-v13-payment-structure',
+  PARSER_VERSION: 'zup-import-v14-multi-slip-vlm',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Из_1С_',
   IMPORT_SHEET_NAME: 'Импорт_1С_ЗУП',
@@ -32,7 +32,7 @@ const ZUP_IMPORT_SETTINGS = {
   VLM_FORCE_PATTERN: '',
   VLM_RETRY_ON_TOTAL_MISMATCH: true,
   VLM_MAX_FILE_BYTES: 8 * 1024 * 1024,
-  VLM_MAX_TEXT_CHARS: 90000,
+  VLM_MAX_TEXT_CHARS: 160000,
   BATCH_STATE_PROPERTY: 'ZUP_IMPORT_BATCH_STATE',
   BATCH_TRIGGER_FUNCTION: 'resumeZupFolderImport_',
   BATCH_TRIGGER_DELAY_MS: 60 * 1000,
@@ -2457,8 +2457,10 @@ function parseZupFile_(file) {
   }
 
   if (mimeType === ZUP_IMPORT_SETTINGS.PDF_MIME || /\.pdf$/i.test(file.getName())) {
-    return buildParsedZupResultWithVlmFallback_(file, parseZupPdfWithOcr_(file), {
+    const parsed = parseZupPdfWithOcr_(file);
+    return buildParsedZupResultWithVlmFallback_(file, parsed, {
       sourceKind: 'file',
+      text: parsed.vlmText || '',
     });
   }
 
@@ -2496,7 +2498,7 @@ function parseZupFile_(file) {
 
 function buildParsedZupResultWithVlmFallback_(file, parsed, options) {
   const deterministic = buildParsedZupResult_(file, parsed);
-  const forceReason = getZupVlmForceReason_(file, deterministic);
+  const forceReason = getZupVlmForceReason_(file, deterministic, options || {});
   const forceVlm = Boolean(forceReason);
   if (deterministic.rows.length && !forceVlm) {
     return deterministic;
@@ -2675,6 +2677,7 @@ function parseZupPdfWithOcr_(file) {
 
   try {
     const parsed = parseZupGoogleDoc_(copied.id, file.getName());
+    parsed.vlmText = extractZupVlmTextFromGoogleDoc_(copied.id);
     parsed.warnings = (parsed.warnings || []).concat(['PDF прочитан через временный OCR-документ.']);
     return parsed;
   } finally {
@@ -2683,6 +2686,16 @@ function parseZupPdfWithOcr_(file) {
     } catch (error) {
       // Если удаление временного OCR-документа не удалось, импорт не должен падать.
     }
+  }
+}
+
+function extractZupVlmTextFromGoogleDoc_(documentId) {
+  try {
+    const body = DocumentApp.openById(documentId).getBody();
+    const text = body.getText();
+    return text && text.trim() ? text : '';
+  } catch (error) {
+    return '';
   }
 }
 
@@ -2709,10 +2722,13 @@ function shouldUseZupVlmFallback_(file, parsedResult, options) {
     /^image\//i.test(mimeType);
 }
 
-function getZupVlmForceReason_(file, parsedResult) {
+function getZupVlmForceReason_(file, parsedResult, options) {
   const pattern = getZupVlmForcePattern_();
   if (matchesZupVlmForcePattern_(file, pattern)) {
     return 'pattern';
+  }
+  if (shouldRetryZupVlmForMultiSlipOcr_(parsedResult, options)) {
+    return 'multiSlipOcr';
   }
   if (shouldRetryZupVlmForTotalMismatch_(parsedResult)) {
     return 'totalMismatch';
@@ -2744,6 +2760,23 @@ function shouldRetryZupVlmForTotalMismatch_(parsedResult) {
     parsedResult.rows.length &&
     getZupQualityMismatchScore_(parsedResult.quality) > 0.01
   );
+}
+
+function shouldRetryZupVlmForMultiSlipOcr_(parsedResult, options) {
+  return Boolean(
+    options &&
+    options.sourceKind === 'file' &&
+    options.text &&
+    parsedResult &&
+    parsedResult.rows &&
+    parsedResult.rows.length &&
+    countZupPayrollSlipMarkers_(options.text) > 1
+  );
+}
+
+function countZupPayrollSlipMarkers_(text) {
+  const matches = normalizeText_(text).match(/расчетн[а-яё]*\s+лист[а-яё]*/g) || [];
+  return matches.length;
 }
 
 function getZupVlmForcePattern_() {
@@ -3181,16 +3214,21 @@ function buildZupVlmFilePart_(file) {
 function buildZupVlmPrompt_(file) {
   return [
     `Файл: ${file.getName()}`,
-    'Извлеки строки расчетного листка 1С:ЗУП в строгую структуру.',
-    'Отдельно извлеки организацию-работодателя и сотрудника. В employee верни только ФИО человека без табельного номера, кадрового номера, кода в скобках и других служебных пометок. Если организация не видна, верни пустую строку.',
-    'Нужны реальные строки начислений, выплат и удержаний: оклад, премии, отпускные, больничные, удержания, выплаты.',
-    'Для начислений отдельно выделяй рабочие дни и оплачено дней, если они есть рядом с периодом строки.',
+    'Извлеки расчетные листки из файла в строгую структуру. В одном файле или на одной странице может быть несколько расчетных листков за разные месяцы.',
+    'Верни массив slips: отдельный объект на каждый расчетный листок/месяц/сотрудника. Не объединяй разные месяцы в один slip.',
+    'Поддерживай 1С:ЗУП, ВТБ-таблицы и похожие расчетные формы. Названия секций нормализуй к Начислено, Удержано, Выплачено.',
+    'Для каждого slip отдельно извлеки организацию-работодателя и сотрудника. В employee верни только ФИО человека без табельного номера, кадрового номера, кода в скобках и других служебных пометок. Если организация не видна, верни пустую строку.',
+    'Нужны реальные строки начислений, выплат и удержаний: оклад, премии, отпускные, больничные, удержания, выплаты. Не включай справочные строки без денежного потока, если они не влияют на начислено/удержано/выплачено.',
+    'Для начислений отдельно выделяй рабочие дни и оплачено дней, если они есть рядом с периодом строки. Если есть колонка "Оплачено" вида "18,00 дн.", заполни paidDays.',
     'Для каждой строки начисления верни accrualDate: полную дату начисления дохода или последний день периода начисления. Для премий с периодом 01.01-31.03 accrualDate должен быть 31.03 соответствующего года.',
     'Премии классифицируй по периоду начисления: месяц = ежемесячная, квартальный диапазон = ежеквартальная, год = ежегодная. Не дублируй выплаченную премию как начисленную.',
+    'ВТБ-формат: строки с НДФЛ и удержаниями клади в Удержано, строки перечислений/карт/банка/ведомостей клади в Выплачено, строки "Итого по ведомости" используй только для сверки totals и не дублируй как row.',
+    'Если листок содержит долг на начало/конец, не превращай его в начисление или выплату; можно упомянуть это в warnings.',
     'Даты возвращай в формате dd.MM.yyyy, период листка в формате MM.yyyy.',
     'Суммы возвращай числами в рублях, без пробелов и знаков валюты. Если суммы нет, возвращай 0.',
     'Категорию выбирай из: Оклад, Ежемесячные премии, Ежеквартальные премии, Ежегодные премии, Отпуска, Больничные, Отпуск без оплаты, Удержания, Выплаты, Материальная помощь, Командировки, Доплата до оклада, Сверхурочные и ночные, Праздники и выходные, Районные коэффициенты и надбавки, Совмещение и замещение, Выходное пособие, Прочее.',
-    'В sourceText положи короткий фрагмент исходной строки, по которому можно проверить извлечение.',
+    'В page верни номер страницы, если он понятен, иначе 0. В blockIndex верни порядковый номер расчетного листка внутри файла, начиная с 1.',
+    'В sourceText положи короткий фрагмент исходной строки, по которому можно проверить извлечение; для строк из фото добавь узнаваемый текст строки.',
   ].join('\n');
 }
 
@@ -3200,62 +3238,92 @@ function buildZupVlmJsonSchema_() {
     paid: { type: 'number' },
     withheld: { type: 'number' },
   };
+  const rowSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      section: { type: 'string' },
+      category: { type: 'string' },
+      kind: { type: 'string' },
+      period: { type: 'string' },
+      accrualDate: { type: 'string' },
+      year: { type: 'integer' },
+      month: { type: 'integer' },
+      workDays: { type: 'number' },
+      paidDays: { type: 'number' },
+      paymentDate: { type: 'string' },
+      statement: { type: 'string' },
+      statementDate: { type: 'string' },
+      accrued: { type: 'number' },
+      paid: { type: 'number' },
+      withheld: { type: 'number' },
+      sourceText: { type: 'string' },
+      confidence: { type: 'number' },
+    },
+    required: [
+      'section',
+      'category',
+      'kind',
+      'period',
+      'accrualDate',
+      'year',
+      'month',
+      'workDays',
+      'paidDays',
+      'paymentDate',
+      'statement',
+      'statementDate',
+      'accrued',
+      'paid',
+      'withheld',
+      'sourceText',
+      'confidence',
+    ],
+  };
   return {
     type: 'object',
     additionalProperties: false,
     properties: {
-      employee: { type: 'string' },
-      company: { type: 'string' },
-      period: { type: 'string' },
-      year: { type: 'integer' },
-      month: { type: 'integer' },
-      totals: {
-        type: 'object',
-        additionalProperties: false,
-        properties: amountProperties,
-        required: ['accrued', 'paid', 'withheld'],
-      },
-      rows: {
+      slips: {
         type: 'array',
         items: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            section: { type: 'string' },
-            category: { type: 'string' },
-            kind: { type: 'string' },
+            employee: { type: 'string' },
+            company: { type: 'string' },
             period: { type: 'string' },
-            accrualDate: { type: 'string' },
             year: { type: 'integer' },
             month: { type: 'integer' },
-            workDays: { type: 'number' },
-            paidDays: { type: 'number' },
-            paymentDate: { type: 'string' },
-            statement: { type: 'string' },
-            statementDate: { type: 'string' },
-            accrued: { type: 'number' },
-            paid: { type: 'number' },
-            withheld: { type: 'number' },
-            sourceText: { type: 'string' },
+            page: { type: 'integer' },
+            blockIndex: { type: 'integer' },
+            totals: {
+              type: 'object',
+              additionalProperties: false,
+              properties: amountProperties,
+              required: ['accrued', 'paid', 'withheld'],
+            },
+            rows: {
+              type: 'array',
+              items: rowSchema,
+            },
+            warnings: {
+              type: 'array',
+              items: { type: 'string' },
+            },
             confidence: { type: 'number' },
           },
           required: [
-            'section',
-            'category',
-            'kind',
+            'employee',
+            'company',
             'period',
-            'accrualDate',
             'year',
             'month',
-            'workDays',
-            'paidDays',
-            'paymentDate',
-            'statement',
-            'statementDate',
-            'accrued',
-            'paid',
-            'withheld',
-            'sourceText',
+            'page',
+            'blockIndex',
+            'totals',
+            'rows',
+            'warnings',
             'confidence',
           ],
         },
@@ -3265,25 +3333,63 @@ function buildZupVlmJsonSchema_() {
         items: { type: 'string' },
       },
     },
-    required: ['employee', 'company', 'period', 'year', 'month', 'totals', 'rows', 'warnings'],
+    required: ['slips', 'warnings'],
   };
 }
 
 function convertPolzaVlmPayloadToZupParsed_(file, payload, model, envelope) {
-  const period = parseMonthYear_(payload.period) || {
-    year: Number(payload.year) || '',
-    month: Number(payload.month) || '',
-  };
-  const rows = (payload.rows || [])
-    .map((row) => convertPolzaVlmRowToZupRow_(file, row, payload, period))
-    .filter(Boolean);
-  const warnings = (payload.warnings || []).slice();
+  const payloadData = payload || {};
+  const slips = normalizePolzaVlmSlips_(payloadData);
+  const rows = [];
+  const totals = buildEmptyZupTotals_();
+  const warnings = (payloadData.warnings || []).slice();
+  let company = '';
+  let employee = '';
+  let firstPeriod = null;
+
+  slips.forEach((slip, index) => {
+    const period = parseMonthYear_(slip.period) || {
+      year: Number(slip.year) || '',
+      month: Number(slip.month) || '',
+    };
+    if (!company && slip.company) {
+      company = slip.company;
+    }
+    if (!employee && slip.employee) {
+      employee = slip.employee;
+    }
+    if (!firstPeriod && period && period.year && period.month) {
+      firstPeriod = period;
+    }
+
+    const slipTotals = normalizeZupVlmTotals_(slip.totals);
+    totals.accrued += slipTotals.accrued || 0;
+    totals.withheld += slipTotals.withheld || 0;
+    totals.paid += slipTotals.paid || 0;
+    (slip.warnings || []).forEach((warning) => {
+      warnings.push(`Slip ${slip.blockIndex || index + 1}: ${warning}`);
+    });
+
+    (slip.rows || []).forEach((row) => {
+      const converted = convertPolzaVlmRowToZupRow_(file, row, slip, period);
+      if (converted) {
+        rows.push(converted);
+      }
+    });
+  });
+
   warnings.unshift(`Строки извлечены через Polza VLM (${model}); требуется сверка по sourceText/confidence.`);
+  if (slips.length > 1) {
+    warnings.unshift(`VLM распознал несколько расчетных листков в одном файле: ${slips.length}.`);
+  }
   if (envelope && envelope._zupForceVlm) {
-    warnings.unshift(envelope._zupForceReason === 'totalMismatch'
-      ? 'Файл перечитан через VLM автоматически из-за расхождения с итогами расчетного листка.'
-      : 'Файл принудительно перечитан через VLM по ZUP_VLM_FORCE_PATTERN.'
-    );
+    if (envelope._zupForceReason === 'totalMismatch') {
+      warnings.unshift('Файл перечитан через VLM автоматически из-за расхождения с итогами расчетного листка.');
+    } else if (envelope._zupForceReason === 'multiSlipOcr') {
+      warnings.unshift('Файл перечитан через VLM автоматически: OCR-текст содержит несколько расчетных листков.');
+    } else {
+      warnings.unshift('Файл принудительно перечитан через VLM по ZUP_VLM_FORCE_PATTERN.');
+    }
   }
   if (envelope && envelope.usage && envelope.usage.cost_rub) {
     warnings.push(`Стоимость VLM-запроса: ${envelope.usage.cost_rub} ₽.`);
@@ -3291,16 +3397,42 @@ function convertPolzaVlmPayloadToZupParsed_(file, payload, model, envelope) {
 
   return {
     rows,
-    totals: normalizeZupVlmTotals_(payload.totals),
-    company: payload.company || '',
-    employee: payload.employee || '',
-    period: period && period.year && period.month ? period : null,
+    totals,
+    company,
+    employee,
+    period: firstPeriod,
     warnings,
     vlmRows: [],
   };
 }
 
-function convertPolzaVlmRowToZupRow_(file, row, payload, fallbackPeriod) {
+function normalizePolzaVlmSlips_(payload) {
+  const data = payload || {};
+  if (Array.isArray(data.slips) && data.slips.length) {
+    return data.slips.map((slip, index) => normalizePolzaVlmSlip_(slip, data, index));
+  }
+  return [normalizePolzaVlmSlip_(data, data, 0)];
+}
+
+function normalizePolzaVlmSlip_(slip, fallback, index) {
+  const source = slip || {};
+  const fallbackData = fallback || {};
+  return {
+    employee: source.employee || fallbackData.employee || '',
+    company: source.company || fallbackData.company || '',
+    period: source.period || fallbackData.period || '',
+    year: source.year || fallbackData.year || '',
+    month: source.month || fallbackData.month || '',
+    page: Number(source.page) || 0,
+    blockIndex: Number(source.blockIndex) || index + 1,
+    totals: source.totals || fallbackData.totals || buildEmptyZupTotals_(),
+    rows: source.rows || [],
+    warnings: source.warnings || [],
+    confidence: source.confidence || '',
+  };
+}
+
+function convertPolzaVlmRowToZupRow_(file, row, slip, fallbackPeriod) {
   const period = parseMonthYear_(row.period) ||
     (row.year && row.month ? { year: Number(row.year), month: Number(row.month) } : null) ||
     fallbackPeriod;
@@ -3324,8 +3456,8 @@ function convertPolzaVlmRowToZupRow_(file, row, payload, fallbackPeriod) {
   return [
     file.getName(),
     'Polza VLM',
-    payload.company || '',
-    payload.employee || '',
+    slip.company || '',
+    slip.employee || '',
     formatZupPeriod_(period),
     accrualDate ? formatDate_(accrualDate) : '',
     periodForColumns.year,
@@ -3341,8 +3473,23 @@ function convertPolzaVlmRowToZupRow_(file, row, payload, fallbackPeriod) {
     accrued,
     paid,
     withheld,
-    row.sourceText || '',
+    buildZupVlmSourceText_(row, slip),
   ];
+}
+
+function buildZupVlmSourceText_(row, slip) {
+  const parts = [];
+  if (slip && slip.page) {
+    parts.push(`стр. ${slip.page}`);
+  }
+  if (slip && slip.blockIndex) {
+    parts.push(`блок ${slip.blockIndex}`);
+  }
+  if (row && row.confidence) {
+    parts.push(`confidence ${row.confidence}`);
+  }
+  const prefix = parts.length ? `[VLM ${parts.join(', ')}] ` : '[VLM] ';
+  return `${prefix}${row && row.sourceText ? row.sourceText : ''}`.trim();
 }
 
 function normalizeZupVlmSection_(section, row) {
