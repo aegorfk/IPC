@@ -225,11 +225,11 @@ git commit -m "refactor(zup): extract VLM response handling"
 - Verify: `tests/zup-vlm-response.test.js`
 - Verify: `docs/superpowers/specs/2026-07-10-zup-vlm-response-refactoring-design.md`
 
-- [ ] **Step 1: Run the complete test suite from a clean shell invocation**
+- [x] **Step 1: Run the complete test suite from a clean shell invocation**
 
 Run all three Node commands from Task 2 Step 5. Expected: all pass.
 
-- [ ] **Step 2: Check formatting and repository state**
+- [x] **Step 2: Check formatting and repository state**
 
 Run:
 
@@ -240,7 +240,7 @@ git status --short
 
 Expected: no whitespace errors; only the pre-existing untracked `google-apps-script/.clasp.json` may remain.
 
-- [ ] **Step 3: Review commit scope**
+- [x] **Step 3: Review commit scope**
 
 Run:
 
