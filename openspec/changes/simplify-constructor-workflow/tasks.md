@@ -1,8 +1,8 @@
 ## 1. Characterization Safety Net
 
-- [ ] 1.1 Create `tests/claim-constructor-workflow.test.js` with a reusable Node `vm` Apps Script harness and fake spreadsheet, sheet, range, properties, Drive folder, and Docs boundaries.
-- [ ] 1.2 Add characterization tests for the existing source-folder and Docs-link label resolvers using `Исходные данные:` and `Расписанный расчет:` before changing UI code.
-- [ ] 1.3 Add characterization tests for existing public import, reconstruction, recalculation, and Docs entry-point availability and run the complete pre-change test baseline.
+- [x] 1.1 Create `tests/claim-constructor-workflow.test.js` with a reusable Node `vm` Apps Script harness and fake spreadsheet, sheet, range, properties, Drive folder, and Docs boundaries.
+- [x] 1.2 Add characterization tests for the existing source-folder and Docs-link label resolvers using `Исходные данные:` and `Расписанный расчет:` before changing UI code.
+- [x] 1.3 Add characterization tests for existing public import, reconstruction, recalculation, and Docs entry-point availability and run the complete pre-change test baseline.
 
 ## 2. Constructor Sheet Facade
 
