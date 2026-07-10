@@ -23,7 +23,7 @@
 - Reference: `tests/zup-vlm-multi-slip.test.js`
 - Reference: `google-apps-script/ZupImport.gs:2813-2923`
 
-- [ ] **Step 1: Create a focused Apps Script test context**
+- [x] **Step 1: Create a focused Apps Script test context**
 
 Load `SalaryIndexation.gs` and `ZupImport.gs` into a Node `vm` context. Provide minimal `DocumentApp`, `PropertiesService`, `Session`, `Utilities`, and `UrlFetchApp` fakes. Override these global seams after loading:
 
@@ -41,15 +41,15 @@ context.UrlFetchApp.fetch = (url, options) => {
 
 Use a fake file exposing `getName`, `getMimeType`, `getBlob`, and `getSize`. Use a minimal valid extracted payload with one salary row so the real conversion path remains covered.
 
-- [ ] **Step 2: Add assertions for the two pre-request early returns**
+- [x] **Step 2: Add assertions for the two pre-request early returns**
 
 Cover missing API key and `{ warning }` returned by `buildZupVlmRequest_`. Assert the exact warning, zero fetches, and zero traces.
 
-- [ ] **Step 3: Add assertions for successful content**
+- [x] **Step 3: Add assertions for successful content**
 
 Cover both JSON-string and object-valued `message.content`. Assert one normalized row, an `OK` VLM log entry, one `OK` trace, the same request payload, and the expected trace id.
 
-- [ ] **Step 4: Add assertions for four handled post-request failures**
+- [x] **Step 4: Add assertions for four handled post-request failures**
 
 Cover non-2xx status, invalid outer JSON, absent `message.content`, and invalid nested JSON. For every case assert the complete warning text, empty rows, an error VLM log row, and one `ERROR` trace. Also assert the exact branch-specific values passed to tracing and stored in the VLM log:
 
@@ -72,7 +72,7 @@ The case table must lock these mappings:
 
 For each case assert `traces[0].data.response` against the expected trace value and `parsed.vlmRows[0][11]` against the exact expected serialized/raw log payload. This prevents the shared failure handler from swapping the two diagnostics while preserving superficial status assertions.
 
-- [ ] **Step 5: Run the new characterization test against the unmodified implementation**
+- [x] **Step 5: Run the new characterization test against the unmodified implementation**
 
 Run:
 
@@ -82,7 +82,7 @@ Run:
 
 Expected: PASS with a final `vlm response logic ok` line. If an assertion fails because current behavior differs from the spec, update the spec before production code.
 
-- [ ] **Step 6: Run the existing baseline tests**
+- [x] **Step 6: Run the existing baseline tests**
 
 Run:
 
