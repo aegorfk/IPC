@@ -87,6 +87,7 @@ class FakeSheet {
     this.cells = new Map();
     this.links = new Map();
     this.frozenRows = 0;
+    this.columnWidths = new Map();
   }
 
   key(row, column) {
@@ -120,6 +121,12 @@ class FakeSheet {
   getName() { return this.name; }
   getSheetId() { return this.id; }
   getRange(row, column, rowCount, columnCount) {
+    if (typeof row === 'string') {
+      const match = row.match(/^([A-Z]+)(\d+)$/i);
+      if (!match) throw new Error(`Unsupported A1 range ${row}`);
+      const parsedColumn = match[1].toUpperCase().split('').reduce((sum, letter) => sum * 26 + letter.charCodeAt(0) - 64, 0);
+      return new FakeRange(this, Number(match[2]), parsedColumn, 1, 1);
+    }
     return new FakeRange(this, row, column, rowCount, columnCount);
   }
   getDataRange() {
@@ -137,7 +144,7 @@ class FakeSheet {
   showSheet() { this.hidden = false; return this; }
   isSheetHidden() { return this.hidden; }
   setFrozenRows(count) { this.frozenRows = count; return this; }
-  setColumnWidth() { return this; }
+  setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
   setRowHeight() { return this; }
   autoResizeRows() { return this; }
 }
@@ -309,6 +316,177 @@ function createHarness(sheetNames = ['Оклад']) {
     'updateAllSheetsIndexation',
     'fillClaimCalculationDocs',
   ].forEach((name) => assert.strictEqual(typeof harness.context[name], 'function', `${name} must remain callable`));
+}
+
+{
+  const harness = createHarness();
+  const layout = harness.context.getClaimConstructorLayout_();
+
+  assert.strictEqual(layout.sheetName, 'Конструктор');
+  assert.strictEqual(layout.sourceFolder.label, 'Исходные данные:');
+  assert.strictEqual(layout.sourceFolder.namedRange, 'CLAIM_CONSTRUCTOR_SOURCE_FOLDER');
+  assert.strictEqual(layout.outputDoc.label, 'Расписанный расчет:');
+  assert.strictEqual(layout.outputDoc.namedRange, 'CLAIM_CONSTRUCTOR_OUTPUT_DOC');
+  assert.deepStrictEqual(Array.from(layout.issueHeaders), [
+    'Уровень',
+    'Этап',
+    'Тип источника',
+    'Источник',
+    'Причина',
+    'Статус проверки',
+    'Влияние',
+    'Что сделать',
+  ]);
+  assert.strictEqual(layout.phaseLabels.completeWithWarnings, 'Готово с замечаниями');
+}
+
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const created = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+
+  assert.strictEqual(created.getName(), 'Конструктор');
+  assert.strictEqual(harness.spreadsheet.getSheets()[0].getName(), 'Конструктор');
+  assert.strictEqual(created.getRange(layout.sourceFolder.labelCell).getValue(), 'Исходные данные:');
+  assert.strictEqual(created.getRange(layout.outputDoc.labelCell).getValue(), 'Расписанный расчет:');
+  assert.strictEqual(
+    harness.spreadsheet.getRangeByName(layout.sourceFolder.namedRange).getValue(),
+    ''
+  );
+
+  created.getRange(layout.sourceFolder.valueCell).setValue('https://drive.google.com/drive/folders/preserved-folder');
+  created.getRange(layout.outputDoc.valueCell).setValue('https://docs.google.com/document/d/preserved-doc/edit');
+  created.getRange(layout.status.messageCell).setValue('Сохраненный статус');
+  created.getRange(23, 1).setValue('Сохраненное замечание');
+  const originalId = created.getSheetId();
+  const originalOrder = harness.spreadsheet.getSheets().map((sheet) => sheet.getSheetId());
+
+  const reopened = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+
+  assert.strictEqual(reopened.getSheetId(), originalId);
+  assert.deepStrictEqual(harness.spreadsheet.getSheets().map((sheet) => sheet.getSheetId()), originalOrder);
+  assert.strictEqual(reopened.getRange(layout.sourceFolder.valueCell).getValue(), 'https://drive.google.com/drive/folders/preserved-folder');
+  assert.strictEqual(reopened.getRange(layout.outputDoc.valueCell).getValue(), 'https://docs.google.com/document/d/preserved-doc/edit');
+  assert.strictEqual(reopened.getRange(layout.status.messageCell).getValue(), 'Сохраненный статус');
+  assert.strictEqual(reopened.getRange(23, 1).getValue(), 'Сохраненное замечание');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  sheet.getRange(layout.sourceFolder.valueCell).setValue('https://drive.google.com/drive/folders/named-range-folder-123456');
+  sheet.getRange(layout.outputDoc.valueCell).setValue('https://docs.google.com/document/d/named-range-doc-123456/edit');
+  harness.spreadsheet.getSheetByName('Оклад')
+    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 2, 'https://drive.google.com/drive/folders/conflicting-folder-123456');
+
+  const inputs = harness.context.readClaimConstructorInputs_(harness.spreadsheet);
+
+  assert.strictEqual(inputs.folderId, 'named-range-folder-123456');
+  assert.strictEqual(inputs.docId, 'named-range-doc-123456');
+  assert.strictEqual(inputs.source, 'named_ranges');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const sheet = harness.spreadsheet.getSheetByName('Оклад');
+  sheet
+    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 2, 'Расчетные листки', 'https://drive.google.com/drive/folders/label-folder-123456789')
+    .seed(2, 1, 'Расписанный расчет:')
+    .seed(2, 2, 'Расшифровка', 'https://docs.google.com/document/d/label-doc-123456789/edit');
+
+  const inputs = harness.context.readClaimConstructorInputs_(harness.spreadsheet);
+
+  assert.strictEqual(inputs.folderId, 'label-folder-123456789');
+  assert.strictEqual(inputs.docId, 'label-doc-123456789');
+  assert.strictEqual(inputs.source, 'labels');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const folderId = 'accessible-folder-123456789';
+  const docId = 'accessible-doc-123456789';
+  const folder = { id: folderId };
+  const document = { id: docId };
+  harness.driveFolders.set(folderId, folder);
+  harness.documents.set(docId, document);
+
+  const result = harness.context.validateClaimConstructorInputs_({
+    folderUrl: `https://drive.google.com/drive/folders/${folderId}`,
+    folderId,
+    docUrl: `https://docs.google.com/document/d/${docId}/edit`,
+    docId,
+  });
+
+  assert.strictEqual(result.valid, true);
+  assert.deepStrictEqual(Array.from(result.errors), []);
+  assert.strictEqual(result.folder, folder);
+  assert.strictEqual(result.document, document);
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const calculationSheet = harness.spreadsheet.getSheetByName('Оклад');
+  calculationSheet.getRange('A1').setValue('не менять');
+
+  const result = harness.context.validateClaimConstructorInputs_({
+    folderUrl: 'https://docs.google.com/document/d/wrong-folder-kind/edit',
+    folderId: '',
+    docUrl: 'https://drive.google.com/drive/folders/wrong-doc-kind',
+    docId: '',
+  });
+
+  assert.strictEqual(result.valid, false);
+  assert.deepStrictEqual(Array.from(result.errors).map((error) => error.code), [
+    'folder_wrong_kind',
+    'doc_wrong_kind',
+  ]);
+  assert.strictEqual(calculationSheet.getRange('A1').getValue(), 'не менять');
+}
+
+{
+  const harness = createHarness();
+  const result = harness.context.validateClaimConstructorInputs_({
+    folderUrl: 'не ссылка',
+    folderId: '',
+    docUrl: '',
+    docId: '',
+  });
+
+  assert.deepStrictEqual(Array.from(result.errors).map((error) => error.code), [
+    'folder_invalid',
+    'doc_required',
+  ]);
+}
+
+{
+  const harness = createHarness();
+  const result = harness.context.validateClaimConstructorInputs_({
+    folderUrl: 'https://drive.google.com/drive/folders/inaccessible-folder-123456789',
+    folderId: 'inaccessible-folder-123456789',
+    docUrl: 'https://docs.google.com/document/d/inaccessible-doc-123456789/edit',
+    docId: 'inaccessible-doc-123456789',
+  });
+
+  assert.strictEqual(result.valid, false);
+  assert.deepStrictEqual(Array.from(result.errors).map((error) => error.code), [
+    'folder_inaccessible',
+    'doc_inaccessible',
+  ]);
+}
+
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  const opened = harness.context.openClaimConstructor();
+
+  assert.strictEqual(opened.getName(), 'Конструктор');
+  assert.strictEqual(harness.spreadsheet.getActiveSheet(), opened);
+  assert.strictEqual(opened.frozenRows, 2);
+  assert.strictEqual(opened.columnWidths.get(1), 190);
+  assert.strictEqual(opened.columnWidths.get(2), 520);
+  assert.strictEqual(harness.spreadsheet.getSheets().length, 3);
 }
 
 console.log('claim constructor characterization ok');

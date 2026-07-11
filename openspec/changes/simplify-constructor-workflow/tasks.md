@@ -6,11 +6,11 @@
 
 ## 2. Constructor Sheet Facade
 
-- [ ] 2.1 Define constructor sheet/layout constants and pure helpers for required labels, named ranges, phase labels, result fields, and issue columns.
-- [ ] 2.2 Implement and test idempotent constructor-sheet creation that preserves existing input links, status, totals, issues, sheet id, and sheet position on repeated setup.
-- [ ] 2.3 Implement and test constructor input reading with named-range preference and label-based compatibility fallback.
-- [ ] 2.4 Implement and test preflight validation for Drive-folder and Google-Doc syntax, resource kind, and access, with no calculation mutation on failure.
-- [ ] 2.5 Add focused formatting and activation of the constructor sheet without creating a parallel calculation table.
+- [x] 2.1 Define constructor sheet/layout constants and pure helpers for required labels, named ranges, phase labels, result fields, and issue columns.
+- [x] 2.2 Implement and test idempotent constructor-sheet creation that preserves existing input links, status, totals, issues, sheet id, and sheet position on repeated setup.
+- [x] 2.3 Implement and test constructor input reading with named-range preference and label-based compatibility fallback.
+- [x] 2.4 Implement and test preflight validation for Drive-folder and Google-Doc syntax, resource kind, and access, with no calculation mutation on failure.
+- [x] 2.5 Add focused formatting and activation of the constructor sheet without creating a parallel calculation table.
 
 ## 3. Persistent Run State and Dashboard Reporting
 
