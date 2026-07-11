@@ -23,7 +23,7 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   PHASE_LABELS: {
     validating: 'Проверка исходных данных',
     importing: 'Распознавание расчетных листков',
-    reconstructing: 'Реконструкция начислений и выплат',
+    reconstructing: 'Импорт завершен. Реконструкция начислений и выплат',
     calculating: 'Расчет недоплат, индексации и пеней',
     writing_doc: 'Формирование расшифровки в Google Docs',
     complete: 'Готово',
@@ -65,7 +65,7 @@ function getClaimConstructorLayout_() {
     resultFields: {
       underpayment: { label: 'Недоплата', labelCell: 'A15', valueCell: 'B15' },
       indexation: { label: 'Индексация', labelCell: 'A16', valueCell: 'B16' },
-      liability: { label: 'Пени и материальная ответственность', labelCell: 'A17', valueCell: 'B17' },
+      liability: { label: 'Материальная ответственность', labelCell: 'A17', valueCell: 'B17' },
       total: { label: 'Итого требований', labelCell: 'A18', valueCell: 'B18' },
     },
     issuesHeaderRow: 21,
@@ -124,7 +124,7 @@ function applyClaimConstructorStructure_(sheet, layout) {
   sheet.getRange(layout.totalsStartRow + 1, 1, 4, 1).setValues([
     ['Недоплата'],
     ['Индексация'],
-    ['Пени и материальная ответственность'],
+    ['Материальная ответственность'],
     ['Итого требований'],
   ]);
   if (sheet.getRange(22, 1).getValue() === 'Уровень') {
@@ -503,8 +503,8 @@ function writeClaimConstructorStatus_(sheet, run) {
     || 'Готов к запуску';
   sheet.getRange(layout.status.phaseCell).setValue(phaseLabel);
   sheet.getRange(layout.status.messageCell).setValue(formatClaimConstructorProgress_(run));
-  sheet.getRange(layout.status.updatedAtCell).setValue(run.updatedAt || '');
-  sheet.getRange(layout.status.completedAtCell).setValue(run.completedAt || '');
+  sheet.getRange(layout.status.updatedAtCell).setValue(formatClaimConstructorTimestamp_(run.updatedAt));
+  sheet.getRange(layout.status.completedAtCell).setValue(formatClaimConstructorTimestamp_(run.completedAt));
   sheet.getRange(layout.status.issueCountCell).setValue((run.issues || []).length);
   return sheet;
 }
@@ -522,15 +522,36 @@ function normalizeClaimConstructorProgress_(progress) {
 
 function formatClaimConstructorProgress_(run) {
   const value = run || {};
-  if (value.status !== 'running' || value.phase !== 'importing'
-      || !value.progress || !Number(value.progress.total)) {
+  if (value.status !== 'running') {
     return value.progressText || '';
   }
-  const progress = normalizeClaimConstructorProgress_(value.progress);
+  if (value.phase === 'importing' && value.progress && Number(value.progress.total)) {
+    const progress = normalizeClaimConstructorProgress_(value.progress);
+    return `${buildClaimConstructorProgressBar_(progress.percent)} ${progress.percent}% · ${progress.processed} из ${progress.total}`;
+  }
+  const phasePercent = value.phase === 'reconstructing' ? 70 : null;
+  if (Number.isFinite(phasePercent)) {
+    return `${buildClaimConstructorProgressBar_(phasePercent)} ${phasePercent}%`;
+  }
+  return value.progressText || '';
+}
+
+function buildClaimConstructorProgressBar_(percent) {
   const width = 16;
-  const filled = Math.min(width, Math.round(progress.percent / 100 * width));
-  const bar = `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
-  return `${bar} ${progress.percent}% · ${progress.processed} из ${progress.total}`;
+  const normalized = Math.max(0, Math.min(100, Number(percent) || 0));
+  const filled = Math.min(width, Math.round(normalized / 100 * width));
+  return `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+}
+
+function formatClaimConstructorTimestamp_(value) {
+  if (!value) {
+    return '';
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return String(value);
+  }
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm');
 }
 
 function updateClaimConstructorImportProgress_(session) {

@@ -288,6 +288,10 @@ function createHarness(sheetNames = ['Оклад']) {
         if (format === 'dd.MM.yyyy') {
           return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`;
         }
+        if (format === 'dd.MM.yyyy HH:mm') {
+          const shifted = new Date(date.getTime() + 3 * 60 * 60 * 1000);
+          return `${String(shifted.getUTCDate()).padStart(2, '0')}.${String(shifted.getUTCMonth() + 1).padStart(2, '0')}.${shifted.getUTCFullYear()} ${String(shifted.getUTCHours()).padStart(2, '0')}:${String(shifted.getUTCMinutes()).padStart(2, '0')}`;
+        }
         return date.toISOString();
       },
       getUuid: () => `uuid-${++uuidCounter}`,
@@ -369,6 +373,8 @@ function createHarness(sheetNames = ['Оклад']) {
     'Что сделать',
   ]);
   assert.strictEqual(layout.phaseLabels.completeWithWarnings, 'Готово с замечаниями');
+  assert.strictEqual(layout.phaseLabels.reconstructing, 'Импорт завершен. Реконструкция начислений и выплат');
+  assert.strictEqual(layout.resultFields.liability.label, 'Материальная ответственность');
 }
 
 {
@@ -785,13 +791,22 @@ function createHarness(sheetNames = ['Оклад']) {
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Расчет недоплат, индексации и пеней');
   assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Считаем недоплаты');
-  assert.strictEqual(sheet.getRange(layout.status.updatedAtCell).getValue(), '2026-07-11T09:05:00.000Z');
+  assert.strictEqual(sheet.getRange(layout.status.updatedAtCell).getValue(), '11.07.2026 12:05');
 
   run.phase = 'importing';
   run.progress = { processed: 3, total: 31 };
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /3 из 31/);
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /10%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /[█░]/);
+
+  run.phase = 'reconstructing';
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.strictEqual(
+    sheet.getRange(layout.status.phaseCell).getValue(),
+    'Импорт завершен. Реконструкция начислений и выплат'
+  );
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /70%/);
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /[█░]/);
 
   run.status = 'complete';
@@ -803,7 +818,7 @@ function createHarness(sheetNames = ['Оклад']) {
   run.issues = [{}, {}];
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово с замечаниями');
-  assert.strictEqual(sheet.getRange(layout.status.completedAtCell).getValue(), '2026-07-11T09:06:00.000Z');
+  assert.strictEqual(sheet.getRange(layout.status.completedAtCell).getValue(), '11.07.2026 12:06');
   assert.strictEqual(sheet.getRange(layout.status.issueCountCell).getValue(), 2);
 
   run.status = 'failed';

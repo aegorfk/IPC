@@ -98,7 +98,7 @@ The system SHALL present durable run progress on the constructor sheet and SHALL
 
 #### Scenario: User reopens a running workbook
 - **WHEN** a constructor run is active and the workbook is reopened
-- **THEN** the constructor shows the persisted current phase, last update time, and progress description
+- **THEN** the constructor shows the persisted current phase, last update time formatted as `dd.MM.yyyy HH:mm`, and progress description
 - **AND** reapplies the persisted visibility mode
 - **AND** does not start or repeat any pipeline phase
 
@@ -107,6 +107,15 @@ The system SHALL present durable run progress on the constructor sheet and SHALL
 - **THEN** the constructor shows the processed and total source counts, percentage, and a visual progress bar
 - **AND** refreshes the progress and last-update time after every batch without requiring the user to reopen the workbook
 - **AND** preserves the same progress after the workbook is reopened
+
+#### Scenario: Import completes and reconstruction starts
+- **WHEN** the final import batch advances the run to reconstruction
+- **THEN** the status reads `Импорт завершен. Реконструкция начислений и выплат`
+- **AND** the progress row switches from source counts to an overall pipeline progress bar
+
+#### Scenario: Liability total is displayed
+- **WHEN** the constructor renders the amount calculated under the project methodology for Article 236 of the Labor Code
+- **THEN** the result row is labeled `Материальная ответственность`
 
 #### Scenario: Run completes
 - **WHEN** all possible phases finish

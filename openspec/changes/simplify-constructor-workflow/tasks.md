@@ -23,6 +23,7 @@
 - [x] 3.6 Implement and test dashboard result rendering that reads totals and output links from completed Sheets/Docs results and never calculates duplicate totals.
 - [x] 3.7 Implement and test `onOpen()` hydration of an existing constructor from persisted run state and reapplication of persisted visibility mode without starting pipeline work.
 - [x] 3.8 Persist processed/total import-batch progress and render its percentage, visual bar, and last-update time on `Конструктор` after every batch.
+- [x] 3.9 Render readable Moscow timestamps, overall phase progress after import, the explicit post-import reconstruction status, and the stable `Материальная ответственность` result label.
 
 ## 4. Reusable Non-UI Pipeline Entry Points
 
