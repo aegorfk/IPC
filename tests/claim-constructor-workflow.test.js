@@ -60,6 +60,15 @@ class FakeRange {
     return this;
   }
 
+  getFormula() {
+    return this.sheet.readGrid(this.row, this.column, 1, 1, 'formula')[0][0] || '';
+  }
+
+  setFormula(value) {
+    this.sheet.writeGrid(this.row, this.column, [[value]], 'formula');
+    return this;
+  }
+
   clearContent() {
     const empty = Array.from({ length: this.rowCount }, () => Array(this.columnCount).fill(''));
     return this.setValues(empty);
@@ -95,17 +104,48 @@ class FakeRange {
     return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'background');
   }
 
+  getBackground() {
+    return this.getBackgrounds()[0][0] || '';
+  }
+
+  setBackground(value) {
+    return this.setBackgrounds(Array.from(
+      { length: this.rowCount },
+      () => Array(this.columnCount).fill(value)
+    ));
+  }
+
+  getNote() {
+    return this.sheet.readGrid(this.row, this.column, 1, 1, 'note')[0][0] || '';
+  }
+
+  setNote(value) {
+    this.sheet.writeGrid(this.row, this.column, [[value]], 'note');
+    return this;
+  }
+
+  getNumberFormat() {
+    return this.sheet.readGrid(this.row, this.column, 1, 1, 'numberFormat')[0][0] || '';
+  }
+
+  setNumberFormat(value) {
+    this.sheet.writeGrid(this.row, this.column, [[value]], 'numberFormat');
+    return this;
+  }
+
+  moveTo(target) {
+    this.sheet.moveRangeState(this, target);
+    return this;
+  }
+
   merge() { return this; }
   breakApart() { return this; }
-  setBackground() { return this; }
   setBorder() { return this; }
   setFontColor() { return this; }
   setFontFamily() { return this; }
   setFontSize() { return this; }
   setFontWeight() { return this; }
   setHorizontalAlignment() { return this; }
-  setNumberFormat() { return this; }
-  setNote() { return this; }
   setVerticalAlignment() { return this; }
   setWrap() { return this; }
 }
@@ -121,6 +161,8 @@ class FakeSheet {
     this.formatting = new Map();
     this.validations = new Map();
     this.backgrounds = new Map();
+    this.notes = new Map();
+    this.numberFormats = new Map();
     this.frozenRows = 0;
     this.columnWidths = new Map();
   }
@@ -136,32 +178,77 @@ class FakeSheet {
   }
 
   readGrid(row, column, rowCount, columnCount, kind) {
-    const store = kind === 'link'
-      ? this.links
-      : kind === 'validation'
-        ? this.validations
-        : kind === 'background'
-          ? this.backgrounds
-          : this.cells;
+    const store = this.getStateStore(kind);
     return Array.from({ length: rowCount }, (_, rowOffset) =>
       Array.from({ length: columnCount }, (_, columnOffset) =>
-        store.get(this.key(row + rowOffset, column + columnOffset)) || ''
+        store.has(this.key(row + rowOffset, column + columnOffset))
+          ? store.get(this.key(row + rowOffset, column + columnOffset))
+          : ''
       )
     );
   }
 
   writeGrid(row, column, values, kind) {
-    const store = kind === 'link'
-      ? this.links
-      : kind === 'validation'
-        ? this.validations
-        : kind === 'background'
-          ? this.backgrounds
-          : this.cells;
+    const store = this.getStateStore(kind);
     values.forEach((valuesRow, rowOffset) => {
       valuesRow.forEach((value, columnOffset) => {
         store.set(this.key(row + rowOffset, column + columnOffset), value);
       });
+    });
+  }
+
+  getStateStores() {
+    return [
+      this.cells,
+      this.links,
+      this.formulas,
+      this.formatting,
+      this.validations,
+      this.backgrounds,
+      this.notes,
+      this.numberFormats,
+    ];
+  }
+
+  getStateStore(kind) {
+    return {
+      value: this.cells,
+      link: this.links,
+      formula: this.formulas,
+      formatting: this.formatting,
+      validation: this.validations,
+      background: this.backgrounds,
+      note: this.notes,
+      numberFormat: this.numberFormats,
+    }[kind || 'value'];
+  }
+
+  moveRangeState(source, target) {
+    if (target.sheet !== this) throw new Error('Cross-sheet move is not supported by fake');
+    const snapshots = this.getStateStores().map((store) =>
+      Array.from({ length: source.rowCount }, (_, rowOffset) =>
+        Array.from({ length: source.columnCount }, (_, columnOffset) => {
+          const key = this.key(source.row + rowOffset, source.column + columnOffset);
+          return { present: store.has(key), value: store.get(key) };
+        })
+      )
+    );
+    this.getStateStores().forEach((store) => {
+      for (let rowOffset = 0; rowOffset < source.rowCount; rowOffset++) {
+        for (let columnOffset = 0; columnOffset < source.columnCount; columnOffset++) {
+          store.delete(this.key(source.row + rowOffset, source.column + columnOffset));
+        }
+      }
+    });
+    this.getStateStores().forEach((store, storeIndex) => {
+      for (let rowOffset = 0; rowOffset < source.rowCount; rowOffset++) {
+        for (let columnOffset = 0; columnOffset < source.columnCount; columnOffset++) {
+          const destinationKey = this.key(target.row + rowOffset, target.column + columnOffset);
+          const state = snapshots[storeIndex][rowOffset][columnOffset];
+          if (state.present) store.set(destinationKey, state.value);
+          else store.delete(destinationKey);
+        }
+      }
     });
   }
 
@@ -180,10 +267,14 @@ class FakeSheet {
     return this.getRange(1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1));
   }
   getLastRow() {
-    return Math.max(0, ...Array.from(this.cells.keys()).map((key) => Number(key.split(':')[0])));
+    return Math.max(0, ...this.getStateStores().flatMap((store) =>
+      Array.from(store.keys()).map((key) => Number(key.split(':')[0]))
+    ));
   }
   getLastColumn() {
-    return Math.max(0, ...Array.from(this.cells.keys()).map((key) => Number(key.split(':')[1])));
+    return Math.max(0, ...this.getStateStores().flatMap((store) =>
+      Array.from(store.keys()).map((key) => Number(key.split(':')[1]))
+    ));
   }
   getIndex() { return this.spreadsheet.sheets.indexOf(this) + 1; }
   activate() { this.spreadsheet.activeSheet = this; return this; }
@@ -253,7 +344,8 @@ function createHarness(sheetNames = ['Оклад']) {
     allow: true,
     acquired: 0,
     released: 0,
-    tryLock() { this.acquired++; return this.allow; },
+    onTryLock: null,
+    tryLock() { this.acquired++; if (this.onTryLock) this.onTryLock(); return this.allow; },
     releaseLock() { this.released++; },
   };
 
@@ -323,7 +415,10 @@ function createHarness(sheetNames = ['Оклад']) {
           return menu;
         },
       }),
-      flush() {},
+      flush() {
+        documentLock.flushes = (documentLock.flushes || 0) + 1;
+        if (documentLock.flushError) throw documentLock.flushError;
+      },
       newDataValidation: () => {
         const rule = { type: '', values: [] };
         return {
@@ -380,6 +475,18 @@ function createHarness(sheetNames = ['Оклад']) {
 
   assert.strictEqual(resolved.id, '1CurrentPayrollFolder123456789');
   assert.strictEqual(resolved.source, 'Конструктор!B4');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const active = harness.context.createClaimConstructorRun_({}, { now: new Date() });
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+
+  const result = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(result.joined, true);
+  assert.ok(harness.spreadsheet.getSheetByName('Конструктор'));
+  assert.ok(harness.spreadsheet.getSheetByName('Анкета и требования'));
 }
 
 {
@@ -664,6 +771,131 @@ function createHarness(sheetNames = ['Оклад']) {
 }
 
 {
+  const harness = createHarness(['Конструктор']);
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  const metadataCell = constructor.getRange('B15');
+  const validation = { type: 'list', values: ['legacy'] };
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, 'https://docs.google.com/document/d/semantic-migration-doc/edit')
+    .seed(9, 1, 'Статус:')
+    .seed(14, 1, 'Итоги расчета')
+    .seed(15, 1, 'Недоплата')
+    .seed(20, 1, 'Требует внимания')
+    .seed(21, 1, 'Уровень');
+  metadataCell
+    .setValue('legacy-value')
+    .setFormula('=SUM(100; 23)')
+    .setRichTextValue(new FakeRichText('https://example.test/legacy-rich-link'))
+    .setNote('legacy-note')
+    .setBackground('#FFCC00')
+    .setNumberFormat('#,##0.00 ₽')
+    .setDataValidation(validation);
+  constructor.formatting.set('15:2', { fontWeight: 'bold', wrap: true });
+
+  harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const destination = constructor.getRange('B18');
+  const source = constructor.getRange('B15');
+
+  assert.strictEqual(destination.getValue(), 'legacy-value');
+  assert.strictEqual(destination.getFormula(), '=SUM(100; 23)');
+  assert.strictEqual(destination.getRichTextValues()[0][0].getLinkUrl(), 'https://example.test/legacy-rich-link');
+  assert.strictEqual(destination.getNote(), 'legacy-note');
+  assert.strictEqual(destination.getBackground(), '#FFCC00');
+  assert.strictEqual(destination.getNumberFormat(), '#,##0.00 ₽');
+  assert.deepStrictEqual(destination.getDataValidation(), validation);
+  assert.deepStrictEqual(constructor.formatting.get('18:2'), { fontWeight: 'bold', wrap: true });
+  assert.strictEqual(source.getValue(), '');
+  assert.strictEqual(source.getFormula(), '');
+  assert.strictEqual(source.getRichTextValues()[0][0].getLinkUrl(), '');
+  assert.strictEqual(source.getNote(), '');
+  assert.strictEqual(source.getBackground(), '');
+  assert.strictEqual(source.getNumberFormat(), '');
+  assert.strictEqual(source.getDataValidation(), null);
+  assert.strictEqual(constructor.formatting.has('15:2'), false);
+}
+
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  const questionnaire = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const legacyDocUrl = 'https://docs.google.com/document/d/preflight-full-history-legacy/edit';
+  const currentDocUrl = 'https://docs.google.com/document/d/preflight-full-history-current/edit';
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, legacyDocUrl)
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, currentDocUrl)
+    .seed(10, 1, 'Прогресс:')
+    .seed(10, 2, 'legacy-progress')
+    .seed(14, 1, 'Итоги расчета')
+    .seed(15, 2, 777)
+    .seed(20, 1, 'Требует внимания')
+    .seed(21, 1, 'Уровень')
+    .seed(22, 1, 'legacy-issue');
+  constructor.getRange('B15').setFormula('=777').setNote('do-not-move').setBackground('#ABCDEF');
+  questionnaire
+    .getRange(intakeLayout.docsHistory.firstRow, 1, intakeLayout.docsHistory.rowCount, 3)
+    .setValues(Array.from({ length: intakeLayout.docsHistory.rowCount }, (_, index) => [
+      `date-${index}`, `https://docs.google.com/document/d/preflight-existing-${index}/edit`, 'existing',
+    ]));
+  const snapshot = () => JSON.stringify(constructor.getStateStores().map((store) => Array.from(store.entries())));
+  const before = snapshot();
+
+  assert.throws(
+    () => harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet),
+    /Не удалось сохранить прежнюю ссылку Google Doc в истории/
+  );
+
+  assert.strictEqual(snapshot(), before);
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, 'https://docs.google.com/document/d/lock-recheck-legacy/edit')
+    .seed(9, 1, 'Статус:')
+    .seed(9, 2, 'legacy-phase');
+  harness.documentLock.onTryLock = () => constructor.seed(6, 1, 'Нормативные документы');
+
+  const migrated = harness.context.migrateLegacyClaimConstructorLayout_(
+    harness.spreadsheet,
+    constructor,
+    harness.context.getClaimConstructorLayout_()
+  );
+
+  assert.strictEqual(migrated, false);
+  assert.strictEqual(constructor.getRange('A9').getValue(), 'Статус:');
+  assert.strictEqual(constructor.getRange('B9').getValue(), 'legacy-phase');
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+  assert.strictEqual(harness.documentLock.flushes, 1);
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, 'https://docs.google.com/document/d/flush-error-legacy/edit')
+    .seed(9, 1, 'Статус:');
+  harness.documentLock.flushError = new Error('flush failed');
+
+  assert.throws(
+    () => harness.context.migrateLegacyClaimConstructorLayout_(
+      harness.spreadsheet,
+      constructor,
+      harness.context.getClaimConstructorLayout_()
+    ),
+    /flush failed/
+  );
+  assert.strictEqual(harness.documentLock.released, 1);
+}
+
+{
   const harness = createHarness();
   harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
   const layout = harness.context.getClaimConstructorLayout_();
@@ -693,6 +925,27 @@ function createHarness(sheetNames = ['Оклад']) {
     Array.from(harness.context.getClaimIntakeSettings_().SECTOR_VALUES),
     ['Частная организация', 'Бюджетный сектор / публичный должник', 'Неизвестно']
   );
+}
+
+{
+  const harness = createHarness();
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const recoveryRange = workspace.questionnaire.getRange(
+    intakeLayout.partialRecoveries.firstRow,
+    1,
+    intakeLayout.partialRecoveries.rowCount,
+    intakeLayout.partialRecoveries.columnCount
+  );
+  const highlighted = Array.from(
+    { length: intakeLayout.partialRecoveries.rowCount },
+    (_, index) => Array(intakeLayout.partialRecoveries.columnCount).fill(index === 1 ? '#F4CCCC' : '#FFFFFF')
+  );
+  recoveryRange.setBackgrounds(highlighted);
+
+  harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+
+  assert.deepStrictEqual(recoveryRange.getBackgrounds(), highlighted);
 }
 
 {

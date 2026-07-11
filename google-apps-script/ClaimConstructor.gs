@@ -109,6 +109,35 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
     return false;
   }
 
+  const documentLock = LockService.getDocumentLock();
+  const lock = documentLock || LockService.getScriptLock();
+  let acquired = false;
+  try {
+    if (lock) {
+      acquired = lock.tryLock(30 * 1000);
+      if (!acquired) {
+        throw new Error('Конструктор уже обновляется другим процессом. Повторите попытку позже.');
+      }
+    }
+    if (sheet.getRange('A6').getValue() !== CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL) {
+      return false;
+    }
+    return migrateLegacyClaimConstructorLayoutLocked_(spreadsheet, sheet, layout);
+  } finally {
+    if (acquired) {
+      try {
+        if (typeof SpreadsheetApp.flush === 'function') {
+          SpreadsheetApp.flush();
+        }
+      } finally {
+        lock.releaseLock();
+      }
+    }
+  }
+}
+
+function migrateLegacyClaimConstructorLayoutLocked_(spreadsheet, sheet, layout) {
+
   const legacyDocUrl = sheet.getRange('B6').getValue();
   const legacyDocError = sheet.getRange('B7').getValue();
   const docsRowMigrated = sheet.getRange(layout.outputDoc.labelCell).getValue() === layout.outputDoc.label;
@@ -127,6 +156,24 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
   const lastRow = sheet.getLastRow();
   const columnCount = Math.max(sheet.getLastColumn(), layout.issueHeaders.length);
 
+  const migratedDocUrl = docsRowMigrated
+    ? sheet.getRange(layout.outputDoc.valueCell).getValue()
+    : '';
+  if (migratedDocUrl && legacyDocUrl && migratedDocUrl !== legacyDocUrl) {
+    const validLegacyDocUrl = typeof extractGoogleDocId_ === 'function'
+      && extractGoogleDocId_(legacyDocUrl);
+    const preserved = validLegacyDocUrl
+      && typeof preserveClaimIntakeDocHistoryUrl_ === 'function'
+      && preserveClaimIntakeDocHistoryUrl_(
+        spreadsheet,
+        legacyDocUrl,
+        'Перенесен из прежней ячейки Конструктора'
+      );
+    if (!preserved) {
+      throw new Error('Не удалось сохранить прежнюю ссылку Google Doc в истории; старая ячейка оставлена без изменений.');
+    }
+  }
+
   if (!issuesMigrated && (fullLegacyLayout || legacyIssues)) {
     moveLegacyClaimConstructorBlock_(sheet, 20, lastRow, 3, columnCount);
   }
@@ -142,21 +189,6 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
     sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
   }
 
-  const migratedDocUrl = sheet.getRange(layout.outputDoc.valueCell).getValue();
-  if (migratedDocUrl && legacyDocUrl && migratedDocUrl !== legacyDocUrl) {
-    const validLegacyDocUrl = typeof extractGoogleDocId_ === 'function'
-      && extractGoogleDocId_(legacyDocUrl);
-    const preserved = validLegacyDocUrl
-      && typeof preserveClaimIntakeDocHistoryUrl_ === 'function'
-      && preserveClaimIntakeDocHistoryUrl_(
-        spreadsheet,
-        legacyDocUrl,
-        'Перенесен из прежней ячейки Конструктора'
-      );
-    if (!preserved) {
-      throw new Error('Не удалось сохранить прежнюю ссылку Google Doc в истории; старая ячейка оставлена без изменений.');
-    }
-  }
   if (!migratedDocUrl) {
     sheet.getRange(layout.outputDoc.valueCell).setValue(legacyDocUrl);
   }
@@ -172,12 +204,13 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
 }
 
 function moveLegacyClaimConstructorBlock_(sheet, firstRow, lastRow, offset, columnCount) {
-  for (let row = lastRow; row >= firstRow; row--) {
-    const source = sheet.getRange(row, 1, 1, columnCount);
-    const values = source.getValues();
-    sheet.getRange(row + offset, 1, 1, columnCount).setValues(values);
-    source.clearContent();
+  if (lastRow < firstRow) {
+    return;
   }
+  const rowCount = lastRow - firstRow + 1;
+  const source = sheet.getRange(firstRow, 1, rowCount, columnCount);
+  const destination = sheet.getRange(firstRow + offset, 1, rowCount, columnCount);
+  source.moveTo(destination);
 }
 
 function seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout) {
@@ -832,7 +865,7 @@ function renderClaimConstructorInputErrors_(sheet, errors) {
 
 function buildClaimCalculation() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   sheet.showSheet();
   sheet.activate();
   const activeRun = joinFreshClaimConstructorRun_();
@@ -1221,7 +1254,7 @@ function claimClaimConstructorPhaseExecution_(runId, phase, now) {
 }
 
 function refreshClaimConstructorDashboard_(spreadsheet, run) {
-  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   writeClaimConstructorStatus_(sheet, run);
   renderClaimConstructorResults_(sheet, run.results.dashboard || run.results);
   renderClaimConstructorIssues_(sheet, run.issues);
@@ -1530,7 +1563,7 @@ function showClaimConstructorTechnicalMode() {
 
 function continueClaimConstructorRetryImport_(successor, spreadsheet) {
   const validation = validateClaimConstructorInputs_(successor.inputs);
-  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   renderClaimConstructorInputErrors_(sheet, validation.errors);
   if (!validation.valid) {
     const failed = failClaimConstructorValidation_(successor.id, validation.errors);

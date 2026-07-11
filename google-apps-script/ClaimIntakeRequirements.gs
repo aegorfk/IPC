@@ -81,14 +81,15 @@ function getClaimIntakeLayout_() {
 function ensureClaimIntakeSheet_(spreadsheet) {
   const layout = getClaimIntakeLayout_();
   let sheet = spreadsheet.getSheetByName(layout.sheetName);
-  if (!sheet) {
+  const created = !sheet;
+  if (created) {
     const constructor = spreadsheet.getSheetByName('Конструктор');
     const insertIndex = constructor ? constructor.getIndex() : 1;
     sheet = spreadsheet.insertSheet(layout.sheetName, insertIndex);
   }
 
   applyClaimIntakeStructure_(sheet, layout);
-  formatClaimIntakeSheet_(sheet, layout);
+  formatClaimIntakeSheet_(sheet, layout, created);
   registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout);
   return sheet;
 }
@@ -147,7 +148,7 @@ function insertClaimIntakeCheckboxesPreservingValues_(range) {
   range.setValues(values);
 }
 
-function formatClaimIntakeSheet_(sheet, layout) {
+function formatClaimIntakeSheet_(sheet, layout, created) {
   sheet.setFrozenRows(2);
   sheet.setColumnWidth(1, 260);
   sheet.setColumnWidth(2, 220);
@@ -162,11 +163,13 @@ function formatClaimIntakeSheet_(sheet, layout) {
     .setBackground('#E8F0FE')
     .setFontWeight('bold')
     .setWrap(true);
-  sheet.getRange(layout.partialRecoveries.firstRow, 1, layout.partialRecoveries.rowCount, 4)
-    .setBackgrounds(Array.from(
-      { length: layout.partialRecoveries.rowCount },
-      () => Array(4).fill('#FFFFFF')
-    ));
+  if (created) {
+    sheet.getRange(layout.partialRecoveries.firstRow, 1, layout.partialRecoveries.rowCount, 4)
+      .setBackgrounds(Array.from(
+        { length: layout.partialRecoveries.rowCount },
+        () => Array(4).fill('#FFFFFF')
+      ));
+  }
 }
 
 function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
@@ -204,7 +207,7 @@ function preserveClaimIntakeDocHistoryUrl_(spreadsheet, docUrl, note) {
   const rows = history.getValues();
   const existingIndex = rows.findIndex((row) => String(row[1] || '').trim() === value);
   if (existingIndex >= 0) {
-    return String(history.getValues()[existingIndex][1] || '').trim() === value;
+    return true;
   }
   const emptyIndex = rows.findIndex((row) => row.every((cell) => cell === '' || cell === null));
   if (emptyIndex < 0) {
