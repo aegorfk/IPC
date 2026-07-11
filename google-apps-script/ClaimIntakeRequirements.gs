@@ -7,6 +7,8 @@ const CLAIM_INTAKE_SETTINGS = {
     'Неизвестно',
   ],
   AVERAGE_SCENARIO_VALUES: ['Рассчитанный системой', 'Заданный вручную'],
+  RECOVERY_ERROR_BACKGROUND: '#F4CCCC',
+  RECOVERY_WARNING_BACKGROUND: '#FFF2CC',
 };
 
 function getClaimIntakeSettings_() {
@@ -28,6 +30,14 @@ function getClaimIntakeLayout_() {
       valueCell: 'B6',
       namedRange: 'CLAIM_INTAKE_CALCULATED_AVERAGE_EARNINGS',
     },
+    calculatedAverageContext: {
+      valueCell: 'C6',
+      namedRange: 'CLAIM_INTAKE_CALCULATED_AVERAGE_CONTEXT',
+    },
+    calculatedAverageBadge: {
+      value: 'рассчитано',
+      valueCell: 'D6',
+    },
     manualAverageEnabled: {
       label: 'Задать вручную средний заработок',
       labelCell: 'A7',
@@ -40,10 +50,13 @@ function getClaimIntakeLayout_() {
       valueCell: 'B8',
       namedRange: 'CLAIM_INTAKE_MANUAL_AVERAGE_EARNINGS',
     },
+    manualAverageContext: {
+      valueCell: 'C8',
+      namedRange: 'CLAIM_INTAKE_MANUAL_AVERAGE_CONTEXT',
+    },
     manualAverageSource: {
-      label: 'Источник ручного значения',
-      labelCell: 'A9',
-      valueCell: 'B9',
+      value: 'источник: пользователь',
+      valueCell: 'D8',
       namedRange: 'CLAIM_INTAKE_MANUAL_AVERAGE_SOURCE',
     },
     finalAverageScenario: {
@@ -54,6 +67,7 @@ function getClaimIntakeLayout_() {
     },
     partialRecoveries: {
       titleCell: 'A12',
+      actionCell: 'B12',
       headerRow: 13,
       firstRow: 14,
       rowCount: 10,
@@ -109,11 +123,15 @@ function applyClaimIntakeStructure_(sheet, layout) {
     layout.calculatedAverage,
     layout.manualAverageEnabled,
     layout.manualAverage,
-    layout.manualAverageSource,
     layout.finalAverageScenario,
   ].forEach((field) => sheet.getRange(field.labelCell).setValue(field.label));
+  sheet.getRange(layout.calculatedAverageBadge.valueCell)
+    .setValue(layout.calculatedAverageBadge.value);
+  sheet.getRange(layout.manualAverageSource.valueCell)
+    .setValue(layout.manualAverageSource.value);
 
   sheet.getRange(layout.partialRecoveries.titleCell).setValue('Частичные погашения');
+  sheet.getRange(layout.partialRecoveries.actionCell).setValue('Добавить');
   sheet.getRange(layout.partialRecoveries.headerRow, 1, 1, 4).setValues([[
     'Учитывать', 'Дата', 'Сумма', 'К какому требованию отнести',
   ]]);
@@ -132,7 +150,11 @@ function applyClaimIntakeStructure_(sheet, layout) {
     .requireValueInList(CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES, true)
     .setAllowInvalid(false)
     .build();
-  sheet.getRange(layout.finalAverageScenario.valueCell).setDataValidation(scenarioRule);
+  const scenarioCell = sheet.getRange(layout.finalAverageScenario.valueCell);
+  scenarioCell.setDataValidation(scenarioRule);
+  if (!String(scenarioCell.getValue() || '').trim()) {
+    scenarioCell.setValue(CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0]);
+  }
 
   insertClaimIntakeCheckboxesPreservingValues_(
     sheet.getRange(layout.manualAverageEnabled.valueCell)
@@ -176,8 +198,10 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
   [
     layout.employerSector,
     layout.calculatedAverage,
+    layout.calculatedAverageContext,
     layout.manualAverageEnabled,
     layout.manualAverage,
+    layout.manualAverageContext,
     layout.manualAverageSource,
     layout.finalAverageScenario,
   ].forEach((field) => {
@@ -189,6 +213,265 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
       sheet.getRange(table.firstRow, 1, table.rowCount, table.columnCount)
     );
   });
+}
+
+function readAverageEarningsState_(spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  return {
+    calculated: {
+      amount: target.getRangeByName(layout.calculatedAverage.namedRange).getValue(),
+      context: target.getRangeByName(layout.calculatedAverageContext.namedRange).getValue(),
+    },
+    user: {
+      amount: target.getRangeByName(layout.manualAverage.namedRange).getValue(),
+      context: target.getRangeByName(layout.manualAverageContext.namedRange).getValue(),
+    },
+    selectedSource: normalizeAverageEarningsSource_(
+      target.getRangeByName(layout.finalAverageScenario.namedRange).getValue()
+    ),
+  };
+}
+
+function writeAverageEarningsState_(state, spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  const value = state || {};
+  const calculated = value.calculated || {};
+  const user = value.user || {};
+  target.getRangeByName(layout.calculatedAverage.namedRange)
+    .setValue(calculated.amount === undefined ? '' : calculated.amount);
+  target.getRangeByName(layout.calculatedAverageContext.namedRange)
+    .setValue(calculated.context || '');
+  target.getRangeByName(layout.manualAverage.namedRange)
+    .setValue(user.amount === undefined ? '' : user.amount);
+  target.getRangeByName(layout.manualAverageContext.namedRange)
+    .setValue(user.context || '');
+  const selected = normalizeAverageEarningsSource_(value.selectedSource);
+  target.getRangeByName(layout.finalAverageScenario.namedRange).setValue(
+    selected === 'user'
+      ? CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]
+      : CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0]
+  );
+}
+
+function normalizeAverageEarningsSource_(value) {
+  const normalized = String(value || '').trim();
+  if (normalized === 'user' || normalized === CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]) {
+    return 'user';
+  }
+  return 'calculated';
+}
+
+function resolveSelectedAverageEarnings_(state) {
+  const value = state || {};
+  const source = normalizeAverageEarningsSource_(value.selectedSource);
+  const scenario = source === 'user' ? value.user : value.calculated;
+  const amount = parseClaimPositiveAmount_(scenario && scenario.amount);
+  const context = scenario && scenario.context ? String(scenario.context) : '';
+  if (amount === null) {
+    return {
+      valid: false,
+      source,
+      amount: null,
+      context,
+      error: 'Укажите положительный средний заработок для выбранного сценария',
+    };
+  }
+  return { source, amount, context };
+}
+
+function captureClaimQuestionnaireState_(spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  return {
+    employerSector: target.getRangeByName(layout.employerSector.namedRange).getValue(),
+    averageEarnings: readAverageEarningsState_(target),
+    partialRecoveries: target.getRangeByName(layout.partialRecoveries.namedRange).getValues(),
+  };
+}
+
+function readClaimQuestionnaireState_(spreadsheet) {
+  return captureClaimQuestionnaireState_(spreadsheet);
+}
+
+function writeClaimQuestionnaireState_(state, spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  const value = state || {};
+  if (value.employerSector !== undefined) {
+    target.getRangeByName(layout.employerSector.namedRange).setValue(value.employerSector);
+  }
+  if (value.averageEarnings) {
+    writeAverageEarningsState_(value.averageEarnings, target);
+  }
+  if (value.partialRecoveries) {
+    const range = target.getRangeByName(layout.partialRecoveries.namedRange);
+    const rows = value.partialRecoveries.slice(0, layout.partialRecoveries.rowCount)
+      .map((row) => Array.from(row).slice(0, layout.partialRecoveries.columnCount));
+    while (rows.length < layout.partialRecoveries.rowCount) {
+      rows.push(['', '', '', '']);
+    }
+    range.setValues(rows.map((row) => {
+      while (row.length < layout.partialRecoveries.columnCount) row.push('');
+      return row;
+    }));
+  }
+  return captureClaimQuestionnaireState_(target);
+}
+
+function addClaimPartialRecovery() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  ensureClaimIntakeSheet_(spreadsheet);
+  const layout = getClaimIntakeLayout_();
+  const range = spreadsheet.getRangeByName(layout.partialRecoveries.namedRange);
+  const rows = range.getValues();
+  const emptyIndex = rows.findIndex((row) => !row[0] && row.slice(1).every(isClaimIntakeEmpty_));
+  if (emptyIndex < 0) {
+    const error = 'Нет свободных строк для частичных погашений';
+    spreadsheet.toast(error, 'Анкета и требования');
+    return { added: false, error };
+  }
+  const row = layout.partialRecoveries.firstRow + emptyIndex;
+  spreadsheet.getSheetByName(layout.sheetName).getRange(row, 1).setValue(true);
+  return { added: true, row };
+}
+
+function isClaimIntakeEmpty_(value) {
+  return value === '' || value === null || value === undefined;
+}
+
+function normalizePartialRecoveries_(rows) {
+  const result = { valid: [], invalid: [], unallocated: [] };
+  (rows || []).forEach((row, rowIndex) => {
+    const values = Array.isArray(row)
+      ? row
+      : [row && row.active, row && row.date, row && row.amount, row && row.allocation];
+    if (!values[0] && values.slice(1).every(isClaimIntakeEmpty_)) return;
+    const date = parseClaimRecoveryDate_(values[1]);
+    const amount = parseClaimPositiveAmount_(values[2]);
+    const allocation = String(values[3] || '').trim();
+    const errors = [];
+    if (!date) errors.push('Некорректная дата частичного погашения');
+    if (amount === null) errors.push('Сумма частичного погашения должна быть положительным числом');
+    const normalized = { rowIndex, date, amount, allocation, row: values };
+    if (errors.length) {
+      normalized.errors = errors;
+      result.invalid.push(normalized);
+    } else if (!allocation) {
+      normalized.disputed = true;
+      result.unallocated.push(normalized);
+    } else {
+      result.valid.push(normalized);
+    }
+  });
+  return result;
+}
+
+function parseClaimRecoveryDate_(value) {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const text = String(value || '').trim();
+  const match = text.match(/^(?:(\d{2})\.(\d{2})\.(\d{4})|(\d{4})-(\d{2})-(\d{2}))$/);
+  if (!match) return null;
+  const year = Number(match[3] || match[4]);
+  const month = Number(match[2] || match[5]);
+  const day = Number(match[1] || match[6]);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.getFullYear() === year
+    && parsed.getMonth() === month - 1
+    && parsed.getDate() === day
+    ? parsed
+    : null;
+}
+
+function parseClaimPositiveAmount_(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  const text = String(value || '').trim();
+  if (!/^[+-]?(?:\d{1,3}(?:[ \u00A0]\d{3})+|\d+)(?:[.,]\d+)?$/.test(text)) {
+    return null;
+  }
+  const parsed = Number(text.replace(/[ \u00A0]/g, '').replace(',', '.'));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function validateClaimPartialRecoveries_(spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  const sheet = target.getSheetByName(layout.sheetName);
+  const range = target.getRangeByName(layout.partialRecoveries.namedRange);
+  const result = normalizePartialRecoveries_(range.getValues());
+  const invalidByRow = indexClaimRecoveryRows_(result.invalid);
+  const unallocatedByRow = indexClaimRecoveryRows_(result.unallocated);
+  for (let index = 0; index < layout.partialRecoveries.rowCount; index++) {
+    const rowRange = sheet.getRange(layout.partialRecoveries.firstRow + index, 1, 1, 4);
+    clearClaimRecoveryValidation_(rowRange);
+    if (invalidByRow[index]) {
+      applyClaimRecoveryValidation_(
+        rowRange,
+        CLAIM_INTAKE_SETTINGS.RECOVERY_ERROR_BACKGROUND,
+        invalidByRow[index].errors.join('. ')
+      );
+    } else if (unallocatedByRow[index]) {
+      applyClaimRecoveryValidation_(
+        rowRange,
+        CLAIM_INTAKE_SETTINGS.RECOVERY_WARNING_BACKGROUND,
+        'Не указано требование: распределение будет уточнено, погашение считается спорным'
+      );
+    }
+  }
+  return result;
+}
+
+function indexClaimRecoveryRows_(items) {
+  return (items || []).reduce((result, item) => {
+    result[item.rowIndex] = item;
+    return result;
+  }, {});
+}
+
+function applyClaimRecoveryValidation_(rowRange, background, message) {
+  const noteCell = rowRange.getSheet().getRange(rowRange.getRow(), rowRange.getColumn() + 3);
+  const state = {
+    backgrounds: rowRange.getBackgrounds()[0],
+    note: noteCell.getNote(),
+    ownedBackground: background,
+    ownedNote: message,
+  };
+  PropertiesService.getDocumentProperties().setProperty(
+    getClaimRecoveryValidationPropertyKey_(rowRange),
+    JSON.stringify(state)
+  );
+  rowRange.setBackground(background);
+  noteCell.setNote(message);
+}
+
+function clearClaimRecoveryValidation_(rowRange) {
+  const noteCell = rowRange.getSheet().getRange(rowRange.getRow(), rowRange.getColumn() + 3);
+  const properties = PropertiesService.getDocumentProperties();
+  const key = getClaimRecoveryValidationPropertyKey_(rowRange);
+  const serialized = properties.getProperty(key);
+  if (!serialized) return;
+  try {
+    const state = JSON.parse(serialized);
+    const current = rowRange.getBackgrounds()[0];
+    rowRange.setBackgrounds([current.map((background, index) =>
+      background === state.ownedBackground ? state.backgrounds[index] : background
+    )]);
+    if (noteCell.getNote() === state.ownedNote) {
+      noteCell.setNote(state.note || '');
+    }
+  } catch (error) {
+    // Leave non-validator formatting untouched when ownership metadata is malformed.
+  }
+  properties.deleteProperty(key);
+}
+
+function getClaimRecoveryValidationPropertyKey_(rowRange) {
+  return `CLAIM_RECOVERY_VALIDATION_${rowRange.getSheet().getSheetId()}_${rowRange.getRow()}`;
 }
 
 function preserveClaimIntakeDocHistoryUrl_(spreadsheet, docUrl, note) {

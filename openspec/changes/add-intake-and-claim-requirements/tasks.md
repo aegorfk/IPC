@@ -8,11 +8,11 @@
 
 ## 2. Questionnaire
 
-- [ ] 2.1 Implement employer-sector dropdown with private organization, budget sector/public debtor, and unknown values.
-- [ ] 2.2 Implement average earnings section with calculated scenario, `Задать вручную средний заработок`, user source label, and final scenario selector.
-- [ ] 2.3 Implement multiple partial recovery rows with `Добавить`, date, amount, and allocation target fields.
-- [ ] 2.4 Validate partial recovery dates and amounts, highlight invalid rows, and exclude invalid rows without blocking unrelated calculations.
-- [ ] 2.5 Persist questionnaire state across constructor repair, recalculation, and workbook reopen.
+- [x] 2.1 Implement employer-sector dropdown with private organization, budget sector/public debtor, and unknown values.
+- [x] 2.2 Implement average earnings section with calculated scenario, `Задать вручную средний заработок`, user source label, and final scenario selector.
+- [x] 2.3 Implement multiple partial recovery rows with `Добавить`, date, amount, and allocation target fields.
+- [x] 2.4 Validate partial recovery dates and amounts, highlight invalid rows, and exclude invalid rows without blocking unrelated calculations.
+- [x] 2.5 Persist questionnaire state across constructor repair, recalculation, and workbook reopen.
 
 ## 3. Audit And Requirements
 
