@@ -5,6 +5,7 @@ const vm = require('vm');
 const SOURCE_FILES = [
   'google-apps-script/SalaryIndexation.gs',
   'google-apps-script/ZupImport.gs',
+  'google-apps-script/ClaimIntakeRequirements.gs',
   'google-apps-script/ClaimConstructor.gs',
 ];
 
@@ -64,6 +65,36 @@ class FakeRange {
     return this.setValues(empty);
   }
 
+  setDataValidation(validation) {
+    this.sheet.writeGrid(this.row, this.column, [[validation]], 'validation');
+    return this;
+  }
+
+  getDataValidation() {
+    return this.sheet.readGrid(this.row, this.column, 1, 1, 'validation')[0][0] || null;
+  }
+
+  insertCheckboxes() {
+    const values = Array.from({ length: this.rowCount }, () => Array(this.columnCount).fill(false));
+    this.setValues(values);
+    this.sheet.writeGrid(
+      this.row,
+      this.column,
+      Array.from({ length: this.rowCount }, () => Array(this.columnCount).fill({ type: 'checkbox' })),
+      'validation'
+    );
+    return this;
+  }
+
+  setBackgrounds(backgrounds) {
+    this.sheet.writeGrid(this.row, this.column, backgrounds, 'background');
+    return this;
+  }
+
+  getBackgrounds() {
+    return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'background');
+  }
+
   merge() { return this; }
   breakApart() { return this; }
   setBackground() { return this; }
@@ -88,6 +119,8 @@ class FakeSheet {
     this.links = new Map();
     this.formulas = new Map();
     this.formatting = new Map();
+    this.validations = new Map();
+    this.backgrounds = new Map();
     this.frozenRows = 0;
     this.columnWidths = new Map();
   }
@@ -103,7 +136,13 @@ class FakeSheet {
   }
 
   readGrid(row, column, rowCount, columnCount, kind) {
-    const store = kind === 'link' ? this.links : this.cells;
+    const store = kind === 'link'
+      ? this.links
+      : kind === 'validation'
+        ? this.validations
+        : kind === 'background'
+          ? this.backgrounds
+          : this.cells;
     return Array.from({ length: rowCount }, (_, rowOffset) =>
       Array.from({ length: columnCount }, (_, columnOffset) =>
         store.get(this.key(row + rowOffset, column + columnOffset)) || ''
@@ -112,7 +151,13 @@ class FakeSheet {
   }
 
   writeGrid(row, column, values, kind) {
-    const store = kind === 'link' ? this.links : this.cells;
+    const store = kind === 'link'
+      ? this.links
+      : kind === 'validation'
+        ? this.validations
+        : kind === 'background'
+          ? this.backgrounds
+          : this.cells;
     values.forEach((valuesRow, rowOffset) => {
       valuesRow.forEach((value, columnOffset) => {
         store.set(this.key(row + rowOffset, column + columnOffset), value);
@@ -279,6 +324,14 @@ function createHarness(sheetNames = ['Оклад']) {
         },
       }),
       flush() {},
+      newDataValidation: () => {
+        const rule = { type: '', values: [] };
+        return {
+          requireValueInList(values) { rule.type = 'list'; rule.values = values.slice(); return this; },
+          setAllowInvalid() { return this; },
+          build() { return rule; },
+        };
+      },
       openById: () => spreadsheet,
     },
     String,
@@ -358,6 +411,10 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(layout.sheetName, 'Конструктор');
   assert.strictEqual(layout.sourceFolder.label, 'Расчетные листы:');
   assert.strictEqual(layout.sourceFolder.namedRange, 'CLAIM_CONSTRUCTOR_SOURCE_FOLDER');
+  assert.strictEqual(layout.normativeFolder.label, 'Нормативные документы');
+  assert.strictEqual(layout.normativeFolder.labelCell, 'A6');
+  assert.strictEqual(layout.normativeFolder.valueCell, 'B6');
+  assert.strictEqual(layout.normativeFolder.placeholderCell, 'A7');
   assert.strictEqual(layout.outputDoc.label, 'Расписанный расчет:');
   assert.strictEqual(layout.outputDoc.namedRange, 'CLAIM_CONSTRUCTOR_OUTPUT_DOC');
   assert.strictEqual(layout.primaryAction.cell, 'A2');
@@ -379,6 +436,121 @@ function createHarness(sheetNames = ['Оклад']) {
 
 {
   const harness = createHarness(['Оклад', 'Ежемесячные']);
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+
+  assert.strictEqual(workspace.constructor.getName(), 'Конструктор');
+  assert.strictEqual(workspace.questionnaire.getName(), 'Анкета и требования');
+  assert.deepStrictEqual(
+    harness.spreadsheet.getSheets().slice(0, 2).map((sheet) => sheet.getName()),
+    ['Конструктор', 'Анкета и требования']
+  );
+
+  harness.context.applyClaimConstructorVisibilityMode_('normal', harness.spreadsheet);
+  assert.deepStrictEqual(
+    harness.spreadsheet.getSheets().filter((sheet) => !sheet.isSheetHidden()).map((sheet) => sheet.getName()),
+    ['Конструктор', 'Анкета и требования']
+  );
+
+  harness.context.applyClaimConstructorVisibilityMode_('detail', harness.spreadsheet);
+  assert.deepStrictEqual(
+    harness.spreadsheet.getSheets().filter((sheet) => !sheet.isSheetHidden()).map((sheet) => sheet.getName()),
+    ['Конструктор', 'Анкета и требования', 'Оклад', 'Ежемесячные']
+  );
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const legacyDocUrl = 'https://docs.google.com/document/d/legacy-current-doc-123456789/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(4, 1, 'Расчетные листы:')
+    .seed(4, 2, 'https://drive.google.com/drive/folders/current-payroll-123456789')
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, legacyDocUrl)
+    .seed(9, 1, 'Статус:')
+    .seed(9, 2, 'Сохраненный этап')
+    .seed(23, 1, 'Сохраненное замечание');
+
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+
+  assert.strictEqual(constructor.getRange('A6').getValue(), 'Нормативные документы');
+  assert.strictEqual(constructor.getRange('B6').getValue(), '');
+  assert.strictEqual(constructor.getRange('A7').getValue(), 'пока не анализируется');
+  assert.strictEqual(constructor.getRange(layout.outputDoc.labelCell).getValue(), 'Расписанный расчет:');
+  assert.strictEqual(constructor.getRange(layout.outputDoc.valueCell).getValue(), legacyDocUrl);
+  assert.strictEqual(constructor.getRange(layout.status.phaseCell).getValue(), 'Сохраненный этап');
+  assert.strictEqual(constructor.getRange(26, 1).getValue(), 'Сохраненное замечание');
+
+  const questionnaire = workspace.questionnaire;
+  questionnaire.getRange(intakeLayout.employerSector.valueCell).setValue('Частная организация');
+  questionnaire.getRange(intakeLayout.partialRecoveries.firstRow, 2).setValue('15.01.2026');
+  constructor.getRange(layout.normativeFolder.valueCell)
+    .setValue('https://drive.google.com/drive/folders/normative-folder-123456789');
+  const repaired = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+
+  assert.strictEqual(repaired.constructor.getRange(layout.sourceFolder.valueCell).getValue(), 'https://drive.google.com/drive/folders/current-payroll-123456789');
+  assert.strictEqual(repaired.constructor.getRange(layout.normativeFolder.valueCell).getValue(), 'https://drive.google.com/drive/folders/normative-folder-123456789');
+  assert.strictEqual(repaired.constructor.getRange(layout.outputDoc.valueCell).getValue(), legacyDocUrl);
+  assert.strictEqual(repaired.questionnaire.getRange(intakeLayout.employerSector.valueCell).getValue(), 'Частная организация');
+  assert.strictEqual(repaired.questionnaire.getRange(intakeLayout.partialRecoveries.firstRow, 2).getValue(), '15.01.2026');
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const docUrl = 'https://docs.google.com/document/d/partially-migrated-doc-123456789/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, docUrl)
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, docUrl)
+    .seed(12, 1, 'Статус:')
+    .seed(12, 2, 'Уже перенесенный этап');
+
+  harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+
+  assert.strictEqual(constructor.getRange(layout.status.phaseCell).getValue(), 'Уже перенесенный этап');
+  assert.strictEqual(constructor.getRange(layout.outputDoc.valueCell).getValue(), docUrl);
+  assert.strictEqual(constructor.getRange(layout.normativeFolder.valueCell).getValue(), '');
+}
+
+{
+  const harness = createHarness();
+  harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const namedRanges = new Set(harness.spreadsheet.getNamedRanges().map((item) => item.getName()));
+
+  [
+    layout.sourceFolder.namedRange,
+    layout.normativeFolder.namedRange,
+    layout.outputDoc.namedRange,
+    intakeLayout.employerSector.namedRange,
+    intakeLayout.calculatedAverage.namedRange,
+    intakeLayout.manualAverageEnabled.namedRange,
+    intakeLayout.manualAverage.namedRange,
+    intakeLayout.manualAverageSource.namedRange,
+    intakeLayout.finalAverageScenario.namedRange,
+    intakeLayout.partialRecoveries.namedRange,
+    intakeLayout.claimSelections.namedRange,
+    intakeLayout.docsHistory.namedRange,
+  ].forEach((name) => assert.ok(namedRanges.has(name), `${name} must be registered`));
+
+  assert.deepStrictEqual(
+    Array.from(harness.context.getClaimIntakeSettings_().NORMAL_SHEET_NAMES),
+    ['Конструктор', 'Анкета и требования']
+  );
+  assert.deepStrictEqual(
+    Array.from(harness.context.getClaimIntakeSettings_().SECTOR_VALUES),
+    ['Частная организация', 'Бюджетный сектор / публичный должник', 'Неизвестно']
+  );
+}
+
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
   const layout = harness.context.getClaimConstructorLayout_();
   const created = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
 
@@ -394,7 +566,7 @@ function createHarness(sheetNames = ['Оклад']) {
   created.getRange(layout.sourceFolder.valueCell).setValue('https://drive.google.com/drive/folders/preserved-folder');
   created.getRange(layout.outputDoc.valueCell).setValue('https://docs.google.com/document/d/preserved-doc/edit');
   created.getRange(layout.status.messageCell).setValue('Сохраненный статус');
-  created.getRange(23, 1).setValue('Сохраненное замечание');
+  created.getRange(layout.issuesHeaderRow + 2, 1).setValue('Сохраненное замечание');
   const originalId = created.getSheetId();
   const originalOrder = harness.spreadsheet.getSheets().map((sheet) => sheet.getSheetId());
 
@@ -405,7 +577,7 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(reopened.getRange(layout.sourceFolder.valueCell).getValue(), 'https://drive.google.com/drive/folders/preserved-folder');
   assert.strictEqual(reopened.getRange(layout.outputDoc.valueCell).getValue(), 'https://docs.google.com/document/d/preserved-doc/edit');
   assert.strictEqual(reopened.getRange(layout.status.messageCell).getValue(), 'Сохраненный статус');
-  assert.strictEqual(reopened.getRange(23, 1).getValue(), 'Сохраненное замечание');
+  assert.strictEqual(reopened.getRange(layout.issuesHeaderRow + 2, 1).getValue(), 'Сохраненное замечание');
 }
 
 {
@@ -544,7 +716,8 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(opened.frozenRows, 2);
   assert.strictEqual(opened.columnWidths.get(1), 190);
   assert.strictEqual(opened.columnWidths.get(2), 520);
-  assert.strictEqual(harness.spreadsheet.getSheets().length, 3);
+  assert.strictEqual(harness.spreadsheet.getSheets().length, 4);
+  assert.ok(harness.spreadsheet.getSheetByName('Анкета и требования'));
 }
 
 {
@@ -927,8 +1100,8 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(sheet.getRange(layout.resultFields.liability.valueCell).getValue(), 8000);
   assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 120000);
   assert.strictEqual(layout.outputLinks, undefined);
-  assert.strictEqual(sheet.getRange('A19').getValue(), '');
-  assert.strictEqual(sheet.getRange('A20').getValue(), 'Требует внимания');
+  assert.strictEqual(sheet.getRange('A22').getValue(), '');
+  assert.strictEqual(sheet.getRange('A23').getValue(), 'Требует внимания');
 }
 
 {
@@ -1995,6 +2168,7 @@ function stubBatchSessionStartup(harness) {
 {
   const harness = createHarness([
     'Конструктор',
+    'Анкета и требования',
     'Оклад',
     'Ежемесячные',
     'Отпуска и расчет',
@@ -2009,6 +2183,7 @@ function stubBatchSessionStartup(harness) {
   );
 
   assert.strictEqual(classify('Конструктор'), 'constructor');
+  assert.strictEqual(classify('Анкета и требования'), 'questionnaire');
   assert.strictEqual(classify('Оклад'), 'primary_calculation');
   assert.strictEqual(classify('Ежемесячные'), 'primary_calculation');
   assert.strictEqual(classify('Отпуска и расчет'), 'primary_calculation');
@@ -2021,7 +2196,7 @@ function stubBatchSessionStartup(harness) {
 
 {
   const names = [
-    'Конструктор', 'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
+    'Конструктор', 'Анкета и требования', 'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
     'Из_1С_Оклад', 'Импорт_1С_QG', 'Заметки',
   ];
   const harness = createHarness(names);
@@ -2044,11 +2219,12 @@ function stubBatchSessionStartup(harness) {
   harness.context.applyClaimConstructorVisibilityMode_('normal', harness.spreadsheet);
   assert.strictEqual(harness.spreadsheet.visibilityOperations[0], 'show:Конструктор');
   assert.strictEqual(harness.spreadsheet.getSheetByName('Конструктор').isSheetHidden(), false);
-  assert.ok(harness.spreadsheet.getSheets().filter((sheet) => sheet.getName() !== 'Конструктор').every((sheet) => sheet.isSheetHidden()));
+  assert.ok(harness.spreadsheet.getSheets().filter((sheet) => !['Конструктор', 'Анкета и требования'].includes(sheet.getName())).every((sheet) => sheet.isSheetHidden()));
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Анкета и требования').isSheetHidden(), false);
 
   harness.context.applyClaimConstructorVisibilityMode_('detail', harness.spreadsheet);
   names.forEach((name) => {
-    const shouldBeVisible = name === 'Конструктор' || [
+    const shouldBeVisible = ['Конструктор', 'Анкета и требования'].includes(name) || [
       'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
     ].includes(name);
     assert.strictEqual(harness.spreadsheet.getSheetByName(name).isSheetHidden(), !shouldBeVisible, name);

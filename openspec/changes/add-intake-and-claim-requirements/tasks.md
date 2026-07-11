@@ -1,10 +1,10 @@
 ## 1. Sheet Layout And State
 
-- [ ] 1.1 Extend constructor setup to create or repair `Анкета и требования` without clearing existing workbook data.
-- [ ] 1.2 Update normal/detail/technical visibility modes so normal mode shows `Конструктор` and `Анкета и требования`.
-- [ ] 1.3 Add the `Нормативные документы` folder input to `Конструктор` with `пока не анализируется` in the left column under the label.
-- [ ] 1.4 Add stable named ranges or label resolvers for questionnaire fields, partial recoveries, claim selections, and generated Docs history.
-- [ ] 1.5 Record the deferred next-stage backlog for LNA, labor contract, addenda, statutes, FNS charter lookup, and case-law employer classification.
+- [x] 1.1 Extend constructor setup to create or repair `Анкета и требования` without clearing existing workbook data.
+- [x] 1.2 Update normal/detail/technical visibility modes so normal mode shows `Конструктор` and `Анкета и требования`.
+- [x] 1.3 Add the `Нормативные документы` folder input to `Конструктор` with `пока не анализируется` in the left column under the label.
+- [x] 1.4 Add stable named ranges or label resolvers for questionnaire fields, partial recoveries, claim selections, and generated Docs history.
+- [x] 1.5 Record the deferred next-stage backlog for LNA, labor contract, addenda, statutes, FNS charter lookup, and case-law employer classification.
 
 ## 2. Questionnaire
 

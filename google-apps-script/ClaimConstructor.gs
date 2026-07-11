@@ -2,6 +2,9 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   SHEET_NAME: 'Конструктор',
   SOURCE_FOLDER_LABEL: 'Расчетные листы:',
   SOURCE_FOLDER_NAMED_RANGE: 'CLAIM_CONSTRUCTOR_SOURCE_FOLDER',
+  NORMATIVE_FOLDER_LABEL: 'Нормативные документы',
+  NORMATIVE_FOLDER_NAMED_RANGE: 'CLAIM_CONSTRUCTOR_NORMATIVE_FOLDER',
+  NORMATIVE_FOLDER_PLACEHOLDER: 'пока не анализируется',
   OUTPUT_DOC_LABEL: 'Расписанный расчет:',
   OUTPUT_DOC_NAMED_RANGE: 'CLAIM_CONSTRUCTOR_OUTPUT_DOC',
   RUN_STATE_PROPERTY: 'CLAIM_CONSTRUCTOR_RUN_STATE',
@@ -46,29 +49,36 @@ function getClaimConstructorLayout_() {
       valueCell: 'B4',
       errorCell: 'B5',
     },
+    normativeFolder: {
+      label: CLAIM_CONSTRUCTOR_SETTINGS.NORMATIVE_FOLDER_LABEL,
+      namedRange: CLAIM_CONSTRUCTOR_SETTINGS.NORMATIVE_FOLDER_NAMED_RANGE,
+      labelCell: 'A6',
+      valueCell: 'B6',
+      placeholderCell: 'A7',
+    },
     outputDoc: {
       label: CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL,
       namedRange: CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_NAMED_RANGE,
-      labelCell: 'A6',
-      valueCell: 'B6',
-      errorCell: 'B7',
+      labelCell: 'A9',
+      valueCell: 'B9',
+      errorCell: 'B10',
     },
     status: {
-      titleCell: 'A9',
-      phaseCell: 'B9',
-      messageCell: 'B10',
-      updatedAtCell: 'B11',
-      completedAtCell: 'B12',
-      issueCountCell: 'B13',
+      titleCell: 'A12',
+      phaseCell: 'B12',
+      messageCell: 'B13',
+      updatedAtCell: 'B14',
+      completedAtCell: 'B15',
+      issueCountCell: 'B16',
     },
-    totalsStartRow: 14,
+    totalsStartRow: 17,
     resultFields: {
-      underpayment: { label: 'Недоплата', labelCell: 'A15', valueCell: 'B15' },
-      indexation: { label: 'Индексация', labelCell: 'A16', valueCell: 'B16' },
-      liability: { label: 'Материальная ответственность', labelCell: 'A17', valueCell: 'B17' },
-      total: { label: 'Итого требований', labelCell: 'A18', valueCell: 'B18' },
+      underpayment: { label: 'Недоплата', labelCell: 'A18', valueCell: 'B18' },
+      indexation: { label: 'Индексация', labelCell: 'A19', valueCell: 'B19' },
+      liability: { label: 'Материальная ответственность', labelCell: 'A20', valueCell: 'B20' },
+      total: { label: 'Итого требований', labelCell: 'A21', valueCell: 'B21' },
     },
-    issuesHeaderRow: 21,
+    issuesHeaderRow: 24,
     issueHeaders: CLAIM_CONSTRUCTOR_SETTINGS.ISSUE_HEADERS.slice(),
     phaseLabels: Object.assign({}, CLAIM_CONSTRUCTOR_SETTINGS.PHASE_LABELS),
   };
@@ -82,14 +92,54 @@ function ensureClaimConstructorSheet_(spreadsheet) {
     sheet = spreadsheet.insertSheet(layout.sheetName, 0);
   }
 
+  migrateLegacyClaimConstructorLayout_(sheet, layout);
   applyClaimConstructorStructure_(sheet, layout);
   formatClaimConstructorSheet_(sheet, layout);
   spreadsheet.setNamedRange(layout.sourceFolder.namedRange, sheet.getRange(layout.sourceFolder.valueCell));
+  spreadsheet.setNamedRange(layout.normativeFolder.namedRange, sheet.getRange(layout.normativeFolder.valueCell));
   spreadsheet.setNamedRange(layout.outputDoc.namedRange, sheet.getRange(layout.outputDoc.valueCell));
   if (created) {
     seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout);
   }
   return sheet;
+}
+
+function migrateLegacyClaimConstructorLayout_(sheet, layout) {
+  if (sheet.getRange('A6').getValue() !== CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL) {
+    return false;
+  }
+
+  const legacyDocUrl = sheet.getRange('B6').getValue();
+  const legacyDocError = sheet.getRange('B7').getValue();
+  const alreadyShifted = sheet.getRange(layout.outputDoc.labelCell).getValue() === layout.outputDoc.label
+    && sheet.getRange(layout.status.titleCell).getValue() === 'Статус:';
+  if (!alreadyShifted) {
+    const lastRow = sheet.getLastRow();
+    const columnCount = Math.max(sheet.getLastColumn(), layout.issueHeaders.length);
+    for (let row = lastRow; row >= 9; row--) {
+      const source = sheet.getRange(row, 1, 1, columnCount);
+      const values = source.getValues();
+      sheet.getRange(row + 3, 1, 1, columnCount).setValues(values);
+      source.clearContent();
+    }
+    sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
+  }
+
+  const migratedDocUrl = sheet.getRange(layout.outputDoc.valueCell).getValue();
+  if (migratedDocUrl && legacyDocUrl && migratedDocUrl !== legacyDocUrl) {
+    throw new Error('Найдены разные ссылки на текущий Google Doc; миграция остановлена без очистки старой ссылки.');
+  }
+  if (!migratedDocUrl) {
+    sheet.getRange(layout.outputDoc.valueCell).setValue(legacyDocUrl);
+  }
+  if (sheet.getRange(layout.outputDoc.valueCell).getValue() !== legacyDocUrl) {
+    throw new Error('Не удалось безопасно перенести ссылку на текущий Google Doc.');
+  }
+  setClaimConstructorCellIfBlank_(sheet.getRange(layout.outputDoc.errorCell), legacyDocError);
+  sheet.getRange('B6').clearContent();
+  sheet.getRange('B7').clearContent();
+  sheet.getRange('A6').clearContent();
+  return true;
 }
 
 function seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout) {
@@ -113,12 +163,15 @@ function applyClaimConstructorStructure_(sheet, layout) {
   sheet.getRange('A1').setValue('Конструктор требований');
   sheet.getRange(layout.primaryAction.cell).setValue(layout.primaryAction.text);
   sheet.getRange(layout.sourceFolder.labelCell).setValue(layout.sourceFolder.label);
+  sheet.getRange(layout.normativeFolder.labelCell).setValue(layout.normativeFolder.label);
+  sheet.getRange(layout.normativeFolder.placeholderCell)
+    .setValue(CLAIM_CONSTRUCTOR_SETTINGS.NORMATIVE_FOLDER_PLACEHOLDER);
   sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
   sheet.getRange(layout.status.titleCell).setValue('Статус:');
-  sheet.getRange('A10').setValue('Прогресс:');
-  sheet.getRange('A11').setValue('Обновлено:');
-  sheet.getRange('A12').setValue('Завершено:');
-  sheet.getRange('A13').setValue('Замечаний:');
+  sheet.getRange('A13').setValue('Прогресс:');
+  sheet.getRange('A14').setValue('Обновлено:');
+  sheet.getRange('A15').setValue('Завершено:');
+  sheet.getRange('A16').setValue('Замечаний:');
   setClaimConstructorCellIfBlank_(sheet.getRange(layout.status.phaseCell), 'Готов к запуску');
   sheet.getRange(layout.totalsStartRow, 1).setValue('Итоги расчета');
   sheet.getRange(layout.totalsStartRow + 1, 1, 4, 1).setValues([
@@ -127,11 +180,6 @@ function applyClaimConstructorStructure_(sheet, layout) {
     ['Материальная ответственность'],
     ['Итого требований'],
   ]);
-  if (sheet.getRange(22, 1).getValue() === 'Уровень') {
-    sheet.getRange(19, 1, 4, layout.issueHeaders.length).clearContent();
-  } else {
-    sheet.getRange(19, 1, 1, 2).clearContent();
-  }
   sheet.getRange(layout.issuesHeaderRow - 1, 1).setValue('Требует внимания');
   sheet.getRange(layout.issuesHeaderRow, 1, 1, layout.issueHeaders.length).setValues([layout.issueHeaders]);
 }
@@ -154,7 +202,7 @@ function formatClaimConstructorSheet_(sheet, layout) {
     .setFontColor('#202124')
     .setFontSize(16)
     .setFontWeight('bold');
-  sheet.getRange(4, 1, 3, 2).setWrap(true).setVerticalAlignment('middle');
+  sheet.getRange(4, 1, 7, 2).setWrap(true).setVerticalAlignment('middle');
   sheet.getRange(layout.issuesHeaderRow, 1, 1, layout.issueHeaders.length)
     .setBackground('#E8F0FE')
     .setFontWeight('bold')
@@ -163,7 +211,7 @@ function formatClaimConstructorSheet_(sheet, layout) {
 
 function openClaimConstructor() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   sheet.showSheet();
   sheet.activate();
   return sheet;
@@ -678,7 +726,7 @@ function hydrateClaimConstructorOnOpen_(spreadsheet) {
   if (!spreadsheet.getSheetByName(layout.sheetName)) {
     return false;
   }
-  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   const run = loadClaimConstructorRun_();
   if (run) {
     writeClaimConstructorStatus_(sheet, run);
@@ -1382,6 +1430,9 @@ function classifyClaimConstructorSheet_(sheet) {
   if (name === CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME) {
     return 'constructor';
   }
+  if (typeof CLAIM_INTAKE_SETTINGS !== 'undefined' && name === CLAIM_INTAKE_SETTINGS.SHEET_NAME) {
+    return 'questionnaire';
+  }
   if (/^(оклад|ежемесячные|ежеквартальные|ежегодные|отпуска(?: и расчет)?)$/.test(normalized)) {
     return 'primary_calculation';
   }
@@ -1397,14 +1448,23 @@ function classifyClaimConstructorSheet_(sheet) {
 function applyClaimConstructorVisibilityMode_(mode, spreadsheet) {
   const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const normalizedMode = ['normal', 'detail', 'technical'].indexOf(mode) >= 0 ? mode : 'normal';
-  const constructorSheet = target.getSheetByName(CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME)
-    || ensureClaimConstructorSheet_(target);
+  let constructorSheet = target.getSheetByName(CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME);
+  let questionnaireSheet = typeof CLAIM_INTAKE_SETTINGS !== 'undefined'
+    ? target.getSheetByName(CLAIM_INTAKE_SETTINGS.SHEET_NAME)
+    : null;
+  if (!constructorSheet || !questionnaireSheet) {
+    const workspace = ensureClaimConstructorWorkspace_(target);
+    constructorSheet = workspace.constructor;
+    questionnaireSheet = workspace.questionnaire;
+  }
   constructorSheet.showSheet();
+  questionnaireSheet.showSheet();
 
   target.getSheets().forEach((sheet) => {
     const group = classifyClaimConstructorSheet_(sheet);
     const visible = normalizedMode === 'technical'
       || group === 'constructor'
+      || group === 'questionnaire'
       || (normalizedMode === 'detail' && group === 'primary_calculation');
     if (visible) {
       sheet.showSheet();
