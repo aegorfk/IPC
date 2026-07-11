@@ -56,9 +56,9 @@
 
 - [x] 7.1 Run the constructor test through RED/GREEN cycles and run all existing Node test files after every implementation group.
 - [x] 7.2 Run `git diff --check`, review the diff for unrelated changes, and verify `.clasp.json`, calculation methodology, category rules, VLM prompts, and worksheet formulas were not changed unintentionally.
-- [ ] 7.3 Push the verified Apps Script files with `clasp push` and record the deployed Git commit in the handoff.
-- [ ] 7.4 In the working spreadsheet, create/update `Конструктор`, preserve the two current links, and verify normal mode leaves only the constructor visible.
+- [x] 7.3 Push the verified Apps Script files with `clasp push` and record the deployed Git commit in the handoff.
+- [x] 7.4 In the working spreadsheet, create/update `Конструктор`, preserve the two current links, and verify normal mode leaves only the constructor visible.
 - [ ] 7.5 Run a constructor smoke calculation and verify automatic batch continuation, Sheets-first updates, final status/totals, and non-blocking issue reporting.
-- [ ] 7.6 Verify calculation-detail and technical visibility modes against the Drive backup and confirm no sheet data, order, or identifiers changed.
+- [x] 7.6 Verify calculation-detail and technical visibility modes against the Drive backup and confirm no sheet data, order, or identifiers changed.
 - [ ] 7.7 Verify Docs content outside the managed markers is unchanged and record any unavailable optional claim facts as constructor issues.
 - [ ] 7.8 Prepare the final report with backup URL, tests, deployed commit, workflow behavior, known warnings, and rollback instructions.
