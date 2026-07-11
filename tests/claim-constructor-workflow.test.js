@@ -35,6 +35,8 @@ class FakeRange {
   getSheet() { return this.sheet; }
   getRow() { return this.row; }
   getColumn() { return this.column; }
+  getNumRows() { return this.rowCount; }
+  getNumColumns() { return this.columnCount; }
 
   getDisplayValues() {
     return this.getValues().map((row) => row.map((value) => value === null || value === undefined ? '' : String(value)));
@@ -257,6 +259,7 @@ class FakeSheet {
   }
 
   getName() { return this.name; }
+  getParent() { return this.spreadsheet; }
   getSheetId() { return this.id; }
   getRange(row, column, rowCount, columnCount) {
     if (typeof row === 'string') {
@@ -2698,6 +2701,12 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(sheet.getRange(layout.calculatedAverageBadge.valueCell).getValue(), 'рассчитано');
   assert.strictEqual(sheet.getRange(layout.manualAverageSource.valueCell).getValue(), 'источник: пользователь');
   assert.strictEqual(sheet.getRange(layout.partialRecoveries.actionCell).getValue(), 'Добавить');
+  assert.strictEqual(layout.partialRecoveries.actionControlCell, 'C12');
+  assert.strictEqual(
+    sheet.getRange(layout.partialRecoveries.actionControlCell).getDataValidation().type,
+    'checkbox'
+  );
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.actionControlCell).getValue(), false);
   assert.ok(!sheet.getDataRange().getDisplayValues().flat().includes('Бюджетный сектор / Не знаю'));
   assert.ok(!sheet.getDataRange().getDisplayValues().flat().includes('выберите сценарий'));
   assert.ok(!sheet.getDataRange().getDisplayValues().flat().includes('Пересчитать оба сценария'));
@@ -2744,6 +2753,20 @@ function stubBatchSessionStartup(harness) {
       selectedSource: 'calculated',
     }))),
     { source: 'calculated', amount: 4321.5, context: '2025 год' }
+  );
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(harness.context.resolveSelectedAverageEarnings_({
+      calculated: { amount: 4321.5, context: '2025 год' },
+      user: { amount: 5000, context: '2026 год' },
+      selectedSource: 'bogus',
+    }))),
+    {
+      valid: false,
+      source: 'bogus',
+      amount: null,
+      context: '',
+      error: 'Неизвестный источник среднего заработка',
+    }
   );
 }
 
@@ -2827,6 +2850,69 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(full.added, false);
   assert.strictEqual(full.error, 'Нет свободных строк для частичных погашений');
   assert.strictEqual(harness.spreadsheet.toasts.at(-1).message, full.error);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const control = sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+
+  assert.strictEqual(typeof harness.context.onEdit, 'function');
+  harness.context.onEdit({ range: control, value: 'TRUE' });
+
+  assert.strictEqual(control.getValue(), false);
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
+
+  sheet.getRange(layout.partialRecoveries.firstRow, 1, layout.partialRecoveries.rowCount, 4)
+    .setValues(Array.from({ length: layout.partialRecoveries.rowCount }, (_, index) => [
+      true, `01.01.202${index}`, 1, `claim:${index}`,
+    ]));
+  control.setValue(true);
+  harness.context.onEdit({ range: control, value: 'TRUE' });
+
+  assert.strictEqual(control.getValue(), false);
+  assert.strictEqual(
+    harness.spreadsheet.toasts.at(-1).message,
+    'Нет свободных строк для частичных погашений'
+  );
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const firstRow = layout.partialRecoveries.firstRow;
+  sheet.getRange(firstRow, 1, 3, 4).setValues([
+    [true, '31.02.2026', 100, 'claim:a'],
+    [true, '10.02.2026', 200, ''],
+    [true, '31.02.2026', 300, 'claim:c'],
+  ]);
+  sheet.getRange(firstRow, 1).setBackground('#D9EAD3').setNote('Проверить платежное поручение');
+
+  harness.context.onEdit({ range: sheet.getRange(firstRow, 2), value: '31.02.2026' });
+
+  assert.strictEqual(sheet.getRange(firstRow, 1).getBackground(), '#F4CCCC');
+  assert.ok(sheet.getRange(firstRow, 4).getNote().includes('Некорректная дата'));
+  assert.strictEqual(sheet.getRange(firstRow + 1, 1).getBackground(), '#FFF2CC');
+  assert.ok(sheet.getRange(firstRow + 1, 4).getNote().includes('спорным'));
+
+  sheet.getRange(firstRow, 2).setValue('09.02.2026');
+  harness.context.onEdit({ range: sheet.getRange(firstRow, 2), value: '09.02.2026' });
+
+  assert.strictEqual(sheet.getRange(firstRow, 1).getBackground(), '#D9EAD3');
+  assert.strictEqual(sheet.getRange(firstRow, 1).getNote(), 'Проверить платежное поручение');
+  assert.strictEqual(sheet.getRange(firstRow, 4).getNote(), '');
+
+  const untouchedBackground = sheet.getRange(firstRow + 2, 1).getBackground();
+  const untouchedNote = sheet.getRange(firstRow + 2, 4).getNote();
+  sheet.getRange(layout.employerSector.valueCell).setValue('Неизвестно');
+  harness.context.onEdit({
+    range: sheet.getRange(layout.employerSector.valueCell),
+    value: 'Неизвестно',
+  });
+  assert.strictEqual(sheet.getRange(firstRow + 2, 1).getBackground(), untouchedBackground);
+  assert.strictEqual(sheet.getRange(firstRow + 2, 4).getNote(), untouchedNote);
 }
 
 {

@@ -68,6 +68,7 @@ function getClaimIntakeLayout_() {
     partialRecoveries: {
       titleCell: 'A12',
       actionCell: 'B12',
+      actionControlCell: 'C12',
       headerRow: 13,
       firstRow: 14,
       rowCount: 10,
@@ -160,6 +161,13 @@ function applyClaimIntakeStructure_(sheet, layout) {
     sheet.getRange(layout.manualAverageEnabled.valueCell)
   );
   insertClaimIntakeCheckboxesPreservingValues_(
+    sheet.getRange(layout.partialRecoveries.actionControlCell)
+  );
+  const recoveryActionControl = sheet.getRange(layout.partialRecoveries.actionControlCell);
+  if (recoveryActionControl.getValue() !== true) {
+    recoveryActionControl.setValue(false);
+  }
+  insertClaimIntakeCheckboxesPreservingValues_(
     sheet.getRange(layout.partialRecoveries.firstRow, 1, layout.partialRecoveries.rowCount, 1)
   );
 }
@@ -248,6 +256,9 @@ function writeAverageEarningsState_(state, spreadsheet) {
   target.getRangeByName(layout.manualAverageContext.namedRange)
     .setValue(user.context || '');
   const selected = normalizeAverageEarningsSource_(value.selectedSource);
+  if (selected !== 'calculated' && selected !== 'user') {
+    throw new Error('Неизвестный источник среднего заработка');
+  }
   target.getRangeByName(layout.finalAverageScenario.namedRange).setValue(
     selected === 'user'
       ? CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]
@@ -260,12 +271,29 @@ function normalizeAverageEarningsSource_(value) {
   if (normalized === 'user' || normalized === CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]) {
     return 'user';
   }
-  return 'calculated';
+  if (
+    normalized === 'calculated'
+    || normalized === CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0]
+  ) {
+    return 'calculated';
+  }
+  return normalized;
 }
 
 function resolveSelectedAverageEarnings_(state) {
   const value = state || {};
   const source = normalizeAverageEarningsSource_(value.selectedSource);
+  if (source !== 'calculated' && source !== 'user') {
+    return {
+      valid: false,
+      source: source || null,
+      amount: null,
+      context: '',
+      error: source
+        ? 'Неизвестный источник среднего заработка'
+        : 'Источник среднего заработка не выбран',
+    };
+  }
   const scenario = source === 'user' ? value.user : value.calculated;
   const amount = parseClaimPositiveAmount_(scenario && scenario.amount);
   const context = scenario && scenario.context ? String(scenario.context) : '';
@@ -335,6 +363,42 @@ function addClaimPartialRecovery() {
   const row = layout.partialRecoveries.firstRow + emptyIndex;
   spreadsheet.getSheetByName(layout.sheetName).getRange(row, 1).setValue(true);
   return { added: true, row };
+}
+
+function onEdit(e) {
+  if (!e || !e.range) return { handled: false };
+  const editedRange = e.range;
+  const sheet = editedRange.getSheet();
+  const layout = getClaimIntakeLayout_();
+  if (!sheet || sheet.getName() !== layout.sheetName) return { handled: false };
+
+  const row = editedRange.getRow();
+  const column = editedRange.getColumn();
+  const actionControl = sheet.getRange(layout.partialRecoveries.actionControlCell);
+  if (row === actionControl.getRow() && column === actionControl.getColumn()) {
+    const checked = e.value === 'TRUE' || editedRange.getValue() === true;
+    if (!checked) return { handled: false };
+    try {
+      return { handled: true, type: 'add', result: addClaimPartialRecovery() };
+    } finally {
+      actionControl.setValue(false);
+    }
+  }
+
+  const editedLastRow = row + editedRange.getNumRows() - 1;
+  const editedLastColumn = column + editedRange.getNumColumns() - 1;
+  const recoveriesFirstRow = layout.partialRecoveries.firstRow;
+  const recoveriesLastRow = recoveriesFirstRow + layout.partialRecoveries.rowCount - 1;
+  const touchesRecoveryInputs = row <= recoveriesLastRow
+    && editedLastRow >= recoveriesFirstRow
+    && column <= 4
+    && editedLastColumn >= 2;
+  if (!touchesRecoveryInputs) return { handled: false };
+  return {
+    handled: true,
+    type: 'validate_partial_recoveries',
+    result: validateClaimPartialRecoveries_(sheet.getParent()),
+  };
 }
 
 function isClaimIntakeEmpty_(value) {
