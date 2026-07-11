@@ -6,6 +6,9 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   OUTPUT_DOC_NAMED_RANGE: 'CLAIM_CONSTRUCTOR_OUTPUT_DOC',
   RUN_STATE_PROPERTY: 'CLAIM_CONSTRUCTOR_RUN_STATE',
   VISIBILITY_MODE_PROPERTY: 'CLAIM_CONSTRUCTOR_VISIBILITY_MODE',
+  CONTINUATION_TRIGGER_FUNCTION: 'resumeClaimConstructorPipeline_',
+  CONTINUATION_TRIGGER_DELAY_MS: 60 * 1000,
+  PHASE_EXECUTION_LEASE_MS: 15 * 60 * 1000,
   RUN_STALE_MS: 6 * 60 * 60 * 1000,
   ISSUE_HEADERS: [
     'Уровень',
@@ -32,6 +35,10 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
 function getClaimConstructorLayout_() {
   return {
     sheetName: CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME,
+    primaryAction: {
+      cell: 'A2',
+      text: 'Собрать расчет: меню «Конструктор требований» → «Собрать расчет»',
+    },
     sourceFolder: {
       label: CLAIM_CONSTRUCTOR_SETTINGS.SOURCE_FOLDER_LABEL,
       namedRange: CLAIM_CONSTRUCTOR_SETTINGS.SOURCE_FOLDER_NAMED_RANGE,
@@ -51,6 +58,8 @@ function getClaimConstructorLayout_() {
       phaseCell: 'B9',
       messageCell: 'B10',
       updatedAtCell: 'B11',
+      completedAtCell: 'B12',
+      issueCountCell: 'B13',
     },
     totalsStartRow: 14,
     resultFields: {
@@ -74,6 +83,7 @@ function getClaimConstructorLayout_() {
 function ensureClaimConstructorSheet_(spreadsheet) {
   const layout = getClaimConstructorLayout_();
   let sheet = spreadsheet.getSheetByName(layout.sheetName);
+  const created = !sheet;
   if (!sheet) {
     sheet = spreadsheet.insertSheet(layout.sheetName, 0);
   }
@@ -82,14 +92,37 @@ function ensureClaimConstructorSheet_(spreadsheet) {
   formatClaimConstructorSheet_(sheet, layout);
   spreadsheet.setNamedRange(layout.sourceFolder.namedRange, sheet.getRange(layout.sourceFolder.valueCell));
   spreadsheet.setNamedRange(layout.outputDoc.namedRange, sheet.getRange(layout.outputDoc.valueCell));
+  if (created) {
+    seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout);
+  }
   return sheet;
+}
+
+function seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout) {
+  const folder = findZupFolderNearSourceLabel_(spreadsheet);
+  if (folder) {
+    setClaimConstructorCellIfBlank_(
+      sheet.getRange(layout.sourceFolder.valueCell),
+      `https://drive.google.com/drive/folders/${folder.id}`
+    );
+  }
+  const docUrl = findFirstLabeledDocUrl_(scanSpreadsheetLabelValues_(spreadsheet), [
+    CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL,
+    'расписанный расчет',
+  ]);
+  if (docUrl) {
+    setClaimConstructorCellIfBlank_(sheet.getRange(layout.outputDoc.valueCell), docUrl);
+  }
 }
 
 function applyClaimConstructorStructure_(sheet, layout) {
   sheet.getRange('A1').setValue('Конструктор требований');
+  sheet.getRange(layout.primaryAction.cell).setValue(layout.primaryAction.text);
   sheet.getRange(layout.sourceFolder.labelCell).setValue(layout.sourceFolder.label);
   sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
   sheet.getRange(layout.status.titleCell).setValue('Статус:');
+  sheet.getRange('A12').setValue('Завершено:');
+  sheet.getRange('A13').setValue('Замечаний:');
   setClaimConstructorCellIfBlank_(sheet.getRange(layout.status.phaseCell), 'Готов к запуску');
   sheet.getRange(layout.totalsStartRow, 1).setValue('Итоги расчета');
   sheet.getRange(layout.totalsStartRow + 1, 1, 4, 1).setValues([
@@ -118,8 +151,8 @@ function formatClaimConstructorSheet_(sheet, layout) {
     sheet.setColumnWidth(column, 150);
   }
   sheet.getRange(1, 1, 1, 2)
-    .setBackground('#0B57D0')
-    .setFontColor('#FFFFFF')
+    .setBackground('#E8F0FE')
+    .setFontColor('#202124')
     .setFontSize(16)
     .setFontWeight('bold');
   sheet.getRange(4, 1, 3, 2).setWrap(true).setVerticalAlignment('middle');
@@ -246,6 +279,7 @@ function createClaimConstructorRun_(inputs, options) {
     completedAt: '',
     inputs: Object.assign({}, inputs || {}),
     phases,
+    phaseExecutions: {},
     issues: [],
     results: {},
   };
@@ -275,7 +309,47 @@ function saveClaimConstructorRun_(run, properties) {
 
 function loadClaimConstructorRun_(properties) {
   const store = properties || PropertiesService.getScriptProperties();
-  return parseClaimConstructorRun_(store.getProperty(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY));
+  const raw = store.getProperty(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY);
+  if (!raw) {
+    return null;
+  }
+  const parsed = parseClaimConstructorRun_(raw);
+  if (parsed) {
+    return parsed;
+  }
+  const now = new Date().toISOString();
+  const phases = {};
+  getClaimConstructorPhaseOrder_().forEach((phase) => { phases[phase] = 'pending'; });
+  const corrupt = {
+    version: 1,
+    id: `corrupt-${Utilities.getUuid()}`,
+    parentRunId: '',
+    spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
+    status: 'failed',
+    phase: 'failed',
+    failedPhase: 'validating',
+    corruptState: true,
+    progressText: 'Состояние предыдущего запуска повреждено. Расчет не запущен.',
+    createdAt: now,
+    updatedAt: now,
+    completedAt: now,
+    inputs: {},
+    phases,
+    phaseExecutions: {},
+    issues: [normalizeClaimConstructorIssue_({
+      severity: 'error',
+      phase: 'validating',
+      sourceKind: 'system',
+      reason: 'Не удалось прочитать сохраненное состояние запуска.',
+      reviewStatus: 'поврежденное состояние',
+      knownImpact: 'запуск заблокирован',
+      suggestedAction: 'Сохранить диагностику и создать новый запуск после проверки.',
+    })],
+    results: {},
+    corruptValue: String(raw).slice(0, 500),
+  };
+  saveClaimConstructorRun_(corrupt, store);
+  return corrupt;
 }
 
 function isClaimConstructorPhaseDone_(run, phase) {
@@ -306,6 +380,9 @@ function startOrJoinClaimConstructorRun_(inputs, options) {
 
   try {
     const active = loadClaimConstructorRun_(properties);
+    if (active && active.corruptState) {
+      return { run: active, joined: true, busy: false };
+    }
     if (isClaimConstructorRunActive_(active) && !isClaimConstructorRunStale_(active, properties, now)) {
       return { run: active, joined: true, busy: false };
     }
@@ -320,6 +397,7 @@ function startOrJoinClaimConstructorRun_(inputs, options) {
       replacedRun = active;
     }
     const parentRunId = replacedRun ? replacedRun.id : (settings.parentRunId || '');
+    deleteClaimConstructorContinuationTriggers_();
     const run = createClaimConstructorRun_(inputs, { now, parentRunId });
     saveClaimConstructorRun_(run, properties);
     return { run, joined: false, busy: false, replacedRun };
@@ -337,7 +415,7 @@ function isClaimConstructorRunStale_(run, properties, now) {
     return false;
   }
   if (!run || run.phase !== 'importing') {
-    return true;
+    return !hasClaimConstructorContinuationTrigger_();
   }
 
   const session = loadClaimConstructorBatchSession_(properties);
@@ -377,6 +455,13 @@ function hasClaimConstructorImportTrigger_() {
     : 'resumeZupFolderImport_';
   return ScriptApp.getProjectTriggers().some((trigger) =>
     trigger.getHandlerFunction && trigger.getHandlerFunction() === handler
+  );
+}
+
+function hasClaimConstructorContinuationTrigger_() {
+  return ScriptApp.getProjectTriggers().some((trigger) =>
+    trigger.getHandlerFunction
+      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION
   );
 }
 
@@ -420,6 +505,8 @@ function writeClaimConstructorStatus_(sheet, run) {
   sheet.getRange(layout.status.phaseCell).setValue(phaseLabel);
   sheet.getRange(layout.status.messageCell).setValue(run.progressText || '');
   sheet.getRange(layout.status.updatedAtCell).setValue(run.updatedAt || '');
+  sheet.getRange(layout.status.completedAtCell).setValue(run.completedAt || '');
+  sheet.getRange(layout.status.issueCountCell).setValue((run.issues || []).length);
   return sheet;
 }
 
@@ -591,6 +678,11 @@ function buildClaimCalculation() {
   const sheet = ensureClaimConstructorSheet_(spreadsheet);
   sheet.showSheet();
   sheet.activate();
+  const activeRun = joinFreshClaimConstructorRun_();
+  if (activeRun) {
+    writeClaimConstructorStatus_(sheet, activeRun);
+    return { started: false, joined: true, validation: null, run: activeRun };
+  }
   const inputs = readClaimConstructorInputs_(spreadsheet);
   const validation = validateClaimConstructorInputs_(inputs);
   renderClaimConstructorInputErrors_(sheet, validation.errors);
@@ -626,16 +718,41 @@ function buildClaimCalculation() {
   );
   writeClaimConstructorStatus_(sheet, run);
   const adapter = getClaimConstructorSourceAdapters_().payroll_slips;
-  const adapterResult = adapter.start(spreadsheet, {
-    id: inputs.folderId,
-    source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
-  }, {
-    force: false,
-    dryRun: false,
-    constructorRunId: run.id,
-    constructorNextPhase: 'reconstructing',
-  });
-  return { started: true, joined: false, validation, run, adapterResult };
+  try {
+    const adapterResult = adapter.start(spreadsheet, {
+      id: inputs.folderId,
+      source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
+    }, {
+      force: false,
+      dryRun: false,
+      constructorRunId: run.id,
+      constructorNextPhase: 'reconstructing',
+    });
+    return { started: true, joined: false, validation, run, adapterResult };
+  } catch (error) {
+    const failed = failClaimConstructorRuntime_(run.id, 'importing', error);
+    refreshClaimConstructorDashboard_(spreadsheet, failed);
+    return { started: false, joined: false, validation, run: failed, error };
+  }
+}
+
+function joinFreshClaimConstructorRun_() {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return loadClaimConstructorRun_();
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (run && run.corruptState) {
+      return run;
+    }
+    return isClaimConstructorRunActive_(run)
+      && !isClaimConstructorRunStale_(run, PropertiesService.getScriptProperties(), new Date())
+      ? run
+      : null;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function continueClaimConstructorAfterImport_(runId, nextPhase, importResult) {
@@ -670,7 +787,43 @@ function continueClaimConstructorAfterImport_(runId, nextPhase, importResult) {
   if (!advanced) {
     return null;
   }
-  return continueClaimConstructorPipeline_(runId);
+  scheduleClaimConstructorContinuation_();
+  refreshClaimConstructorDashboard_(SpreadsheetApp.openById(advanced.spreadsheetId), advanced);
+  return advanced;
+}
+
+function resumeClaimConstructorPipeline_() {
+  const run = loadClaimConstructorRun_();
+  if (!isClaimConstructorRunActive_(run)) {
+    deleteClaimConstructorContinuationTriggers_();
+    return run;
+  }
+  scheduleClaimConstructorContinuation_();
+  const result = continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: SpreadsheetApp.openById(run.spreadsheetId),
+  });
+  if (!isClaimConstructorRunActive_(result)) {
+    deleteClaimConstructorContinuationTriggers_();
+  }
+  return result;
+}
+
+function scheduleClaimConstructorContinuation_() {
+  deleteClaimConstructorContinuationTriggers_();
+  ScriptApp
+    .newTrigger(CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION)
+    .timeBased()
+    .after(CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_DELAY_MS)
+    .create();
+}
+
+function deleteClaimConstructorContinuationTriggers_() {
+  ScriptApp.getProjectTriggers().forEach((trigger) => {
+    if (trigger.getHandlerFunction
+      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }
 
 function continueClaimConstructorPipeline_(runId, options) {
@@ -681,41 +834,105 @@ function continueClaimConstructorPipeline_(runId, options) {
   }
   const spreadsheet = settings.spreadsheet || SpreadsheetApp.openById(run.spreadsheetId);
 
-  if (run.phase === 'reconstructing' && run.phases.reconstructing === 'running') {
-    const reconstruction = runZupReconstruction_(spreadsheet);
-    run = recordClaimConstructorPhaseResult_(
-      runId,
-      'reconstructing',
-      'calculating',
-      'reconstruction',
-      reconstruction,
-      'Реконструкция завершена. Пересчитываем требования.'
-    );
-  }
-  if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
-    const calculations = runAllSheetsIndexation_(spreadsheet);
-    run = recordClaimConstructorPhaseResult_(
-      runId,
-      'calculating',
-      'writing_doc',
-      'calculations',
-      calculations,
-      'Расчет в Google Sheets завершен. Формируем расшифровку.'
-    );
-  }
-  if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
-    const params = readClaimCalculationParams_(spreadsheet);
-    params.docUrl = run.inputs.docUrl || params.docUrl;
-    const docs = runClaimCalculationDocsHandoff_(spreadsheet, { params });
-    const docIssues = (docs.issues || []).map((issue) => ({
-      phase: 'writing_doc',
-      sourceKind: 'calculation_doc',
-      source: run.inputs.docUrl || '',
-      reason: issue.reason || issue.code,
-      reviewStatus: 'раздел пропущен',
-      suggestedAction: 'Уточнить недостающие данные и повторить формирование Docs.',
-    }));
-    run = finishClaimConstructorRun_(runId, 'writing_doc', 'docs', docs, docIssues);
+  try {
+    if (run.phase === 'reconstructing' && run.phases.reconstructing === 'running') {
+      const executionToken = claimClaimConstructorPhaseExecution_(runId, 'reconstructing');
+      if (!executionToken) {
+        return loadClaimConstructorRun_();
+      }
+      const reconstruction = runZupReconstruction_(spreadsheet);
+      run = recordClaimConstructorPhaseResult_(
+        runId,
+        'reconstructing',
+        'calculating',
+        'reconstruction',
+        reconstruction,
+        'Реконструкция завершена. Пересчитываем требования.',
+        null,
+        null,
+        executionToken
+      );
+    }
+    if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
+      const executionToken = claimClaimConstructorPhaseExecution_(runId, 'calculating');
+      if (!executionToken) {
+        return loadClaimConstructorRun_();
+      }
+      const calculations = runAllSheetsIndexation_(spreadsheet);
+      const claimCalculation = runClaimSheetCalculation_(spreadsheet);
+      const dashboard = buildClaimConstructorDashboardResult_(
+        spreadsheet,
+        calculations,
+        run.inputs.docUrl || '',
+        claimCalculation
+      );
+      const claimIssues = (claimCalculation.issues || []).map((issue) => ({
+        phase: 'calculating',
+        sourceKind: 'calculation_sheet',
+        reason: issue.reason || issue.code,
+        reviewStatus: 'раздел пропущен',
+        suggestedAction: 'Добавить недостающие расчетные параметры в Google Sheets и повторить запуск.',
+      }));
+      const workflowIssues = aggregateClaimConstructorIssues_(
+        collectClaimConstructorIssueSignals_(spreadsheet, run.results.reconstruction, calculations)
+      );
+      run = recordClaimConstructorPhaseResult_(
+        runId,
+        'calculating',
+        'writing_doc',
+        'calculations',
+        calculations,
+        'Расчет в Google Sheets завершен. Формируем расшифровку.',
+        { dashboard, claimCalculation },
+        workflowIssues.concat(claimIssues),
+        executionToken
+      );
+    }
+    if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
+      const executionToken = claimClaimConstructorPhaseExecution_(runId, 'writing_doc');
+      if (!executionToken) {
+        return loadClaimConstructorRun_();
+      }
+      const claimCalculation = run.results.claimCalculation;
+      let docs;
+      if (claimCalculation && claimCalculation.ready && claimCalculation.written > 0) {
+        const params = Object.assign({}, claimCalculation.params || {});
+        params.docUrl = run.inputs.docUrl || params.docUrl;
+        docs = runClaimCalculationDocsHandoff_(spreadsheet, {
+          params,
+          calculatedResult: claimCalculation.result,
+        });
+      } else {
+        docs = buildSkippedClaimDocsHandoff_(
+          'claim_sheet_not_written',
+          'Раздел Docs не обновлен: соответствующий расчет сначала должен быть записан в Google Sheets.'
+        );
+      }
+      const fatalDocIssue = (docs.issues || []).find((issue) =>
+        issue.code === 'doc_write_failed' || issue.code === 'output_doc_missing'
+      );
+      if (fatalDocIssue) {
+        throw new Error(fatalDocIssue.reason || 'Не удалось обновить обязательный Google Doc.');
+      }
+      const docIssues = (docs.issues || []).map((issue) => ({
+        phase: 'writing_doc',
+        sourceKind: 'calculation_doc',
+        source: run.inputs.docUrl || '',
+        reason: issue.reason || issue.code,
+        reviewStatus: 'раздел пропущен',
+        suggestedAction: 'Уточнить недостающие данные и повторить формирование Docs.',
+      }));
+      run = finishClaimConstructorRun_(runId, 'writing_doc', 'docs', docs, docIssues, executionToken);
+    }
+  } catch (error) {
+    const failedPhase = run && getClaimConstructorPhaseOrder_().indexOf(run.phase) >= 0
+      ? run.phase
+      : 'unknown';
+    const failed = failClaimConstructorRuntime_(runId, failedPhase, error);
+    if (failed) {
+      refreshClaimConstructorDashboard_(spreadsheet, failed);
+    }
+    return failed;
   }
   if (run) {
     refreshClaimConstructorDashboard_(spreadsheet, run);
@@ -723,17 +940,57 @@ function continueClaimConstructorPipeline_(runId, options) {
   return run;
 }
 
-function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, resultKey, result, progressText) {
+function failClaimConstructorRuntime_(runId, failedPhase, error) {
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
     return null;
   }
   try {
     const run = loadClaimConstructorRun_();
-    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
+    if (!run || run.id !== runId || run.status !== 'running') {
+      return null;
+    }
+    const reason = error && error.message ? error.message : String(error);
+    run.status = 'failed';
+    run.phase = 'failed';
+    run.failedPhase = failedPhase;
+    run.progressText = `Этап завершился ошибкой: ${reason}`;
+    run.issues.push(normalizeClaimConstructorIssue_({
+      severity: 'error',
+      phase: failedPhase,
+      sourceKind: 'system',
+      reason,
+      reviewStatus: 'фатальная ошибка',
+      knownImpact: 'этап не завершен',
+      suggestedAction: 'Устранить причину и выбрать «Повторить последний запуск».',
+    }));
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, resultKey, result, progressText, additionalResults, issues, executionToken) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    const execution = run && run.phaseExecutions && run.phaseExecutions[expectedPhase];
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running'
+      || !execution || execution.token !== executionToken) {
       return null;
     }
     run.results[resultKey] = result;
+    Object.keys(additionalResults || {}).forEach((key) => {
+      run.results[key] = additionalResults[key];
+    });
+    (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
     run.progressText = progressText || run.progressText;
     saveClaimConstructorRun_(run);
@@ -743,18 +1000,21 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
   }
 }
 
-function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, issues) {
+function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, issues, executionToken) {
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
     return null;
   }
   try {
     const run = loadClaimConstructorRun_();
-    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
+    const execution = run && run.phaseExecutions && run.phaseExecutions[expectedPhase];
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running'
+      || !execution || execution.token !== executionToken) {
       return null;
     }
     run.results[resultKey] = result;
     (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
     const hasWarnings = run.issues.length > 0;
     run.status = hasWarnings ? 'complete_with_warnings' : 'complete';
@@ -770,11 +1030,131 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
   }
 }
 
+function claimClaimConstructorPhaseExecution_(runId, phase, now) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.status !== 'running'
+      || run.phase !== phase || run.phases[phase] !== 'running') {
+      return null;
+    }
+    run.phaseExecutions = run.phaseExecutions || {};
+    const existing = run.phaseExecutions[phase];
+    const currentTime = now || new Date();
+    const existingStartedAt = existing ? new Date(existing.startedAt || 0).getTime() : 0;
+    const existingFresh = existing && Number.isFinite(existingStartedAt)
+      && currentTime.getTime() - existingStartedAt <= CLAIM_CONSTRUCTOR_SETTINGS.PHASE_EXECUTION_LEASE_MS;
+    if (existingFresh) {
+      return null;
+    }
+    const token = Utilities.getUuid();
+    run.phaseExecutions[phase] = {
+      token,
+      startedAt: currentTime.toISOString(),
+    };
+    run.updatedAt = currentTime.toISOString();
+    saveClaimConstructorRun_(run);
+    return token;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function refreshClaimConstructorDashboard_(spreadsheet, run) {
   const sheet = ensureClaimConstructorSheet_(spreadsheet);
   writeClaimConstructorStatus_(sheet, run);
   renderClaimConstructorResults_(sheet, run.results.dashboard || run.results);
   renderClaimConstructorIssues_(sheet, run.issues);
+}
+
+function buildClaimConstructorDashboardResult_(spreadsheet, calculationResults, docUrl, claimCalculation) {
+  const totals = (calculationResults || []).reduce((acc, result) => {
+    const item = result.totals || {};
+    acc.underpayment += Number(item.underpayment) || 0;
+    acc.indexation += Number(item.indexation) || 0;
+    acc.liability += Number(item.liability) || 0;
+    return acc;
+  }, { underpayment: 0, indexation: 0, liability: 0 });
+  if (claimCalculation && claimCalculation.ready && claimCalculation.written > 0 && claimCalculation.result) {
+    totals.underpayment += (Number(claimCalculation.result.wageAmount) || 0)
+      + (Number(claimCalculation.result.vacationAmount) || 0);
+    totals.liability += Number(claimCalculation.result.penaltyAmount) || 0;
+  }
+  totals.total = totals.underpayment + totals.indexation + totals.liability;
+  return {
+    totals,
+    output: {
+      docUrl: docUrl || '',
+      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheet.getId()}/edit`,
+    },
+  };
+}
+
+function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult, calculationResults) {
+  const qualityGateRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_QG')
+    .filter((row) => String(row[1] || '').toLowerCase() !== 'инфо');
+  const vlmRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_VLM');
+  const diagnosticIssues = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_Диагностика')
+    .filter((row) => /(ошиб|предуп|не распоз|пропущ|не найден)/i.test(row.join(' ')))
+    .map((row, index) => ({
+      source: `Импорт_1С_Диагностика!${index + 2}`,
+      reason: row.join(' | '),
+    }));
+  const reconstructionIssues = buildClaimConstructorReconstructionIssues_(reconstructionResult);
+  const skippedCalculationIssues = (calculationResults || [])
+    .filter((result) => result.error || Number(result.skipped) > 0)
+    .map((result) => ({
+      source: result.sheetName || result.layoutId || '',
+      reason: result.error
+        ? `Расчет завершился ошибкой: ${result.error}`
+        : `При расчете пропущено ${result.skipped} строк.`,
+      reviewStatus: result.error ? 'ошибка расчета' : 'частичный расчет',
+    }));
+  return {
+    qualityGateRows,
+    vlmRows,
+    diagnosticIssues,
+    reconstructionIssues,
+    skippedCalculationIssues,
+  };
+}
+
+function readClaimConstructorIssueSheetRows_(spreadsheet, sheetName) {
+  const sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return [];
+  }
+  return sheet.getDataRange().getValues().slice(1);
+}
+
+function buildClaimConstructorReconstructionIssues_(reconstructionResult) {
+  const quality = reconstructionResult && reconstructionResult.quality;
+  if (!quality) {
+    return [];
+  }
+  const issues = [];
+  if ((quality.companies || []).length > 1) {
+    issues.push({
+      source: 'Реконструкция',
+      reason: `В расчетных листках найдены разные организации: ${quality.companies.join(', ')}.`,
+    });
+  }
+  if ((quality.blankCompanyPeriods || []).length) {
+    issues.push({
+      source: 'Реконструкция',
+      reason: `Не распознана организация за периоды: ${quality.blankCompanyPeriods.join(', ')}.`,
+    });
+  }
+  Object.keys(quality.periodIssues || {}).forEach((period) => {
+    issues.push({
+      source: `Реконструкция, ${period}`,
+      reason: String(quality.periodIssues[period]),
+    });
+  });
+  return issues;
 }
 
 function appendClaimConstructorIssuesToRun_(runId, expectedPhase, issues) {
@@ -868,7 +1248,7 @@ function createClaimConstructorRetryRun_(previousRun, options) {
   const resultKeysByPhase = {
     importing: ['import'],
     reconstructing: ['reconstruction'],
-    calculating: ['calculations', 'dashboard'],
+    calculating: ['calculations', 'claimCalculation', 'dashboard'],
     writing_doc: ['docs'],
   };
   phaseOrder.slice(0, restartIndex).forEach((phase) => {
@@ -891,6 +1271,22 @@ function retryClaimCalculation() {
     const previous = loadClaimConstructorRun_();
     if (!previous) {
       return null;
+    }
+    if (previous.corruptState) {
+      return previous;
+    }
+    if (previous.status === 'running') {
+      if (!isClaimConstructorRunStale_(previous, PropertiesService.getScriptProperties(), new Date())) {
+        return previous;
+      }
+      previous.status = 'failed';
+      previous.failedPhase = previous.phase;
+      previous.phase = 'failed';
+      previous.progressText = 'Предыдущий запуск устарел; создан повтор с первого незавершенного этапа.';
+      previous.updatedAt = new Date().toISOString();
+      previous.completedAt = previous.updatedAt;
+    } else if (previous.status !== 'failed') {
+      return previous;
     }
     successor = createClaimConstructorRetryRun_(previous);
     saveClaimConstructorRun_(successor);
@@ -982,15 +1378,21 @@ function continueClaimConstructorRetryImport_(successor, spreadsheet) {
       { progressText: 'Повторно импортируем расчетные листки.' }
     );
   }
-  getClaimConstructorSourceAdapters_().payroll_slips.start(spreadsheet, {
-    id: run.inputs.folderId,
-    source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
-  }, {
-    force: false,
-    dryRun: false,
-    constructorRunId: run.id,
-    constructorNextPhase: 'reconstructing',
-  });
+  try {
+    getClaimConstructorSourceAdapters_().payroll_slips.start(spreadsheet, {
+      id: run.inputs.folderId,
+      source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
+    }, {
+      force: false,
+      dryRun: false,
+      constructorRunId: run.id,
+      constructorNextPhase: 'reconstructing',
+    });
+  } catch (error) {
+    const failed = failClaimConstructorRuntime_(run.id, 'importing', error);
+    refreshClaimConstructorDashboard_(spreadsheet, failed);
+    return failed;
+  }
   return loadClaimConstructorRun_() || run;
 }
 

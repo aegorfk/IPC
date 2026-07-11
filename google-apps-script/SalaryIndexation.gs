@@ -271,8 +271,9 @@ function runAllSheetsIndexation_(spreadsheet) {
   const layoutIds = ['salary', 'monthlyPremiums', 'quarterlyPremiums', 'annualPremiums', 'vacation'];
 
   for (const layoutId of layoutIds) {
+    let sheet = null;
     try {
-      const sheet = sheets.find(
+      sheet = sheets.find(
         (candidate) =>
           !isGeneratedSheetName_(candidate.getName()) &&
           getSheetLayout_(candidate.getName()).id === layoutId
@@ -286,7 +287,16 @@ function runAllSheetsIndexation_(spreadsheet) {
         processedLayouts.add(layoutId);
       }
     } catch (error) {
-      Logger.log(`Не удалось пересчитать лист "${layoutId}": ${error && error.message ? error.message : error}`);
+      const reason = error && error.message ? error.message : String(error);
+      Logger.log(`Не удалось пересчитать лист "${layoutId}": ${reason}`);
+      results.push({
+        sheetName: sheet ? sheet.getName() : layoutId,
+        layoutId,
+        calculated: 0,
+        skipped: 0,
+        error: reason,
+        totals: { underpayment: 0, indexation: 0, liability: 0 },
+      });
     }
   }
 
@@ -375,7 +385,9 @@ function runClaimCalculationDocsHandoff_(spreadsheet, options) {
       'Не указана ссылка на Google Doc для расшифровки расчета.'
     );
   }
-  const calculated = calculateClaimCalculationResult_(spreadsheet, params);
+  const calculated = settings.calculatedResult
+    ? { ready: true, result: settings.calculatedResult }
+    : calculateClaimCalculationResult_(spreadsheet, params);
   if (!calculated.ready) {
     return buildSkippedClaimDocsHandoff_(
       'claim_parameters_missing',
@@ -446,16 +458,49 @@ function recalculateForcedAbsenceLiabilityAndVacations() {
     includeRichText: false,
   });
   const params = readClaimCalculationParamsFromLabelValues_(labelValues);
-  const calculated = calculateClaimCalculationResult_(spreadsheet, params, labelValues);
+  const calculated = runClaimSheetCalculation_(spreadsheet, { params, labelValues, target: sheet });
   if (!calculated.ready) {
     showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета. Средний заработок берется из явной подписи или из последней строки вкладки "Отпуска и расчет"; сумма прогула не используется как источник.');
     return;
   }
-  const written = writeClaimCalculationResultToSheet_(sheet, calculated.result, labelValues);
-  SpreadsheetApp.flush();
   showMessage_(
-    `Таблица пересчитана: прогул ${formatMoneyRu_(calculated.result.wageAmount, 2)}, матответственность ${formatMoneyRu_(calculated.result.penaltyAmount, 2)}, отпуск ${formatMoneyRu_(calculated.result.vacationAmount, 2)}. Обновлено ячеек: ${written}.`
+    `Таблица пересчитана: прогул ${formatMoneyRu_(calculated.result.wageAmount, 2)}, матответственность ${formatMoneyRu_(calculated.result.penaltyAmount, 2)}, отпуск ${formatMoneyRu_(calculated.result.vacationAmount, 2)}. Обновлено ячеек: ${calculated.written}.`
   );
+}
+
+function runClaimSheetCalculation_(spreadsheet, options) {
+  const settings = options || {};
+  const labelValues = settings.labelValues || scanSpreadsheetLabelValues_(spreadsheet);
+  const params = settings.params || readClaimCalculationParamsFromLabelValues_(labelValues);
+  const calculated = calculateClaimCalculationResult_(spreadsheet, params, labelValues);
+  if (!calculated.ready) {
+    return {
+      ready: false,
+      written: 0,
+      result: null,
+      params,
+      issues: [{
+        code: 'claim_parameters_missing',
+        reason: 'Не хватает параметров для расчета вынужденного прогула, ст. 236 и отпуска.',
+      }],
+    };
+  }
+  const written = writeClaimCalculationResultToSheet_(
+    settings.target || spreadsheet,
+    calculated.result,
+    labelValues
+  );
+  SpreadsheetApp.flush();
+  return {
+    ready: true,
+    written,
+    result: calculated.result,
+    params,
+    issues: written > 0 ? [] : [{
+      code: 'claim_output_labels_missing',
+      reason: 'Расчет выполнен, но в Google Sheets не найдены поля для записи его результатов.',
+    }],
+  };
 }
 
 function updateZupReconstructionIndexation() {
@@ -553,6 +598,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
       layoutId: table.layout.id,
       calculated: 0,
       skipped: 0,
+      totals: { underpayment: 0, indexation: 0, liability: 0 },
     };
   }
 
@@ -904,6 +950,13 @@ function updateUnpaidSalaryIndexationCore_(params) {
       .setNote('Авторасчет: реконструированная корректная сумма годового заработка по смежным листам.');
   }
 
+  SpreadsheetApp.flush();
+  const totals = summarizeClaimConstructorCalculationTotals_(
+    sheet.getRange(table.headerRow + 1, table.columns.totalUnderpayment + 1, rowCount, 1).getValues(),
+    sheet.getRange(table.headerRow + 1, table.columns.target + 1, rowCount, 1).getValues(),
+    sheet.getRange(table.headerRow + 1, table.columns.penalty + 1, rowCount, 1).getValues()
+  );
+
   return {
     sheetName: sheet.getName(),
     layoutId: table.layout.id,
@@ -913,6 +966,19 @@ function updateUnpaidSalaryIndexationCore_(params) {
     penaltyColumn: table.layout.penaltyColumn,
     updatedIndexation: true,
     updatedPenalty: true,
+    totals,
+  };
+}
+
+function summarizeClaimConstructorCalculationTotals_(underpaymentValues, indexationValues, liabilityValues) {
+  const sum = (values) => (values || []).reduce((total, row) => {
+    const value = parseMoney_(row && row[0]);
+    return total + (value === null ? 0 : value);
+  }, 0);
+  return {
+    underpayment: sum(underpaymentValues),
+    indexation: sum(indexationValues),
+    liability: sum(liabilityValues),
   };
 }
 

@@ -247,7 +247,21 @@ function createHarness(sheetNames = ['Оклад']) {
       getDocumentProperties: () => documentProperties,
     },
     RegExp,
-    ScriptApp: { getProjectTriggers: () => triggers },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.slice(),
+      deleteTrigger(trigger) {
+        const index = triggers.indexOf(trigger);
+        if (index >= 0) triggers.splice(index, 1);
+      },
+      newTrigger(handler) {
+        const trigger = { getHandlerFunction: () => handler };
+        return {
+          timeBased() { return this; },
+          after() { return this; },
+          create() { triggers.push(trigger); return trigger; },
+        };
+      },
+    },
     Session: { getScriptTimeZone: () => 'Europe/Moscow' },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
@@ -342,6 +356,8 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(layout.sourceFolder.namedRange, 'CLAIM_CONSTRUCTOR_SOURCE_FOLDER');
   assert.strictEqual(layout.outputDoc.label, 'Расписанный расчет:');
   assert.strictEqual(layout.outputDoc.namedRange, 'CLAIM_CONSTRUCTOR_OUTPUT_DOC');
+  assert.strictEqual(layout.primaryAction.cell, 'A2');
+  assert.ok(layout.primaryAction.text.includes('Собрать расчет'));
   assert.deepStrictEqual(Array.from(layout.issueHeaders), [
     'Уровень',
     'Этап',
@@ -384,6 +400,27 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(reopened.getRange(layout.outputDoc.valueCell).getValue(), 'https://docs.google.com/document/d/preserved-doc/edit');
   assert.strictEqual(reopened.getRange(layout.status.messageCell).getValue(), 'Сохраненный статус');
   assert.strictEqual(reopened.getRange(23, 1).getValue(), 'Сохраненное замечание');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const legacy = harness.spreadsheet.getSheetByName('Оклад');
+  legacy
+    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 2, 'Папка', 'https://drive.google.com/drive/folders/legacy-folder-123456789')
+    .seed(2, 1, 'Расписанный расчет:')
+    .seed(2, 2, 'Документ', 'https://docs.google.com/document/d/legacy-doc-123456789/edit');
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+
+  assert.strictEqual(
+    sheet.getRange(layout.sourceFolder.valueCell).getValue(),
+    'https://drive.google.com/drive/folders/legacy-folder-123456789'
+  );
+  assert.strictEqual(
+    sheet.getRange(layout.outputDoc.valueCell).getValue(),
+    'https://docs.google.com/document/d/legacy-doc-123456789/edit'
+  );
 }
 
 {
@@ -712,6 +749,30 @@ function createHarness(sheetNames = ['Оклад']) {
 
 {
   const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({});
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.context.scheduleClaimConstructorContinuation_();
+  const calls = [];
+  harness.context.continueClaimConstructorPipeline_ = (runId) => {
+    calls.push(runId);
+    const current = harness.context.loadClaimConstructorRun_(harness.scriptProperties);
+    current.status = 'complete';
+    current.phase = 'complete';
+    harness.context.saveClaimConstructorRun_(current, harness.scriptProperties);
+    return current;
+  };
+
+  const completed = harness.context.resumeClaimConstructorPipeline_();
+
+  assert.deepStrictEqual(calls, [run.id]);
+  assert.strictEqual(completed.status, 'complete');
+  assert.strictEqual(harness.triggers.length, 0);
+}
+
+{
+  const harness = createHarness();
   const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
   const layout = harness.context.getClaimConstructorLayout_();
   const run = harness.context.createClaimConstructorRun_({}, {
@@ -731,8 +792,12 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово');
 
   run.status = 'complete_with_warnings';
+  run.completedAt = '2026-07-11T09:06:00.000Z';
+  run.issues = [{}, {}];
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово с замечаниями');
+  assert.strictEqual(sheet.getRange(layout.status.completedAtCell).getValue(), '2026-07-11T09:06:00.000Z');
+  assert.strictEqual(sheet.getRange(layout.status.issueCountCell).getValue(), 2);
 
   run.status = 'failed';
   run.progressText = 'Нет доступа к документу';
@@ -816,6 +881,40 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 120000);
   assert.strictEqual(sheet.getRange(layout.outputLinks.docCell).getValue(), results.output.docUrl);
   assert.strictEqual(sheet.getRange(layout.outputLinks.spreadsheetCell).getValue(), results.output.spreadsheetUrl);
+}
+
+{
+  const harness = createHarness();
+  const dashboard = harness.context.buildClaimConstructorDashboardResult_(
+    harness.spreadsheet,
+    [
+      { totals: { underpayment: 100, indexation: 20, liability: 5 } },
+      { totals: { underpayment: 50, indexation: 10, liability: 2 } },
+    ],
+    'https://docs.google.com/document/d/result-doc/edit'
+  );
+
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(dashboard.totals)), {
+    underpayment: 150,
+    indexation: 30,
+    liability: 7,
+    total: 187,
+  });
+  assert.strictEqual(dashboard.output.docUrl, 'https://docs.google.com/document/d/result-doc/edit');
+  assert.strictEqual(
+    dashboard.output.spreadsheetUrl,
+    'https://docs.google.com/spreadsheets/d/fake-spreadsheet-id/edit'
+  );
+  const sheetTotals = harness.context.summarizeClaimConstructorCalculationTotals_(
+    [[100], ['50,50'], ['']],
+    [[20], [10], [null]],
+    [[5], [2], ['не число']]
+  );
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(sheetTotals)), {
+    underpayment: 150.5,
+    indexation: 30,
+    liability: 7,
+  });
 }
 
 {
@@ -973,6 +1072,21 @@ function stubAllSheetsCalculation(harness) {
   assert.deepStrictEqual(deleted, ['deleted']);
 }
 
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  stubAllSheetsCalculation(harness);
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
+    if (sheet.getName() === 'Ежемесячные') throw new Error('Ошибка листа премий');
+    return { sheetName: sheet.getName(), layoutId: 'salary', calculated: 1, skipped: 0 };
+  };
+
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+
+  assert.strictEqual(results.length, 2);
+  assert.strictEqual(results[1].sheetName, 'Ежемесячные');
+  assert.ok(results[1].error.includes('Ошибка листа премий'));
+}
+
 function stubDocsHandoff(harness, ready = true) {
   const params = {
     docUrl: 'https://docs.google.com/document/d/result-doc/edit',
@@ -1045,6 +1159,40 @@ function stubDocsHandoff(harness, ready = true) {
   assert.deepStrictEqual(Array.from(handoff.skippedSections), ['claim_calculation']);
   assert.strictEqual(handoff.issues[0].code, 'doc_write_failed');
   assert.ok(handoff.issues[0].reason.includes('Нет доступа к Doc'));
+}
+
+{
+  const harness = createHarness();
+  const result = { wageAmount: 100, penaltyAmount: 10, vacationAmount: 20, averageDailyEarning: 5 };
+  const writes = [];
+  harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
+  harness.context.calculateClaimCalculationResult_ = () => ({ ready: true, result });
+  harness.context.writeClaimCalculationResultToSheet_ = (target, value) => {
+    writes.push({ target, value });
+    return 3;
+  };
+
+  const calculated = harness.context.runClaimSheetCalculation_(harness.spreadsheet);
+
+  assert.strictEqual(calculated.ready, true);
+  assert.strictEqual(calculated.written, 3);
+  assert.strictEqual(calculated.result, result);
+  assert.strictEqual(writes[0].target, harness.spreadsheet);
+  assert.strictEqual(writes[0].value, result);
+}
+
+{
+  const harness = createHarness();
+  const stub = stubDocsHandoff(harness);
+  harness.context.calculateClaimCalculationResult_ = () => { throw new Error('Не пересчитывать повторно'); };
+
+  const handoff = harness.context.runClaimCalculationDocsHandoff_(harness.spreadsheet, {
+    params: stub.params,
+    calculatedResult: stub.result,
+  });
+
+  assert.deepStrictEqual(Array.from(handoff.writtenSections), ['claim_calculation']);
+  assert.strictEqual(stub.writes.length, 1);
 }
 
 {
@@ -1131,6 +1279,26 @@ function stubDocsHandoff(harness, ready = true) {
   const harness = createHarness();
   const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
   const layout = harness.context.getClaimConstructorLayout_();
+  const folderId = 'failing-folder-123456789';
+  const docId = 'failing-doc-123456789';
+  sheet.getRange(layout.sourceFolder.valueCell).setValue(`https://drive.google.com/drive/folders/${folderId}`);
+  sheet.getRange(layout.outputDoc.valueCell).setValue(`https://docs.google.com/document/d/${docId}/edit`);
+  harness.driveFolders.set(folderId, { id: folderId });
+  harness.documents.set(docId, { id: docId });
+  harness.context.startZupFolderImportBatch_ = () => { throw new Error('Сбой запуска импорта'); };
+
+  const failed = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(failed.run.status, 'failed');
+  assert.strictEqual(failed.run.failedPhase, 'importing');
+  assert.ok(failed.run.progressText.includes('Сбой запуска импорта'));
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Ошибка');
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
   const folderId = 'valid-folder-123456789';
   const docId = 'valid-doc-123456789';
   sheet.getRange(layout.sourceFolder.valueCell).setValue(`https://drive.google.com/drive/folders/${folderId}`);
@@ -1148,6 +1316,42 @@ function stubDocsHandoff(harness, ready = true) {
   assert.strictEqual(result.joined, true);
   assert.strictEqual(result.run.id, active.id);
   assert.strictEqual(starts.length, 0);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  sheet.getRange(layout.sourceFolder.valueCell).setValue('испорченная ссылка во время запуска');
+  sheet.getRange(layout.outputDoc.valueCell).setValue('');
+  const active = harness.context.createClaimConstructorRun_({}, { now: new Date() });
+  active.phase = 'importing';
+  active.progressText = 'Импорт продолжается';
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+
+  const result = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(result.joined, true);
+  assert.strictEqual(result.run.id, active.id);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Распознавание расчетных листков');
+  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Импорт продолжается');
+}
+
+{
+  const harness = createHarness();
+  harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  harness.scriptProperties.setProperty('CLAIM_CONSTRUCTOR_RUN_STATE', '{повреждено');
+  const sideEffects = [];
+  harness.context.startZupFolderImportBatch_ = () => sideEffects.push('import');
+
+  const result = harness.context.buildClaimCalculation();
+  const persisted = JSON.parse(harness.scriptProperties.getProperty('CLAIM_CONSTRUCTOR_RUN_STATE'));
+
+  assert.strictEqual(result.started, false);
+  assert.strictEqual(result.run.status, 'failed');
+  assert.strictEqual(result.run.corruptState, true);
+  assert.strictEqual(persisted.corruptState, true);
+  assert.deepStrictEqual(sideEffects, []);
 }
 
 function stubBatchSessionStartup(harness) {
@@ -1223,7 +1427,9 @@ function stubBatchSessionStartup(harness) {
 
   assert.strictEqual(first.phase, 'reconstructing');
   assert.strictEqual(repeated, null);
-  assert.deepStrictEqual(pipelineCalls, [run.id]);
+  assert.deepStrictEqual(pipelineCalls, []);
+  assert.strictEqual(harness.triggers.length, 1);
+  assert.strictEqual(harness.triggers[0].getHandlerFunction(), 'resumeClaimConstructorPipeline_');
   const continued = harness.context.loadClaimConstructorRun_(harness.scriptProperties);
   assert.strictEqual(continued.phase, 'reconstructing');
   assert.strictEqual(continued.issues.length, 1);
@@ -1269,6 +1475,7 @@ function stubBatchSessionStartup(harness) {
     order.push('calculating');
     return [{ sheetName: 'Оклад', calculated: 1, skipped: 0 }];
   };
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
   harness.context.runClaimCalculationDocsHandoff_ = () => {
     order.push('writing_doc');
@@ -1303,6 +1510,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   harness.context.runZupReconstruction_ = () => ({ fillResults: [], calculationResults: [] });
   harness.context.runAllSheetsIndexation_ = () => [{ sheetName: 'Оклад', calculated: 1, skipped: 0 }];
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
   harness.context.runClaimCalculationDocsHandoff_ = () => ({
     writtenSections: [],
@@ -1318,6 +1526,91 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(completed.issues.length, 2);
   assert.strictEqual(completed.results.calculations[0].calculated, 1);
   assert.strictEqual(completed.results.docs.skippedSections[0], 'claim_calculation');
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({ docUrl: 'https://docs.google.com/document/d/doc-1/edit' });
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'reconstructing', 'calculating', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  const order = [];
+  const claimResult = { wageAmount: 100, penaltyAmount: 10, vacationAmount: 20 };
+  harness.context.runAllSheetsIndexation_ = () => {
+    order.push('sheets');
+    return [{ totals: { underpayment: 5, indexation: 1, liability: 1 } }];
+  };
+  harness.context.runClaimSheetCalculation_ = () => {
+    order.push('claim_sheet');
+    return { ready: true, written: 3, result: claimResult, params: {}, issues: [] };
+  };
+  harness.context.readClaimCalculationParams_ = () => ({});
+  harness.context.runClaimCalculationDocsHandoff_ = (spreadsheet, options) => {
+    order.push('docs');
+    assert.strictEqual(options.calculatedResult, claimResult);
+    return { writtenSections: ['claim_calculation'], skippedSections: [], issues: [], result: claimResult };
+  };
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+
+  assert.deepStrictEqual(order, ['sheets', 'claim_sheet', 'docs']);
+  assert.strictEqual(completed.results.claimCalculation.written, 3);
+  assert.strictEqual(completed.results.dashboard.totals.underpayment, 125);
+  assert.strictEqual(completed.results.dashboard.totals.liability, 11);
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({ docUrl: 'https://docs.google.com/document/d/doc-1/edit' });
+  run.phases = {
+    validating: 'done', importing: 'done', reconstructing: 'done', calculating: 'done', writing_doc: 'running',
+  };
+  run.phase = 'writing_doc';
+  run.results.claimCalculation = { ready: true, written: 3, result: {}, params: {}, issues: [] };
+  run.results.calculations = [{ durable: true }];
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.context.runClaimCalculationDocsHandoff_ = () => ({
+    writtenSections: [],
+    skippedSections: ['claim_calculation'],
+    issues: [{ code: 'doc_write_failed', reason: 'Нет доступа к обязательному Google Doc' }],
+    result: null,
+  });
+
+  const failed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+
+  assert.strictEqual(failed.status, 'failed');
+  assert.strictEqual(failed.failedPhase, 'writing_doc');
+  assert.strictEqual(failed.results.calculations[0].durable, true);
+}
+
+{
+  const harness = createHarness(['Оклад', 'Импорт_1С_QG', 'Импорт_1С_VLM']);
+  const qg = harness.spreadsheet.getSheetByName('Импорт_1С_QG');
+  ['Проверка', 'Серьезность', 'Статус', 'Файл', 'Период', 'Организация', 'Сотрудник', 'Лист/ячейка', 'Проблема', 'Что проверить']
+    .forEach((value, index) => qg.seed(1, index + 1, value));
+  ['Сотрудник', 'Предупреждение', 'На проверке', 'листок.pdf', '06.2026', '', '', 'A2', 'ФИО различается', 'Сверить']
+    .forEach((value, index) => qg.seed(2, index + 1, value));
+  const vlm = harness.spreadsheet.getSheetByName('Импорт_1С_VLM');
+  Array.from({ length: 12 }, (_, index) => `H${index}`).forEach((value, index) => vlm.seed(1, index + 1, value));
+  ['листок.pdf', 'pdf', 'model', 'VLM', 1, 0, 0, 0, 0, '', 'Низкая уверенность', '{}']
+    .forEach((value, index) => vlm.seed(2, index + 1, value));
+  const run = harness.context.createClaimConstructorRun_({ docUrl: 'https://docs.google.com/document/d/doc-1/edit' });
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'reconstructing', 'calculating', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.context.runAllSheetsIndexation_ = () => [{ sheetName: 'Оклад', calculated: 1, skipped: 2 }];
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
+  harness.context.runClaimCalculationDocsHandoff_ = () => ({
+    writtenSections: [], skippedSections: [], issues: [], result: {},
+  });
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+
+  assert.ok(completed.issues.some((issue) => issue.source === 'листок.pdf; 06.2026; A2'));
+  assert.ok(completed.issues.some((issue) => issue.reviewStatus === 'VLM'));
+  assert.ok(completed.issues.some((issue) => issue.phase === 'calculating' && issue.reason.includes('пропущено 2')));
 }
 
 {
@@ -1465,6 +1758,37 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(importCalls.length, 0);
 }
 
+['running', 'complete'].forEach((status) => {
+  const harness = createHarness();
+  const existing = harness.context.createClaimConstructorRun_({});
+  existing.status = status;
+  existing.phase = status === 'running' ? 'importing' : 'complete';
+  harness.context.saveClaimConstructorRun_(existing, harness.scriptProperties);
+  const sideEffects = [];
+  harness.context.startZupFolderImportBatch_ = () => sideEffects.push('import');
+  harness.context.continueClaimConstructorPipeline_ = () => sideEffects.push('pipeline');
+
+  const returned = harness.context.retryClaimCalculation();
+
+  assert.strictEqual(returned.id, existing.id);
+  assert.deepStrictEqual(sideEffects, []);
+});
+
+{
+  const harness = createHarness();
+  const active = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T00:00:00.000Z'),
+  });
+  harness.context.completeClaimConstructorPhase_(active, 'validating', 'importing', new Date('2026-07-11T00:01:00.000Z'));
+  harness.context.completeClaimConstructorPhase_(active, 'importing', 'reconstructing', new Date('2026-07-11T00:02:00.000Z'));
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  harness.context.scheduleClaimConstructorContinuation_();
+
+  const returned = harness.context.retryClaimCalculation();
+
+  assert.strictEqual(returned.id, active.id);
+}
+
 [
   { failedPhase: 'reconstructing', expected: ['reconstructing', 'calculating', 'writing_doc'] },
   { failedPhase: 'calculating', expected: ['calculating', 'writing_doc'] },
@@ -1485,11 +1809,13 @@ function stubBatchSessionStartup(harness) {
     import: { rowsRecognized: 1 },
     reconstruction: { durable: true },
     calculations: [{ durable: true }],
+    claimCalculation: { ready: true, written: 3, result: {}, params: {}, issues: [] },
   };
   harness.context.saveClaimConstructorRun_(previous, harness.scriptProperties);
   const calls = [];
   harness.context.runZupReconstruction_ = () => { calls.push('reconstructing'); return { fillResults: [] }; };
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
   harness.context.runClaimCalculationDocsHandoff_ = () => {
     calls.push('writing_doc');
@@ -1556,6 +1882,7 @@ function stubBatchSessionStartup(harness) {
   const calls = [];
   harness.context.runZupReconstruction_ = () => { calls.push('reconstructing'); return { fillResults: [] }; };
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
   harness.context.runClaimCalculationDocsHandoff_ = () => {
     calls.push('writing_doc');
@@ -1566,6 +1893,55 @@ function stubBatchSessionStartup(harness) {
   harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.deepStrictEqual(calls, ['reconstructing', 'calculating', 'writing_doc']);
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({ docUrl: 'https://docs.google.com/document/d/doc-1/edit' });
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  let reconstructionCalls = 0;
+  harness.context.runZupReconstruction_ = () => {
+    reconstructionCalls++;
+    if (reconstructionCalls === 1) {
+      harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+    }
+    return { fillResults: [] };
+  };
+  harness.context.runAllSheetsIndexation_ = () => [];
+  harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
+  harness.context.runClaimCalculationDocsHandoff_ = () => ({
+    writtenSections: [], skippedSections: [], issues: [], result: {},
+  });
+
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+
+  assert.strictEqual(reconstructionCalls, 1);
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({});
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  const downstream = [];
+  harness.context.runZupReconstruction_ = () => { throw new Error('Сбой реконструкции'); };
+  harness.context.runAllSheetsIndexation_ = () => downstream.push('calculating');
+  harness.context.runClaimCalculationDocsHandoff_ = () => downstream.push('writing_doc');
+
+  const failed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+
+  assert.strictEqual(failed.status, 'failed');
+  assert.strictEqual(failed.phase, 'failed');
+  assert.strictEqual(failed.failedPhase, 'reconstructing');
+  assert.ok(failed.progressText.includes('Сбой реконструкции'));
+  assert.ok(failed.issues.some((issue) => issue.severity === 'error' && issue.phase === 'reconstructing'));
+  assert.deepStrictEqual(downstream, []);
+  const constructorSheet = harness.spreadsheet.getSheetByName('Конструктор');
+  const layout = harness.context.getClaimConstructorLayout_();
+  assert.strictEqual(constructorSheet.getRange(layout.status.phaseCell).getValue(), 'Ошибка');
 }
 
 {
