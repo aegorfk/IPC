@@ -204,19 +204,7 @@ function onOpen() {
     return;
   }
 
-  ui.createMenu('Индексация недоплаты')
-    .addItem('Обновить все листы', 'updateAllSheetsIndexation')
-    .addItem('Обновить активный лист', 'updateUnpaidSalaryIndexation')
-    .addItem('Обновить ежемесячные премии', 'updateMonthlyPremiumIndexation')
-    .addItem('Обновить квартальные премии', 'updateQuarterlyPremiumIndexation')
-    .addItem('Обновить ежегодные премии', 'updateAnnualPremiumIndexation')
-    .addItem('Обновить отпуска', 'updateVacationIndexation')
-    .addSeparator()
-    .addItem('Заполнить Docs "Расчет требований"', 'fillClaimCalculationDocs')
-    .addItem('Пересчитать вынужденный прогул, ст. 236 и отпуска', 'recalculateForcedAbsenceLiabilityAndVacations')
-    .addToUi();
-
-  ui.createMenu('Импорт 1С')
+  const technicalMenu = ui.createMenu('Технические операции')
     .addItem('Проверить импорт без перезаписи', 'previewZupFolderImport')
     .addItem('Импортировать расчетные листки', 'importZupFolder')
     .addItem('Полный импорт с перечитыванием', 'forceZupFolderImport')
@@ -234,7 +222,22 @@ function onOpen() {
     .addItem('Заполнить вкладки Из_1С из импорта', 'populateZupReconstructionSheets')
     .addItem('Пересчитать вкладки Из_1С', 'updateZupReconstructionIndexation')
     .addSeparator()
-    .addItem('Очистить импорт 1С', 'clearZupImportSheets')
+    .addItem('Обновить все расчетные листы', 'updateAllSheetsIndexation')
+    .addItem('Заполнить Docs "Расчет требований"', 'fillClaimCalculationDocs')
+    .addItem('Пересчитать вынужденный прогул, ст. 236 и отпуска', 'recalculateForcedAbsenceLiabilityAndVacations')
+    .addSeparator()
+    .addItem('Очистить импорт 1С', 'clearZupImportSheets');
+
+  ui.createMenu('Конструктор требований')
+    .addItem('Открыть конструктор', 'openClaimConstructor')
+    .addItem('Собрать расчет', 'buildClaimCalculation')
+    .addItem('Повторить последний запуск', 'retryClaimCalculation')
+    .addSeparator()
+    .addItem('Показать детализацию', 'showClaimConstructorDetailMode')
+    .addItem('Обычный режим', 'showClaimConstructorNormalMode')
+    .addItem('Технический режим', 'showClaimConstructorTechnicalMode')
+    .addSeparator()
+    .addSubMenu(technicalMenu)
     .addToUi();
 }
 

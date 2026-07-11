@@ -44,13 +44,13 @@
 
 ## 6. Sheet Visibility and Menu Simplification
 
-- [ ] 6.1 Implement and test sheet classification into constructor, primary calculation, reconstruction, and technical import/diagnostic groups without depending exclusively on 1C source names.
-- [ ] 6.2 Implement and test normal mode so the constructor is shown before every other existing sheet is hidden.
-- [ ] 6.3 Implement and test calculation-detail mode so only the constructor and five primary calculation sheets are visible.
-- [ ] 6.4 Implement and test technical mode so every existing sheet is visible.
-- [ ] 6.5 Verify all visibility operations preserve values, formulas, formatting, dimensions, ordering, and sheet identifiers.
-- [ ] 6.6 Replace the two top-level menus with `Конструктор требований`, direct constructor/visibility actions, and a technical submenu while preserving legacy callable function names.
-- [ ] 6.7 Add and test persisted visibility-mode restoration from `onOpen()` when the constructor already exists.
+- [x] 6.1 Implement and test sheet classification into constructor, primary calculation, reconstruction, and technical import/diagnostic groups without depending exclusively on 1C source names.
+- [x] 6.2 Implement and test normal mode so the constructor is shown before every other existing sheet is hidden.
+- [x] 6.3 Implement and test calculation-detail mode so only the constructor and five primary calculation sheets are visible.
+- [x] 6.4 Implement and test technical mode so every existing sheet is visible.
+- [x] 6.5 Verify all visibility operations preserve values, formulas, formatting, dimensions, ordering, and sheet identifiers.
+- [x] 6.6 Replace the two top-level menus with `Конструктор требований`, direct constructor/visibility actions, and a technical submenu while preserving legacy callable function names.
+- [x] 6.7 Add and test persisted visibility-mode restoration from `onOpen()` when the constructor already exists.
 
 ## 7. Regression, Deployment, and Workbook Smoke Test
 

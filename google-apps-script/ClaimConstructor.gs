@@ -909,6 +909,60 @@ function retryClaimCalculation() {
   return successor;
 }
 
+function classifyClaimConstructorSheet_(sheet) {
+  const name = String(sheet && sheet.getName ? sheet.getName() : '').trim();
+  const normalized = name.toLowerCase().replace(/ё/g, 'е');
+  if (name === CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME) {
+    return 'constructor';
+  }
+  if (/^(оклад|ежемесячные|ежеквартальные|ежегодные|отпуска(?: и расчет)?)$/.test(normalized)) {
+    return 'primary_calculation';
+  }
+  if (/^из_/i.test(name)) {
+    return 'reconstruction';
+  }
+  if (/^импорт_/i.test(name) || /(диагност|качество|\bvlm\b|\bqg\b|состояние|структура выплат|аудит)/i.test(name)) {
+    return 'technical';
+  }
+  return 'other';
+}
+
+function applyClaimConstructorVisibilityMode_(mode, spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const normalizedMode = ['normal', 'detail', 'technical'].indexOf(mode) >= 0 ? mode : 'normal';
+  const constructorSheet = target.getSheetByName(CLAIM_CONSTRUCTOR_SETTINGS.SHEET_NAME)
+    || ensureClaimConstructorSheet_(target);
+  constructorSheet.showSheet();
+
+  target.getSheets().forEach((sheet) => {
+    const group = classifyClaimConstructorSheet_(sheet);
+    const visible = normalizedMode === 'technical'
+      || group === 'constructor'
+      || (normalizedMode === 'detail' && group === 'primary_calculation');
+    if (visible) {
+      sheet.showSheet();
+    } else {
+      sheet.hideSheet();
+    }
+  });
+  PropertiesService
+    .getDocumentProperties()
+    .setProperty(CLAIM_CONSTRUCTOR_SETTINGS.VISIBILITY_MODE_PROPERTY, normalizedMode);
+  return normalizedMode;
+}
+
+function showClaimConstructorNormalMode() {
+  return applyClaimConstructorVisibilityMode_('normal');
+}
+
+function showClaimConstructorDetailMode() {
+  return applyClaimConstructorVisibilityMode_('detail');
+}
+
+function showClaimConstructorTechnicalMode() {
+  return applyClaimConstructorVisibilityMode_('technical');
+}
+
 function continueClaimConstructorRetryImport_(successor, spreadsheet) {
   const validation = validateClaimConstructorInputs_(successor.inputs);
   const sheet = ensureClaimConstructorSheet_(spreadsheet);

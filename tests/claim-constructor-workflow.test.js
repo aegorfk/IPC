@@ -86,6 +86,8 @@ class FakeSheet {
     this.hidden = false;
     this.cells = new Map();
     this.links = new Map();
+    this.formulas = new Map();
+    this.formatting = new Map();
     this.frozenRows = 0;
     this.columnWidths = new Map();
   }
@@ -140,8 +142,8 @@ class FakeSheet {
   }
   getIndex() { return this.spreadsheet.sheets.indexOf(this) + 1; }
   activate() { this.spreadsheet.activeSheet = this; return this; }
-  hideSheet() { this.hidden = true; return this; }
-  showSheet() { this.hidden = false; return this; }
+  hideSheet() { this.hidden = true; this.spreadsheet.visibilityOperations.push(`hide:${this.name}`); return this; }
+  showSheet() { this.hidden = false; this.spreadsheet.visibilityOperations.push(`show:${this.name}`); return this; }
   isSheetHidden() { return this.hidden; }
   setFrozenRows(count) { this.frozenRows = count; return this; }
   setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
@@ -156,6 +158,7 @@ class FakeSpreadsheet {
     this.activeSheet = this.sheets[0] || null;
     this.namedRanges = new Map();
     this.toasts = [];
+    this.visibilityOperations = [];
   }
 
   getId() { return 'fake-spreadsheet-id'; }
@@ -1563,6 +1566,109 @@ function stubBatchSessionStartup(harness) {
   harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.deepStrictEqual(calls, ['reconstructing', 'calculating', 'writing_doc']);
+}
+
+{
+  const harness = createHarness([
+    'Конструктор',
+    'Оклад',
+    'Ежемесячные',
+    'Отпуска и расчет',
+    'Из_1С_Оклад',
+    'Из_ДругойСистемы_Оклад',
+    'Импорт_1С_QG',
+    'Диагностика распознавания',
+    'Заметки',
+  ]);
+  const classify = (name) => harness.context.classifyClaimConstructorSheet_(
+    harness.spreadsheet.getSheetByName(name)
+  );
+
+  assert.strictEqual(classify('Конструктор'), 'constructor');
+  assert.strictEqual(classify('Оклад'), 'primary_calculation');
+  assert.strictEqual(classify('Ежемесячные'), 'primary_calculation');
+  assert.strictEqual(classify('Отпуска и расчет'), 'primary_calculation');
+  assert.strictEqual(classify('Из_1С_Оклад'), 'reconstruction');
+  assert.strictEqual(classify('Из_ДругойСистемы_Оклад'), 'reconstruction');
+  assert.strictEqual(classify('Импорт_1С_QG'), 'technical');
+  assert.strictEqual(classify('Диагностика распознавания'), 'technical');
+  assert.strictEqual(classify('Заметки'), 'other');
+}
+
+{
+  const names = [
+    'Конструктор', 'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
+    'Из_1С_Оклад', 'Импорт_1С_QG', 'Заметки',
+  ];
+  const harness = createHarness(names);
+  harness.spreadsheet.getSheets().forEach((sheet, index) => {
+    sheet.seed(1, 1, `value-${index}`);
+    sheet.formulas.set('2:1', `=A${index + 1}`);
+    sheet.formatting.set('1:1', { color: `#00000${index}` });
+    sheet.columnWidths.set(1, 100 + index);
+  });
+  const snapshot = () => harness.spreadsheet.getSheets().map((sheet) => ({
+    id: sheet.getSheetId(),
+    name: sheet.getName(),
+    cells: Array.from(sheet.cells.entries()),
+    formulas: Array.from(sheet.formulas.entries()),
+    formatting: Array.from(sheet.formatting.entries()),
+    widths: Array.from(sheet.columnWidths.entries()),
+  }));
+  const before = JSON.stringify(snapshot());
+
+  harness.context.applyClaimConstructorVisibilityMode_('normal', harness.spreadsheet);
+  assert.strictEqual(harness.spreadsheet.visibilityOperations[0], 'show:Конструктор');
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Конструктор').isSheetHidden(), false);
+  assert.ok(harness.spreadsheet.getSheets().filter((sheet) => sheet.getName() !== 'Конструктор').every((sheet) => sheet.isSheetHidden()));
+
+  harness.context.applyClaimConstructorVisibilityMode_('detail', harness.spreadsheet);
+  names.forEach((name) => {
+    const shouldBeVisible = name === 'Конструктор' || [
+      'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
+    ].includes(name);
+    assert.strictEqual(harness.spreadsheet.getSheetByName(name).isSheetHidden(), !shouldBeVisible, name);
+  });
+
+  harness.context.applyClaimConstructorVisibilityMode_('technical', harness.spreadsheet);
+  assert.ok(harness.spreadsheet.getSheets().every((sheet) => !sheet.isSheetHidden()));
+  assert.strictEqual(JSON.stringify(snapshot()), before);
+  assert.strictEqual(harness.documentProperties.getProperty('CLAIM_CONSTRUCTOR_VISIBILITY_MODE'), 'technical');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  harness.context.onOpen();
+
+  assert.strictEqual(harness.menus.length, 1);
+  assert.strictEqual(harness.menus[0].name, 'Конструктор требований');
+  const directFunctions = harness.menus[0].items.filter((item) => item.fn).map((item) => item.fn);
+  assert.deepStrictEqual(directFunctions, [
+    'openClaimConstructor',
+    'buildClaimCalculation',
+    'retryClaimCalculation',
+    'showClaimConstructorDetailMode',
+    'showClaimConstructorNormalMode',
+    'showClaimConstructorTechnicalMode',
+  ]);
+  const submenu = harness.menus[0].items.find((item) => item.submenu).submenu;
+  assert.strictEqual(submenu.name, 'Технические операции');
+  const technicalFunctions = submenu.items.filter((item) => item.fn).map((item) => item.fn);
+  assert.ok(technicalFunctions.includes('previewZupFolderImport'));
+  assert.ok(technicalFunctions.includes('resumeZupFolderImport'));
+  assert.ok(technicalFunctions.includes('showZupVlmSettings'));
+  assert.ok(technicalFunctions.includes('populateZupReconstructionSheets'));
+}
+
+{
+  const harness = createHarness(['Конструктор', 'Оклад', 'Импорт_1С_QG']);
+  harness.documentProperties.setProperty('CLAIM_CONSTRUCTOR_VISIBILITY_MODE', 'detail');
+
+  harness.context.onOpen();
+
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Конструктор').isSheetHidden(), false);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Оклад').isSheetHidden(), false);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Импорт_1С_QG').isSheetHidden(), true);
 }
 
 console.log('claim constructor characterization ok');
