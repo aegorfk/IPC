@@ -547,6 +547,10 @@ function startZupFolderImportBatch_(spreadsheet, folder, options) {
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+  if (normalizedOptions.constructorRunId) {
+    session.constructorRunId = normalizedOptions.constructorRunId;
+    session.constructorNextPhase = normalizedOptions.constructorNextPhase || 'reconstructing';
+  }
   saveZupBatchImportSession_(session);
   return continueZupFolderImportBatch_();
 }
@@ -626,15 +630,7 @@ function continueZupFolderImportBatch_() {
       complete
     );
 
-    if (complete) {
-      clearZupBatchImportState_();
-      deleteZupBatchImportTriggers_();
-    } else {
-      saveZupBatchImportSession_(session);
-      scheduleZupBatchImportTrigger_();
-    }
-
-    return {
+    const result = {
       complete,
       source: session.source,
       total: session.total,
@@ -647,9 +643,31 @@ function continueZupFolderImportBatch_() {
       dryRun: Boolean(session.dryRun),
       processedNow,
     };
+
+    if (complete) {
+      clearZupBatchImportState_();
+      deleteZupBatchImportTriggers_();
+      notifyClaimConstructorImportComplete_(session, result);
+    } else {
+      saveZupBatchImportSession_(session);
+      scheduleZupBatchImportTrigger_();
+    }
+
+    return result;
   } finally {
     lock.releaseLock();
   }
+}
+
+function notifyClaimConstructorImportComplete_(session, importResult) {
+  if (!session || !session.constructorRunId || typeof continueClaimConstructorAfterImport_ !== 'function') {
+    return null;
+  }
+  return continueClaimConstructorAfterImport_(
+    session.constructorRunId,
+    session.constructorNextPhase || 'reconstructing',
+    importResult
+  );
 }
 
 function writeZupBatchImportOutputs_(spreadsheet, rows, skippedFiles, qualityRowsByGroup, stateRowsByGroup, vlmRows, session, complete) {

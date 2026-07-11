@@ -31,16 +31,16 @@
 
 ## 5. One-Action Orchestration and Automatic Continuation
 
-- [ ] 5.1 Define and test the minimal vendor-neutral adapter result contract (`sourceKind`, normalized result references, quality issues, completion/continuation status) and wrap the existing 1C:ZUP import as the only phase-one adapter with source kind `payroll_slips`.
-- [ ] 5.2 Implement and test `Собрать расчет` startup: preflight inputs, atomically create or join the active run, update dashboard, and start the existing incremental import through the adapter with the constructor run id.
-- [ ] 5.3 Extend and test the persisted import-batch session with optional constructor continuation metadata without changing standalone import behavior.
-- [ ] 5.4 Add and concurrency-test the final-batch continuation hook that advances the matching active run automatically from import to reconstruction exactly once.
-- [ ] 5.5 Implement and test reconstruction, calculation, and Docs phase sequencing through the structured non-UI entry points.
-- [ ] 5.6 Implement and test automatic continuation through review issues, ending as `Готово с замечаниями` while retaining all calculable results.
-- [ ] 5.7 Implement and test fatal handling when import yields zero calculable rows, preserving diagnostics and skipping calculation/Docs mutation.
-- [ ] 5.8 Implement and test `Повторить последний запуск` as a successor run with a new run id, `parentRunId`, copied valid completed-phase markers, and restart at the first incomplete phase.
-- [ ] 5.9 Test retry behavior separately for validation/import, reconstruction, calculation, and Docs failures, proving completed phases and durable results are not repeated or cleared.
-- [ ] 5.10 Test repeated build, trigger, retry, and manual continuation interleavings to prove locking, run-id rejection, phase idempotency, and absence of duplicate output.
+- [x] 5.1 Define and test the minimal vendor-neutral adapter result contract (`sourceKind`, normalized result references, quality issues, completion/continuation status) and wrap the existing 1C:ZUP import as the only phase-one adapter with source kind `payroll_slips`.
+- [x] 5.2 Implement and test `Собрать расчет` startup: preflight inputs, atomically create or join the active run, update dashboard, and start the existing incremental import through the adapter with the constructor run id.
+- [x] 5.3 Extend and test the persisted import-batch session with optional constructor continuation metadata without changing standalone import behavior.
+- [x] 5.4 Add and concurrency-test the final-batch continuation hook that advances the matching active run automatically from import to reconstruction exactly once.
+- [x] 5.5 Implement and test reconstruction, calculation, and Docs phase sequencing through the structured non-UI entry points.
+- [x] 5.6 Implement and test automatic continuation through review issues, ending as `Готово с замечаниями` while retaining all calculable results.
+- [x] 5.7 Implement and test fatal handling when import yields zero calculable rows, preserving diagnostics and skipping calculation/Docs mutation.
+- [x] 5.8 Implement and test `Повторить последний запуск` as a successor run with a new run id, `parentRunId`, copied valid completed-phase markers, and restart at the first incomplete phase.
+- [x] 5.9 Test retry behavior separately for validation/import, reconstruction, calculation, and Docs failures, proving completed phases and durable results are not repeated or cleared.
+- [x] 5.10 Test repeated build, trigger, retry, and manual continuation interleavings to prove locking, run-id rejection, phase idempotency, and absence of duplicate output.
 
 ## 6. Sheet Visibility and Menu Simplification
 

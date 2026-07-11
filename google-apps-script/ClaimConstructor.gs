@@ -37,12 +37,14 @@ function getClaimConstructorLayout_() {
       namedRange: CLAIM_CONSTRUCTOR_SETTINGS.SOURCE_FOLDER_NAMED_RANGE,
       labelCell: 'A4',
       valueCell: 'B4',
+      errorCell: 'B5',
     },
     outputDoc: {
       label: CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL,
       namedRange: CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_NAMED_RANGE,
       labelCell: 'A6',
       valueCell: 'B6',
+      errorCell: 'B7',
     },
     status: {
       titleCell: 'A9',
@@ -160,13 +162,15 @@ function readClaimConstructorInputs_(spreadsheet) {
     CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL,
     'расписанный расчет',
   ]) || '';
-  const folderId = namedFolderId || (labeledFolder ? labeledFolder.id : '');
-  const docId = namedDocId || extractGoogleDocId_(labeledDocUrl);
+  const useNamedFolder = Boolean(namedFolderUrl);
+  const useNamedDoc = Boolean(namedDocUrl);
+  const folderId = useNamedFolder ? namedFolderId : (labeledFolder ? labeledFolder.id : '');
+  const docId = useNamedDoc ? namedDocId : extractGoogleDocId_(labeledDocUrl);
 
   return {
-    folderUrl: namedFolderId ? namedFolderUrl : (folderId ? `https://drive.google.com/drive/folders/${folderId}` : ''),
+    folderUrl: useNamedFolder ? namedFolderUrl : (folderId ? `https://drive.google.com/drive/folders/${folderId}` : ''),
     folderId,
-    docUrl: namedDocId ? namedDocUrl : labeledDocUrl,
+    docUrl: useNamedDoc ? namedDocUrl : labeledDocUrl,
     docId,
     source: 'labels',
   };
@@ -392,6 +396,9 @@ function advanceActiveClaimConstructorRun_(runId, expectedPhase, nextPhase, opti
     if (!completeClaimConstructorPhase_(run, expectedPhase, nextPhase, settings.now || new Date())) {
       return null;
     }
+    if (settings.progressText) {
+      run.progressText = settings.progressText;
+    }
     saveClaimConstructorRun_(run, properties);
     return run;
   } finally {
@@ -527,4 +534,431 @@ function hydrateClaimConstructorOnOpen_(spreadsheet) {
     applyClaimConstructorVisibilityMode_(mode, spreadsheet);
   }
   return true;
+}
+
+function getClaimConstructorSourceAdapters_() {
+  return {
+    payroll_slips: {
+      sourceKind: 'payroll_slips',
+      start: runPayrollSlipSourceAdapter_,
+    },
+  };
+}
+
+function runPayrollSlipSourceAdapter_(spreadsheet, folder, options) {
+  const importResult = startZupFolderImportBatch_(spreadsheet, folder, options || {});
+  const complete = Boolean(importResult.complete);
+  return {
+    sourceKind: 'payroll_slips',
+    normalizedResults: {
+      rows: importResult.rows || [],
+      rowsRecognized: Number.isFinite(importResult.rowsRecognized)
+        ? importResult.rowsRecognized
+        : (importResult.rows || []).length,
+      source: importResult.source || folder.source || '',
+    },
+    qualityIssues: (importResult.skippedFiles || []).map((row) => normalizeClaimConstructorIssue_({
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source: row[0] || '',
+      reason: row[2] || 'Файл не был распознан.',
+      reviewStatus: 'пропущен при импорте',
+      suggestedAction: 'Проверить формат и содержимое исходного файла.',
+    })),
+    completion: {
+      complete,
+      continuationRequired: !complete,
+      status: complete ? 'complete' : 'continuing',
+    },
+    importResult,
+  };
+}
+
+function renderClaimConstructorInputErrors_(sheet, errors) {
+  const layout = getClaimConstructorLayout_();
+  sheet.getRange(layout.sourceFolder.errorCell).clearContent();
+  sheet.getRange(layout.outputDoc.errorCell).clearContent();
+  (errors || []).forEach((error) => {
+    const cell = error.field === 'folder'
+      ? layout.sourceFolder.errorCell
+      : layout.outputDoc.errorCell;
+    sheet.getRange(cell).setValue(error.message);
+  });
+}
+
+function buildClaimCalculation() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  sheet.showSheet();
+  sheet.activate();
+  const inputs = readClaimConstructorInputs_(spreadsheet);
+  const validation = validateClaimConstructorInputs_(inputs);
+  renderClaimConstructorInputErrors_(sheet, validation.errors);
+  if (!validation.valid) {
+    writeClaimConstructorStatus_(sheet, {
+      status: 'failed',
+      phase: 'failed',
+      progressText: validation.errors.map((error) => error.message).join(' '),
+      updatedAt: new Date().toISOString(),
+    });
+    return { started: false, joined: false, validation, run: null };
+  }
+
+  const started = startOrJoinClaimConstructorRun_(inputs);
+  if (!started.run || started.joined) {
+    if (started.run) {
+      writeClaimConstructorStatus_(sheet, started.run);
+    }
+    return {
+      started: false,
+      joined: Boolean(started.run),
+      busy: started.busy,
+      validation,
+      run: started.run,
+    };
+  }
+
+  const run = advanceActiveClaimConstructorRun_(
+    started.run.id,
+    'validating',
+    'importing',
+    { progressText: 'Импортируем и распознаем расчетные листки.' }
+  );
+  writeClaimConstructorStatus_(sheet, run);
+  const adapter = getClaimConstructorSourceAdapters_().payroll_slips;
+  const adapterResult = adapter.start(spreadsheet, {
+    id: inputs.folderId,
+    source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
+  }, {
+    force: false,
+    dryRun: false,
+    constructorRunId: run.id,
+    constructorNextPhase: 'reconstructing',
+  });
+  return { started: true, joined: false, validation, run, adapterResult };
+}
+
+function continueClaimConstructorAfterImport_(runId, nextPhase, importResult) {
+  appendClaimConstructorIssuesToRun_(
+    runId,
+    'importing',
+    (importResult && importResult.skippedFiles || []).map((row) => ({
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source: row[0] || '',
+      reason: row[2] || 'Файл не был распознан.',
+      reviewStatus: 'пропущен при импорте',
+      suggestedAction: 'Проверить исходный файл вручную.',
+    }))
+  );
+  const calculableRows = importResult && Array.isArray(importResult.rows)
+    ? importResult.rows.length
+    : Number(importResult && importResult.rowsRecognized || 0);
+  if (calculableRows === 0) {
+    const failed = failClaimConstructorRunAfterImport_(runId, importResult || {});
+    if (failed) {
+      refreshClaimConstructorDashboard_(SpreadsheetApp.openById(failed.spreadsheetId), failed);
+    }
+    return failed;
+  }
+  const advanced = advanceActiveClaimConstructorRun_(
+    runId,
+    'importing',
+    nextPhase || 'reconstructing',
+    { progressText: 'Импорт завершен. Восстанавливаем начисления и выплаты.' }
+  );
+  if (!advanced) {
+    return null;
+  }
+  return continueClaimConstructorPipeline_(runId);
+}
+
+function continueClaimConstructorPipeline_(runId, options) {
+  const settings = options || {};
+  let run = loadClaimConstructorRun_();
+  if (!run || run.id !== runId) {
+    return null;
+  }
+  const spreadsheet = settings.spreadsheet || SpreadsheetApp.openById(run.spreadsheetId);
+
+  if (run.phase === 'reconstructing' && run.phases.reconstructing === 'running') {
+    const reconstruction = runZupReconstruction_(spreadsheet);
+    run = recordClaimConstructorPhaseResult_(
+      runId,
+      'reconstructing',
+      'calculating',
+      'reconstruction',
+      reconstruction,
+      'Реконструкция завершена. Пересчитываем требования.'
+    );
+  }
+  if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
+    const calculations = runAllSheetsIndexation_(spreadsheet);
+    run = recordClaimConstructorPhaseResult_(
+      runId,
+      'calculating',
+      'writing_doc',
+      'calculations',
+      calculations,
+      'Расчет в Google Sheets завершен. Формируем расшифровку.'
+    );
+  }
+  if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
+    const params = readClaimCalculationParams_(spreadsheet);
+    params.docUrl = run.inputs.docUrl || params.docUrl;
+    const docs = runClaimCalculationDocsHandoff_(spreadsheet, { params });
+    const docIssues = (docs.issues || []).map((issue) => ({
+      phase: 'writing_doc',
+      sourceKind: 'calculation_doc',
+      source: run.inputs.docUrl || '',
+      reason: issue.reason || issue.code,
+      reviewStatus: 'раздел пропущен',
+      suggestedAction: 'Уточнить недостающие данные и повторить формирование Docs.',
+    }));
+    run = finishClaimConstructorRun_(runId, 'writing_doc', 'docs', docs, docIssues);
+  }
+  if (run) {
+    refreshClaimConstructorDashboard_(spreadsheet, run);
+  }
+  return run;
+}
+
+function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, resultKey, result, progressText) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
+      return null;
+    }
+    run.results[resultKey] = result;
+    completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
+    run.progressText = progressText || run.progressText;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, issues) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
+      return null;
+    }
+    run.results[resultKey] = result;
+    (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
+    const hasWarnings = run.issues.length > 0;
+    run.status = hasWarnings ? 'complete_with_warnings' : 'complete';
+    run.phase = run.status;
+    run.progressText = hasWarnings
+      ? 'Расчет готов. Спорные позиции отмечены в разделе «Требует внимания».'
+      : 'Расчет и доступная расшифровка готовы.';
+    run.completedAt = run.updatedAt;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function refreshClaimConstructorDashboard_(spreadsheet, run) {
+  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  writeClaimConstructorStatus_(sheet, run);
+  renderClaimConstructorResults_(sheet, run.results.dashboard || run.results);
+  renderClaimConstructorIssues_(sheet, run.issues);
+}
+
+function appendClaimConstructorIssuesToRun_(runId, expectedPhase, issues) {
+  if (!issues || !issues.length) {
+    return loadClaimConstructorRun_();
+  }
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
+      return null;
+    }
+    issues.forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    run.updatedAt = new Date().toISOString();
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function failClaimConstructorRunAfterImport_(runId, importResult) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.phase !== 'importing' || run.phases.importing !== 'running') {
+      return null;
+    }
+    run.phases.importing = 'done';
+    run.results.import = {
+      source: importResult.source || '',
+      total: importResult.total || 0,
+      processed: importResult.processed || 0,
+      rowsRecognized: importResult.rowsRecognized || 0,
+      skippedCount: Number.isFinite(importResult.skippedCount)
+        ? importResult.skippedCount
+        : (importResult.skippedFiles || []).length,
+    };
+    run.issues.push(normalizeClaimConstructorIssue_({
+      severity: 'error',
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      reason: 'Импорт завершен без расчетных строк, поэтому расчет и Docs не запускались.',
+      reviewStatus: 'фатальная проверка',
+      knownImpact: 'расчет не выполнен',
+      suggestedAction: 'Проверить исходные файлы и повторить импорт.',
+    }));
+    run.status = 'failed';
+    run.phase = 'failed';
+    run.failedPhase = 'importing';
+    run.progressText = 'Не найдено расчетных строк. Диагностика импорта сохранена.';
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function createClaimConstructorRetryRun_(previousRun, options) {
+  const settings = options || {};
+  const phaseOrder = getClaimConstructorPhaseOrder_();
+  let restartIndex = phaseOrder.indexOf(previousRun && previousRun.failedPhase);
+  if (restartIndex < 0) {
+    restartIndex = phaseOrder.findIndex((phase) => previousRun.phases[phase] !== 'done');
+  }
+  if (restartIndex < 0) {
+    restartIndex = 0;
+  }
+
+  const run = createClaimConstructorRun_(previousRun.inputs, {
+    now: settings.now || new Date(),
+    parentRunId: previousRun.id,
+  });
+  phaseOrder.forEach((phase, index) => {
+    run.phases[phase] = index < restartIndex && previousRun.phases[phase] === 'done'
+      ? 'done'
+      : (index === restartIndex ? 'running' : 'pending');
+  });
+  run.phase = phaseOrder[restartIndex];
+  run.progressText = `Повторяем этап: ${getClaimConstructorLayout_().phaseLabels[run.phase] || run.phase}.`;
+  run.issues = JSON.parse(JSON.stringify(previousRun.issues || []));
+  run.results = {};
+  const resultKeysByPhase = {
+    importing: ['import'],
+    reconstructing: ['reconstruction'],
+    calculating: ['calculations', 'dashboard'],
+    writing_doc: ['docs'],
+  };
+  phaseOrder.slice(0, restartIndex).forEach((phase) => {
+    (resultKeysByPhase[phase] || []).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(previousRun.results || {}, key)) {
+        run.results[key] = JSON.parse(JSON.stringify(previousRun.results[key]));
+      }
+    });
+  });
+  return run;
+}
+
+function retryClaimCalculation() {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return loadClaimConstructorRun_();
+  }
+  let successor;
+  try {
+    const previous = loadClaimConstructorRun_();
+    if (!previous) {
+      return null;
+    }
+    successor = createClaimConstructorRetryRun_(previous);
+    saveClaimConstructorRun_(successor);
+  } finally {
+    lock.releaseLock();
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(successor.spreadsheetId);
+  refreshClaimConstructorDashboard_(spreadsheet, successor);
+  if (successor.phase === 'validating' || successor.phase === 'importing') {
+    return continueClaimConstructorRetryImport_(successor, spreadsheet);
+  }
+  if (['reconstructing', 'calculating', 'writing_doc'].indexOf(successor.phase) >= 0) {
+    return continueClaimConstructorPipeline_(successor.id, { spreadsheet });
+  }
+  return successor;
+}
+
+function continueClaimConstructorRetryImport_(successor, spreadsheet) {
+  const validation = validateClaimConstructorInputs_(successor.inputs);
+  const sheet = ensureClaimConstructorSheet_(spreadsheet);
+  renderClaimConstructorInputErrors_(sheet, validation.errors);
+  if (!validation.valid) {
+    const failed = failClaimConstructorValidation_(successor.id, validation.errors);
+    refreshClaimConstructorDashboard_(spreadsheet, failed);
+    return failed;
+  }
+
+  let run = successor;
+  if (run.phase === 'validating') {
+    run = advanceActiveClaimConstructorRun_(
+      run.id,
+      'validating',
+      'importing',
+      { progressText: 'Повторно импортируем расчетные листки.' }
+    );
+  }
+  getClaimConstructorSourceAdapters_().payroll_slips.start(spreadsheet, {
+    id: run.inputs.folderId,
+    source: `${sheet.getName()}!${getClaimConstructorLayout_().sourceFolder.valueCell}`,
+  }, {
+    force: false,
+    dryRun: false,
+    constructorRunId: run.id,
+    constructorNextPhase: 'reconstructing',
+  });
+  return loadClaimConstructorRun_() || run;
+}
+
+function failClaimConstructorValidation_(runId, errors) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId) {
+      return null;
+    }
+    run.status = 'failed';
+    run.phase = 'failed';
+    run.failedPhase = 'validating';
+    run.progressText = (errors || []).map((error) => error.message).join(' ');
+    run.updatedAt = new Date().toISOString();
+    run.completedAt = run.updatedAt;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
 }
