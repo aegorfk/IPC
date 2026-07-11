@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Single constructor workspace
-The system SHALL provide an idempotently created `Конструктор` sheet as the normal user workspace, containing a Drive source-folder input, a Google Docs output input, one primary build action, persistent progress, calculated totals, output links, and a review-issues section.
+The system SHALL provide an idempotently created `Конструктор` sheet as the normal user workspace, containing a Drive source-folder input, a Google Docs output input, one primary build action, persistent progress, calculated totals, and a review-issues section. The Google Docs input remains the visible handoff link after completion; the constructor MUST NOT add duplicate Docs or current-spreadsheet output rows.
 
 #### Scenario: First-time setup
 - **WHEN** the user invokes `Открыть конструктор` and the constructor sheet does not exist
@@ -11,7 +11,7 @@ The system SHALL provide an idempotently created `Конструктор` sheet 
 
 #### Scenario: Repeated setup preserves user data
 - **WHEN** the user invokes `Открыть конструктор` for an existing constructor sheet
-- **THEN** the system repairs missing layout elements without clearing source links, output links, run status, totals, or review issues
+- **THEN** the system repairs missing layout elements without clearing source links, run status, totals, or review issues
 
 ### Requirement: Two-link intake validation
 The system SHALL use the Drive folder and Google Doc links stored on the constructor sheet as the run inputs and SHALL validate that both resources are syntactically valid and accessible before starting the calculation pipeline.
@@ -101,9 +101,15 @@ The system SHALL present durable run progress on the constructor sheet and SHALL
 - **AND** reapplies the persisted visibility mode
 - **AND** does not start or repeat any pipeline phase
 
+#### Scenario: Resumable import advances by batches
+- **WHEN** the payroll-slip adapter persists an incomplete import batch
+- **THEN** the constructor shows the processed and total source counts, percentage, and a visual progress bar
+- **AND** refreshes the progress and last-update time after every batch without requiring the user to reopen the workbook
+- **AND** preserves the same progress after the workbook is reopened
+
 #### Scenario: Run completes
 - **WHEN** all possible phases finish
-- **THEN** the constructor shows `Готово` or `Готово с замечаниями`, completion time, calculated totals, output links, and issue count
+- **THEN** the constructor shows `Готово` or `Готово с замечаниями`, completion time, calculated totals, the existing Docs handoff link, and issue count
 
 #### Scenario: Fatal runtime failure
 - **WHEN** an inaccessible dependency or corrupt run state prevents safe continuation

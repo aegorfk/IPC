@@ -644,6 +644,14 @@ function continueZupFolderImportBatch_() {
       processedNow,
     };
 
+    if (session.constructorRunId && typeof updateClaimConstructorImportProgress_ === 'function') {
+      try {
+        updateClaimConstructorImportProgress_(session);
+      } catch (error) {
+        console.warn(`Не удалось обновить прогресс конструктора: ${error && error.message ? error.message : error}`);
+      }
+    }
+
     if (complete) {
       clearZupBatchImportState_();
       deleteZupBatchImportTriggers_();

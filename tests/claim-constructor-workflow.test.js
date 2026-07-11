@@ -787,6 +787,13 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Считаем недоплаты');
   assert.strictEqual(sheet.getRange(layout.status.updatedAtCell).getValue(), '2026-07-11T09:05:00.000Z');
 
+  run.phase = 'importing';
+  run.progress = { processed: 3, total: 31 };
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /3 из 31/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /10%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /[█░]/);
+
   run.status = 'complete';
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово');
@@ -804,6 +811,31 @@ function createHarness(sheetNames = ['Оклад']) {
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Ошибка');
   assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Нет доступа к документу');
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+    spreadsheetId: harness.spreadsheet.getId(),
+  });
+  run.phase = 'importing';
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const updated = harness.context.updateClaimConstructorImportProgress_({
+    constructorRunId: run.id,
+    spreadsheetId: harness.spreadsheet.getId(),
+    nextIndex: 7,
+    total: 31,
+  });
+
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(updated.progress)), {
+    processed: 7,
+    total: 31,
+    percent: 23,
+  });
+  assert.match(sheet.getRange(harness.context.getClaimConstructorLayout_().status.messageCell).getValue(), /7 из 31/);
 }
 
 {
@@ -879,8 +911,9 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(sheet.getRange(layout.resultFields.indexation.valueCell).getValue(), 12000);
   assert.strictEqual(sheet.getRange(layout.resultFields.liability.valueCell).getValue(), 8000);
   assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 120000);
-  assert.strictEqual(sheet.getRange(layout.outputLinks.docCell).getValue(), results.output.docUrl);
-  assert.strictEqual(sheet.getRange(layout.outputLinks.spreadsheetCell).getValue(), results.output.spreadsheetUrl);
+  assert.strictEqual(layout.outputLinks, undefined);
+  assert.strictEqual(sheet.getRange('A19').getValue(), '');
+  assert.strictEqual(sheet.getRange('A20').getValue(), 'Требует внимания');
 }
 
 {

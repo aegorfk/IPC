@@ -68,13 +68,7 @@ function getClaimConstructorLayout_() {
       liability: { label: 'Пени и материальная ответственность', labelCell: 'A17', valueCell: 'B17' },
       total: { label: 'Итого требований', labelCell: 'A18', valueCell: 'B18' },
     },
-    outputLinks: {
-      docLabelCell: 'A19',
-      docCell: 'B19',
-      spreadsheetLabelCell: 'A20',
-      spreadsheetCell: 'B20',
-    },
-    issuesHeaderRow: 22,
+    issuesHeaderRow: 21,
     issueHeaders: CLAIM_CONSTRUCTOR_SETTINGS.ISSUE_HEADERS.slice(),
     phaseLabels: Object.assign({}, CLAIM_CONSTRUCTOR_SETTINGS.PHASE_LABELS),
   };
@@ -121,6 +115,8 @@ function applyClaimConstructorStructure_(sheet, layout) {
   sheet.getRange(layout.sourceFolder.labelCell).setValue(layout.sourceFolder.label);
   sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
   sheet.getRange(layout.status.titleCell).setValue('Статус:');
+  sheet.getRange('A10').setValue('Прогресс:');
+  sheet.getRange('A11').setValue('Обновлено:');
   sheet.getRange('A12').setValue('Завершено:');
   sheet.getRange('A13').setValue('Замечаний:');
   setClaimConstructorCellIfBlank_(sheet.getRange(layout.status.phaseCell), 'Готов к запуску');
@@ -131,8 +127,11 @@ function applyClaimConstructorStructure_(sheet, layout) {
     ['Пени и материальная ответственность'],
     ['Итого требований'],
   ]);
-  sheet.getRange(layout.outputLinks.docLabelCell).setValue('Расшифровка в Google Docs');
-  sheet.getRange(layout.outputLinks.spreadsheetLabelCell).setValue('Рабочая таблица');
+  if (sheet.getRange(22, 1).getValue() === 'Уровень') {
+    sheet.getRange(19, 1, 4, layout.issueHeaders.length).clearContent();
+  } else {
+    sheet.getRange(19, 1, 1, 2).clearContent();
+  }
   sheet.getRange(layout.issuesHeaderRow - 1, 1).setValue('Требует внимания');
   sheet.getRange(layout.issuesHeaderRow, 1, 1, layout.issueHeaders.length).setValues([layout.issueHeaders]);
 }
@@ -503,11 +502,65 @@ function writeClaimConstructorStatus_(sheet, run) {
     || run.phase
     || 'Готов к запуску';
   sheet.getRange(layout.status.phaseCell).setValue(phaseLabel);
-  sheet.getRange(layout.status.messageCell).setValue(run.progressText || '');
+  sheet.getRange(layout.status.messageCell).setValue(formatClaimConstructorProgress_(run));
   sheet.getRange(layout.status.updatedAtCell).setValue(run.updatedAt || '');
   sheet.getRange(layout.status.completedAtCell).setValue(run.completedAt || '');
   sheet.getRange(layout.status.issueCountCell).setValue((run.issues || []).length);
   return sheet;
+}
+
+function normalizeClaimConstructorProgress_(progress) {
+  const value = progress || {};
+  const total = Math.max(0, Math.floor(Number(value.total) || 0));
+  const processed = Math.max(0, Math.min(total || Infinity, Math.floor(Number(value.processed) || 0)));
+  return {
+    processed,
+    total,
+    percent: total ? Math.min(100, Math.round(processed / total * 100)) : 0,
+  };
+}
+
+function formatClaimConstructorProgress_(run) {
+  const value = run || {};
+  if (value.status !== 'running' || value.phase !== 'importing'
+      || !value.progress || !Number(value.progress.total)) {
+    return value.progressText || '';
+  }
+  const progress = normalizeClaimConstructorProgress_(value.progress);
+  const width = 16;
+  const filled = Math.min(width, Math.round(progress.percent / 100 * width));
+  const bar = `${'█'.repeat(filled)}${'░'.repeat(width - filled)}`;
+  return `${bar} ${progress.percent}% · ${progress.processed} из ${progress.total}`;
+}
+
+function updateClaimConstructorImportProgress_(session) {
+  const value = session || {};
+  if (!value.constructorRunId) {
+    return null;
+  }
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  let run = null;
+  try {
+    run = loadClaimConstructorRun_();
+    if (!run || run.id !== value.constructorRunId || run.status !== 'running' || run.phase !== 'importing') {
+      return null;
+    }
+    run.progress = normalizeClaimConstructorProgress_({
+      processed: value.nextIndex,
+      total: value.total,
+    });
+    run.progressText = 'Распознаём расчётные листки; продолжение выполняется автоматически.';
+    run.updatedAt = value.updatedAt || new Date().toISOString();
+    saveClaimConstructorRun_(run);
+  } finally {
+    lock.releaseLock();
+  }
+  const spreadsheet = SpreadsheetApp.openById(value.spreadsheetId || run.spreadsheetId);
+  refreshClaimConstructorDashboard_(spreadsheet, run);
+  return run;
 }
 
 function normalizeClaimConstructorIssue_(issue) {
@@ -569,13 +622,10 @@ function renderClaimConstructorResults_(sheet, results) {
   const layout = getClaimConstructorLayout_();
   const values = results || {};
   const totals = values.totals || {};
-  const output = values.output || {};
   Object.keys(layout.resultFields).forEach((key) => {
     const value = Object.prototype.hasOwnProperty.call(totals, key) ? totals[key] : '';
     sheet.getRange(layout.resultFields[key].valueCell).setValue(value);
   });
-  sheet.getRange(layout.outputLinks.docCell).setValue(output.docUrl || '');
-  sheet.getRange(layout.outputLinks.spreadsheetCell).setValue(output.spreadsheetUrl || '');
   return sheet;
 }
 

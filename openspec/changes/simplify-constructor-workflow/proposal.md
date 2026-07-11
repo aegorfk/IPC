@@ -4,7 +4,7 @@ The workbook exposes its internal import, reconstruction, quality, and calculati
 
 ## What Changes
 
-- Add one user-facing `Конструктор` sheet with fields for a Google Drive source folder and an empty Google Doc, one primary `Собрать расчет` action, progress, totals, output links, and a compact `Требует внимания` section.
+- Add one user-facing `Конструктор` sheet with fields for a Google Drive source folder and an empty Google Doc, one primary `Собрать расчет` action, progress, totals, and a compact `Требует внимания` section. Reuse the Google Doc input as the handoff link instead of duplicating output links.
 - Add a top-level constructor orchestrator that reuses the existing payroll import, normalization, reconstruction, indexation, material-liability, vacation, and Docs-writing functions in their required order.
 - Continue the workflow automatically when source data is ambiguous or incomplete; preserve calculable results and publish every disputed item with its source, reason, confidence/review status, and known impact instead of blocking the whole run.
 - Keep Google Sheets as the calculation system of record: the orchestrator writes into the existing calculation and reconstruction sheets before generating the Google Docs explanation.

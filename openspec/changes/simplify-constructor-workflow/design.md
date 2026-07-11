@@ -17,7 +17,7 @@ The change must make that pipeline usable through one action without replacing i
 
 **Goals:**
 
-- Give a normal user one visible `Конструктор` sheet with two link inputs, one primary action, durable progress, totals, output links, and a concise review list.
+- Give a normal user one visible `Конструктор` sheet with two link inputs, one primary action, durable progress, totals, and a concise review list; the Docs input doubles as the handoff link, with no redundant link rows.
 - Reuse existing import, reconstruction, calculation, and Docs functions through non-UI entry points.
 - Automatically resume the workflow after Apps Script batch/import continuation triggers.
 - Continue through disputed or incomplete source rows and finish with warnings whenever a partial but meaningful result is possible.
@@ -57,7 +57,7 @@ The constructor will use explicit phases:
 6. `complete` or `complete_with_warnings`
 7. `failed` only for fatal infrastructure/input failures
 
-Run state contains a run id, timestamps, current phase, progress text, source references, and accumulated issues. State is persisted in Script Properties so scheduled batch continuations can resume without user action. The dashboard is a presentation of that state, not the only state store.
+Run state contains a run id, timestamps, current phase, progress text, structured batch progress (`processed`, `total`, and percentage), source references, and accumulated issues. State is persisted in Script Properties so scheduled batch continuations can resume without user action. The dashboard renders structured progress as a compact text-and-block bar and is a presentation of that state, not the only state store.
 
 Only one constructor run may be active for a spreadsheet. Start, retry, manual continuation, and scheduled continuation acquire `LockService.getDocumentLock()` and perform compare-and-advance updates against the active run id and expected phase. A second `Собрать расчет` invocation while the active run is fresh returns that run and displays its current status; it MUST NOT create another run or repeat a phase. A continuation carrying an old run id is a no-op.
 

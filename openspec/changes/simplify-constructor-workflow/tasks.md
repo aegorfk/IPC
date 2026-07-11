@@ -11,6 +11,7 @@
 - [x] 2.3 Implement and test constructor input reading with named-range preference and label-based compatibility fallback.
 - [x] 2.4 Implement and test preflight validation for Drive-folder and Google-Doc syntax, resource kind, and access, with no calculation mutation on failure.
 - [x] 2.5 Add focused formatting and activation of the constructor sheet without creating a parallel calculation table.
+- [x] 2.6 Remove redundant Docs/current-spreadsheet output rows and reuse the Docs input as the single handoff link without clearing existing issues.
 
 ## 3. Persistent Run State and Dashboard Reporting
 
@@ -21,6 +22,7 @@
 - [x] 3.5 Implement and test aggregation of existing quality-gate, VLM, diagnostic, reconstruction, and skipped-calculation signals while preserving their source rows.
 - [x] 3.6 Implement and test dashboard result rendering that reads totals and output links from completed Sheets/Docs results and never calculates duplicate totals.
 - [x] 3.7 Implement and test `onOpen()` hydration of an existing constructor from persisted run state and reapplication of persisted visibility mode without starting pipeline work.
+- [x] 3.8 Persist processed/total import-batch progress and render its percentage, visual bar, and last-update time on `Конструктор` after every batch.
 
 ## 4. Reusable Non-UI Pipeline Entry Points
 
