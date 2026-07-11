@@ -7,6 +7,7 @@ The system SHALL provide an idempotently created `Конструктор` sheet 
 - **WHEN** the user invokes `Открыть конструктор` and the constructor sheet does not exist
 - **THEN** the system creates and activates the sheet with all required labeled sections
 - **AND** the source label is compatible with the existing Drive-folder resolver
+- **AND** displays and resolves the source label as `Расчетные листы:`
 - **AND** the Docs label is compatible with the existing calculation-document resolver
 
 #### Scenario: Repeated setup preserves user data

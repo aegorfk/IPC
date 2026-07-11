@@ -4,7 +4,7 @@ The bound Google Sheets workbook is both the calculation system of record and th
 
 The existing implementation already contains the required domain pipeline:
 
-- Drive folder discovery from the label `Исходные данные:`;
+- Drive folder discovery from the label `Расчетные листы:`;
 - deterministic/OCR/VLM payroll-slip import with resumable batches;
 - normalized import rows, quality gates, and audit logs;
 - reconstruction of salary, premium, and vacation calculation sheets;
@@ -39,7 +39,7 @@ The change must make that pipeline usable through one action without replacing i
 
 ### 1. Use a worksheet facade rather than a sidebar or web app
 
-The system SHALL create or update one `Конструктор` sheet. It will contain the existing source labels `Исходные данные:` and `Расписанный расчет:` so the current folder and Docs resolvers continue to work. Stable named ranges may point to the input and status cells, but label-based fallback remains available for compatibility.
+The system SHALL create or update one `Конструктор` sheet. It will contain the source labels `Расчетные листы:` and `Расписанный расчет:`. Stable named ranges may point to the input and status cells, but label-based fallback remains available for workbooks using the current labels.
 
 This approach keeps the user inside the existing system of record, supports persistent progress across long Apps Script runs, and avoids a parallel HTML UI. A sidebar was rejected because its narrow transient state is a poor fit for long resumable imports. A separate web app remains a possible future facade after the workflow stabilizes.
 

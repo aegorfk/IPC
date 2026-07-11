@@ -852,7 +852,7 @@ function resolveZupFolderFromSpreadsheet_(spreadsheet) {
   }
 
   throw new Error(
-    'Не нашел ссылку на папку с исходными данными. Добавьте в таблицу подпись "Исходные данные:" и рядом ссылку на Drive-папку или заполните ZUP_IMPORT_SETTINGS.SOURCE_FOLDER_URL.'
+    'Не нашел ссылку на папку с расчетными листками. Добавьте в таблицу подпись "Расчетные листы:" и рядом ссылку на Drive-папку или заполните ZUP_IMPORT_SETTINGS.SOURCE_FOLDER_URL.'
   );
 }
 
@@ -872,7 +872,9 @@ function findZupFolderNearSourceLabel_(spreadsheet) {
     const snapshot = readZupSheetSnapshot_(sheet);
     for (let rowIndex = 0; rowIndex < snapshot.values.length; rowIndex++) {
       for (let columnIndex = 0; columnIndex < snapshot.values[rowIndex].length; columnIndex++) {
-        if (!normalizeText_(snapshot.values[rowIndex][columnIndex]).includes('исходные данные')) {
+        const label = normalizeText_(snapshot.values[rowIndex][columnIndex]);
+        if (!label.includes('расчетные листы')
+            && !label.includes('расчетные листки')) {
           continue;
         }
 

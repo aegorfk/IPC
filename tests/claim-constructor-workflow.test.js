@@ -314,15 +314,15 @@ function createHarness(sheetNames = ['Оклад']) {
 }
 
 {
-  const harness = createHarness(['Оклад']);
-  const sheet = harness.spreadsheet.getSheetByName('Оклад');
-  const folderUrl = 'https://drive.google.com/drive/folders/1ExamplePayrollFolder123456789';
-  sheet.seed(1, 1, 'Исходные данные:').seed(1, 2, 'Расчетные листки', folderUrl);
+  const harness = createHarness(['Конструктор']);
+  const sheet = harness.spreadsheet.getSheetByName('Конструктор');
+  const folderUrl = 'https://drive.google.com/drive/folders/1CurrentPayrollFolder123456789';
+  sheet.seed(4, 1, 'Расчетные листы:').seed(4, 2, folderUrl);
 
   const resolved = harness.context.findZupFolderNearSourceLabel_(harness.spreadsheet);
 
-  assert.strictEqual(resolved.id, '1ExamplePayrollFolder123456789');
-  assert.strictEqual(resolved.source, 'Оклад!B1');
+  assert.strictEqual(resolved.id, '1CurrentPayrollFolder123456789');
+  assert.strictEqual(resolved.source, 'Конструктор!B4');
 }
 
 {
@@ -352,7 +352,7 @@ function createHarness(sheetNames = ['Оклад']) {
   const layout = harness.context.getClaimConstructorLayout_();
 
   assert.strictEqual(layout.sheetName, 'Конструктор');
-  assert.strictEqual(layout.sourceFolder.label, 'Исходные данные:');
+  assert.strictEqual(layout.sourceFolder.label, 'Расчетные листы:');
   assert.strictEqual(layout.sourceFolder.namedRange, 'CLAIM_CONSTRUCTOR_SOURCE_FOLDER');
   assert.strictEqual(layout.outputDoc.label, 'Расписанный расчет:');
   assert.strictEqual(layout.outputDoc.namedRange, 'CLAIM_CONSTRUCTOR_OUTPUT_DOC');
@@ -378,7 +378,7 @@ function createHarness(sheetNames = ['Оклад']) {
 
   assert.strictEqual(created.getName(), 'Конструктор');
   assert.strictEqual(harness.spreadsheet.getSheets()[0].getName(), 'Конструктор');
-  assert.strictEqual(created.getRange(layout.sourceFolder.labelCell).getValue(), 'Исходные данные:');
+  assert.strictEqual(created.getRange(layout.sourceFolder.labelCell).getValue(), 'Расчетные листы:');
   assert.strictEqual(created.getRange(layout.outputDoc.labelCell).getValue(), 'Расписанный расчет:');
   assert.strictEqual(
     harness.spreadsheet.getRangeByName(layout.sourceFolder.namedRange).getValue(),
@@ -406,7 +406,7 @@ function createHarness(sheetNames = ['Оклад']) {
   const harness = createHarness(['Оклад']);
   const legacy = harness.spreadsheet.getSheetByName('Оклад');
   legacy
-    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 1, 'Расчетные листы:')
     .seed(1, 2, 'Папка', 'https://drive.google.com/drive/folders/legacy-folder-123456789')
     .seed(2, 1, 'Расписанный расчет:')
     .seed(2, 2, 'Документ', 'https://docs.google.com/document/d/legacy-doc-123456789/edit');
@@ -430,7 +430,7 @@ function createHarness(sheetNames = ['Оклад']) {
   sheet.getRange(layout.sourceFolder.valueCell).setValue('https://drive.google.com/drive/folders/named-range-folder-123456');
   sheet.getRange(layout.outputDoc.valueCell).setValue('https://docs.google.com/document/d/named-range-doc-123456/edit');
   harness.spreadsheet.getSheetByName('Оклад')
-    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 1, 'Расчетные листы:')
     .seed(1, 2, 'https://drive.google.com/drive/folders/conflicting-folder-123456');
 
   const inputs = harness.context.readClaimConstructorInputs_(harness.spreadsheet);
@@ -444,7 +444,7 @@ function createHarness(sheetNames = ['Оклад']) {
   const harness = createHarness(['Оклад']);
   const sheet = harness.spreadsheet.getSheetByName('Оклад');
   sheet
-    .seed(1, 1, 'Исходные данные:')
+    .seed(1, 1, 'Расчетные листы:')
     .seed(1, 2, 'Расчетные листки', 'https://drive.google.com/drive/folders/label-folder-123456789')
     .seed(2, 1, 'Расписанный расчет:')
     .seed(2, 2, 'Расшифровка', 'https://docs.google.com/document/d/label-doc-123456789/edit');
