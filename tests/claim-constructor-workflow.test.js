@@ -875,6 +875,175 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.deepStrictEqual(pipelineCalls, []);
 }
 
+function stubReconstructionPipeline(harness) {
+  const model = {
+    salary: [],
+    monthlyPremiums: [],
+    quarterlyPremiums: [],
+    annualPremiums: [],
+    vacations: [],
+    quality: { mainCompany: 'ООО Тест', companies: ['ООО Тест'], blankCompanyPeriods: [] },
+  };
+  harness.context.getTargetSpreadsheet_ = () => harness.spreadsheet;
+  harness.context.readZupImportObjects_ = () => [{ file: 'листок.pdf' }];
+  harness.context.getZupReconstructionConfigs_ = () => [];
+  harness.context.buildZupReconstructionModel_ = () => model;
+  harness.context.loadProductionCalendarSafely_ = () => ({ calendar: true });
+  harness.context.fillZupSalaryReconstruction_ = () => ({ sheet: 'Из_1С_Оклад', rows: 2 });
+  harness.context.fillZupPremiumReconstruction_ = (spreadsheet, sheetName) => ({ sheet: sheetName, rows: 1 });
+  harness.context.fillZupVacationReconstruction_ = () => ({ sheet: 'Из_1С_Отпуска', rows: 1 });
+  harness.context.markZupReconstructionCompany_ = () => {};
+  harness.context.updateZupReconstructionIndexationSheets_ = () => [
+    { sheetName: 'Из_1С_Оклад', calculated: 2, skipped: 0 },
+  ];
+  return model;
+}
+
+{
+  const harness = createHarness();
+  stubReconstructionPipeline(harness);
+  const messages = [];
+  harness.context.showMessage_ = (message) => messages.push(message);
+
+  harness.context.populateZupReconstructionSheets();
+
+  assert.strictEqual(messages.length, 1);
+  assert.ok(messages[0].includes('Вкладки Из_1С заполнены'));
+  assert.ok(messages[0].includes('Пересчет Из_1С выполнен'));
+}
+
+{
+  const harness = createHarness();
+  const model = stubReconstructionPipeline(harness);
+  const messages = [];
+  harness.context.showMessage_ = (message) => messages.push(message);
+
+  const result = harness.context.runZupReconstruction_(harness.spreadsheet);
+
+  assert.strictEqual(result.fillResults.length, 5);
+  assert.strictEqual(result.calculationResults.length, 1);
+  assert.strictEqual(result.company, 'ООО Тест');
+  assert.strictEqual(result.quality, model.quality);
+  assert.deepStrictEqual(messages, []);
+}
+
+function stubAllSheetsCalculation(harness) {
+  const layoutByName = { Оклад: 'salary', Ежемесячные: 'monthlyPremiums' };
+  const deleted = [];
+  harness.context.getTargetSpreadsheet_ = () => harness.spreadsheet;
+  harness.context.isGeneratedSheetName_ = () => false;
+  harness.context.getSheetLayout_ = (name) => ({ id: layoutByName[name] || 'unknown' });
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => ({
+    sheetName: sheet.getName(),
+    layoutId: layoutByName[sheet.getName()],
+    calculated: 1,
+    skipped: 0,
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => deleted.push('deleted');
+  return deleted;
+}
+
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  const deleted = stubAllSheetsCalculation(harness);
+  const displayed = [];
+  harness.context.showAllUpdateResults_ = (results) => displayed.push(results);
+
+  const legacyResult = harness.context.updateAllSheetsIndexation();
+
+  assert.strictEqual(legacyResult, undefined);
+  assert.strictEqual(displayed.length, 1);
+  assert.strictEqual(displayed[0].length, 2);
+  assert.deepStrictEqual(deleted, ['deleted']);
+}
+
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  const deleted = stubAllSheetsCalculation(harness);
+  const displayed = [];
+  harness.context.showAllUpdateResults_ = (results) => displayed.push(results);
+
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+
+  assert.deepStrictEqual(Array.from(results).map((item) => item.layoutId), ['salary', 'monthlyPremiums']);
+  assert.deepStrictEqual(displayed, []);
+  assert.deepStrictEqual(deleted, ['deleted']);
+}
+
+function stubDocsHandoff(harness, ready = true) {
+  const params = {
+    docUrl: 'https://docs.google.com/document/d/result-doc/edit',
+    startDate: new Date('2026-01-01T00:00:00.000Z'),
+    endDate: new Date('2026-01-31T00:00:00.000Z'),
+  };
+  const result = {
+    workingDays: 20,
+    wageAmount: 100000,
+    penaltyAmount: 5000,
+    averageDailyEarning: 5000,
+  };
+  const writes = [];
+  harness.context.getTargetSpreadsheet_ = () => harness.spreadsheet;
+  harness.context.readClaimCalculationParams_ = () => params;
+  harness.context.calculateClaimCalculationResult_ = () => ({ ready, result: ready ? result : null });
+  harness.context.writeClaimCalculationDoc_ = (...args) => writes.push(args);
+  return { params, result, writes };
+}
+
+{
+  const harness = createHarness();
+  const stub = stubDocsHandoff(harness);
+  const messages = [];
+  harness.context.showMessage_ = (message) => messages.push(message);
+
+  harness.context.fillClaimCalculationDocs();
+
+  assert.strictEqual(stub.writes.length, 1);
+  assert.strictEqual(messages.length, 1);
+  assert.ok(messages[0].includes('Docs "Расчет требований" заполнен'));
+}
+
+{
+  const harness = createHarness();
+  const stub = stubDocsHandoff(harness);
+  const messages = [];
+  harness.context.showMessage_ = (message) => messages.push(message);
+
+  const handoff = harness.context.runClaimCalculationDocsHandoff_(harness.spreadsheet);
+
+  assert.deepStrictEqual(Array.from(handoff.writtenSections), ['claim_calculation']);
+  assert.deepStrictEqual(Array.from(handoff.skippedSections), []);
+  assert.deepStrictEqual(Array.from(handoff.issues), []);
+  assert.strictEqual(handoff.result, stub.result);
+  assert.strictEqual(stub.writes.length, 1);
+  assert.deepStrictEqual(messages, []);
+}
+
+{
+  const harness = createHarness();
+  const stub = stubDocsHandoff(harness, false);
+  const handoff = harness.context.runClaimCalculationDocsHandoff_(harness.spreadsheet);
+
+  assert.deepStrictEqual(Array.from(handoff.writtenSections), []);
+  assert.deepStrictEqual(Array.from(handoff.skippedSections), ['claim_calculation']);
+  assert.strictEqual(handoff.issues.length, 1);
+  assert.strictEqual(handoff.issues[0].code, 'claim_parameters_missing');
+  assert.strictEqual(stub.writes.length, 0);
+}
+
+{
+  const harness = createHarness();
+  stubDocsHandoff(harness);
+  harness.context.writeClaimCalculationDoc_ = () => { throw new Error('Нет доступа к Doc'); };
+
+  const handoff = harness.context.runClaimCalculationDocsHandoff_(harness.spreadsheet);
+
+  assert.deepStrictEqual(Array.from(handoff.writtenSections), []);
+  assert.deepStrictEqual(Array.from(handoff.skippedSections), ['claim_calculation']);
+  assert.strictEqual(handoff.issues[0].code, 'doc_write_failed');
+  assert.ok(handoff.issues[0].reason.includes('Нет доступа к Doc'));
+}
+
 console.log('claim constructor characterization ok');
 
 module.exports = {

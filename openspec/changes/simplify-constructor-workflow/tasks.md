@@ -24,10 +24,10 @@
 
 ## 4. Reusable Non-UI Pipeline Entry Points
 
-- [ ] 4.1 Characterize and extract a non-modal reconstruction function from `populateZupReconstructionSheets()` that returns structured fill and recalculation results while preserving the legacy wrapper.
-- [ ] 4.2 Characterize and expose structured calculation results needed by the constructor without changing existing calculation-sheet formulas, layouts, or public wrappers.
-- [ ] 4.3 Characterize and extract a non-modal best-effort Docs handoff that returns written/skipped sections and issues while preserving bounded marker replacement and the legacy wrapper.
-- [ ] 4.4 Verify that all legacy entry points retain their existing externally observable behavior after extraction.
+- [x] 4.1 Characterize and extract a non-modal reconstruction function from `populateZupReconstructionSheets()` that returns structured fill and recalculation results while preserving the legacy wrapper.
+- [x] 4.2 Characterize and expose structured calculation results needed by the constructor without changing existing calculation-sheet formulas, layouts, or public wrappers.
+- [x] 4.3 Characterize and extract a non-modal best-effort Docs handoff that returns written/skipped sections and issues while preserving bounded marker replacement and the legacy wrapper.
+- [x] 4.4 Verify that all legacy entry points retain their existing externally observable behavior after extraction.
 
 ## 5. One-Action Orchestration and Automatic Continuation
 

@@ -256,6 +256,11 @@ function runAnnualPremiumIndexationFromEditor() {
 
 function updateAllSheetsIndexation() {
   const spreadsheet = getTargetSpreadsheet_();
+  const results = runAllSheetsIndexation_(spreadsheet);
+  showAllUpdateResults_(results);
+}
+
+function runAllSheetsIndexation_(spreadsheet) {
   const sheets = spreadsheet.getSheets();
   const results = [];
   const processedLayouts = new Set();
@@ -283,7 +288,7 @@ function updateAllSheetsIndexation() {
   }
 
   deleteLegacyGeneratedSheets_(spreadsheet);
-  showAllUpdateResults_(results);
+  return results;
 }
 
 function updateUnpaidSalaryIndexation() {
@@ -338,23 +343,66 @@ function fillClaimCalculationTable() {
 
 function fillClaimCalculationDocs() {
   const spreadsheet = getTargetSpreadsheet_();
-  const params = readClaimCalculationParams_(spreadsheet);
-  if (!params.docUrl) {
+  const handoff = runClaimCalculationDocsHandoff_(spreadsheet);
+  const issue = handoff.issues[0];
+  if (issue && issue.code === 'output_doc_missing') {
     showMessage_('Не нашел ссылку на Google Doc. Добавьте в таблицу подпись "Расчет требований:" или "Расписанный расчет:" и рядом ссылку на документ.');
     return;
   }
-  const calculated = calculateClaimCalculationResult_(spreadsheet, params);
-  if (!calculated.ready) {
+  if (issue && issue.code === 'claim_parameters_missing') {
     showMessage_('Не хватает параметров: средний дневной заработок, дата начала вынужденного прогула и дата окончания расчета. Средний заработок берется из явной подписи или из последней строки вкладки "Отпуска и расчет"; сумма прогула не используется как источник.');
     return;
+  }
+  if (issue && issue.code === 'doc_write_failed') {
+    throw new Error(issue.reason);
+  }
+
+  const result = handoff.result;
+  showMessage_(
+    `Docs "Расчет требований" заполнен. Рабочих дней прогула: ${result.workingDays}. Сумма за прогул: ${formatMoneyRu_(result.wageAmount, 2)}. Пени ст. 236: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
+  );
+}
+
+function runClaimCalculationDocsHandoff_(spreadsheet, options) {
+  const settings = options || {};
+  const params = settings.params || readClaimCalculationParams_(spreadsheet);
+  if (!params.docUrl) {
+    return buildSkippedClaimDocsHandoff_(
+      'output_doc_missing',
+      'Не указана ссылка на Google Doc для расшифровки расчета.'
+    );
+  }
+  const calculated = calculateClaimCalculationResult_(spreadsheet, params);
+  if (!calculated.ready) {
+    return buildSkippedClaimDocsHandoff_(
+      'claim_parameters_missing',
+      'Не хватает параметров для расчета требований и соответствующего раздела Google Docs.'
+    );
   }
 
   const result = calculated.result;
   params.averageDailyEarning = result.averageDailyEarning;
-  writeClaimCalculationDoc_(params.docUrl, params, result);
-  showMessage_(
-    `Docs "Расчет требований" заполнен. Рабочих дней прогула: ${result.workingDays}. Сумма за прогул: ${formatMoneyRu_(result.wageAmount, 2)}. Пени ст. 236: ${formatMoneyRu_(result.penaltyAmount, 2)}.`
-  );
+  try {
+    writeClaimCalculationDoc_(params.docUrl, params, result);
+    return {
+      writtenSections: ['claim_calculation'],
+      skippedSections: [],
+      issues: [],
+      result,
+    };
+  } catch (error) {
+    const reason = error && error.message ? error.message : String(error);
+    return buildSkippedClaimDocsHandoff_('doc_write_failed', `Не удалось обновить Google Doc: ${reason}`);
+  }
+}
+
+function buildSkippedClaimDocsHandoff_(code, reason) {
+  return {
+    writtenSections: [],
+    skippedSections: ['claim_calculation'],
+    issues: [{ code, reason }],
+    result: null,
+  };
 }
 
 function calculateClaimCalculationResult_(spreadsheet, params, labelValues) {

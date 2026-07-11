@@ -377,6 +377,19 @@ function createZupReconstructionSheets() {
 
 function populateZupReconstructionSheets() {
   const spreadsheet = getTargetSpreadsheet_();
+  const result = runZupReconstruction_(spreadsheet);
+
+  showMessage_(
+    [
+      `Вкладки Из_1С заполнены из расчетных листков.`,
+      result.fillResults.map((item) => `${item.sheet}: ${item.rows} строк`).join('\n'),
+      '',
+      `Пересчет Из_1С выполнен: ${result.calculationResults.map((item) => `${item.sheetName}: ${item.calculated} строк, пропущено ${item.skipped}`).join('; ')}`,
+    ].join('\n')
+  );
+}
+
+function runZupReconstruction_(spreadsheet) {
   const importRows = readZupImportObjects_(spreadsheet);
   if (!importRows.length) {
     throw new Error('Нет строк в Импорт_1С_ЗУП. Сначала выполните импорт расчетных листков.');
@@ -391,7 +404,7 @@ function populateZupReconstructionSheets() {
   const model = buildZupReconstructionModel_(importRows);
   const productionCalendar = loadProductionCalendarSafely_();
   const company = model.quality.mainCompany || (model.quality.companies.length === 1 ? model.quality.companies[0] : '');
-  const results = [
+  const fillResults = [
     fillZupSalaryReconstruction_(spreadsheet, model.salary, productionCalendar, company, model.quality),
     fillZupPremiumReconstruction_(spreadsheet, 'Из_1С_Ежемесячные', model.monthlyPremiums, 'monthly', model.quality),
     fillZupPremiumReconstruction_(spreadsheet, 'Из_1С_Ежеквартальные', model.quarterlyPremiums, 'quarterly', model.quality),
@@ -400,15 +413,12 @@ function populateZupReconstructionSheets() {
   ];
   markZupReconstructionCompany_(spreadsheet, company, model.quality);
   const calculationResults = updateZupReconstructionIndexationSheets_(spreadsheet);
-
-  showMessage_(
-    [
-      `Вкладки Из_1С заполнены из расчетных листков.`,
-      results.map((item) => `${item.sheet}: ${item.rows} строк`).join('\n'),
-      '',
-      `Пересчет Из_1С выполнен: ${calculationResults.map((item) => `${item.sheetName}: ${item.calculated} строк, пропущено ${item.skipped}`).join('; ')}`,
-    ].join('\n')
-  );
+  return {
+    fillResults,
+    calculationResults,
+    company,
+    quality: model.quality,
+  };
 }
 
 function clearZupImportSheets() {
