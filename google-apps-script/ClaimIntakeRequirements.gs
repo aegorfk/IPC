@@ -187,3 +187,30 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
     );
   });
 }
+
+function preserveClaimIntakeDocHistoryUrl_(spreadsheet, docUrl, note) {
+  const value = String(docUrl || '').trim();
+  if (!value) {
+    return false;
+  }
+  const layout = getClaimIntakeLayout_();
+  const sheet = ensureClaimIntakeSheet_(spreadsheet);
+  const history = sheet.getRange(
+    layout.docsHistory.firstRow,
+    1,
+    layout.docsHistory.rowCount,
+    layout.docsHistory.columnCount
+  );
+  const rows = history.getValues();
+  const existingIndex = rows.findIndex((row) => String(row[1] || '').trim() === value);
+  if (existingIndex >= 0) {
+    return String(history.getValues()[existingIndex][1] || '').trim() === value;
+  }
+  const emptyIndex = rows.findIndex((row) => row.every((cell) => cell === '' || cell === null));
+  if (emptyIndex < 0) {
+    return false;
+  }
+  const target = sheet.getRange(layout.docsHistory.firstRow + emptyIndex, 1, 1, 3);
+  target.setValues([[new Date(), value, note || '']]);
+  return String(target.getValues()[0][1] || '').trim() === value;
+}

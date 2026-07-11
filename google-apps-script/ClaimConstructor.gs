@@ -92,7 +92,7 @@ function ensureClaimConstructorSheet_(spreadsheet) {
     sheet = spreadsheet.insertSheet(layout.sheetName, 0);
   }
 
-  migrateLegacyClaimConstructorLayout_(sheet, layout);
+  migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout);
   applyClaimConstructorStructure_(sheet, layout);
   formatClaimConstructorSheet_(sheet, layout);
   spreadsheet.setNamedRange(layout.sourceFolder.namedRange, sheet.getRange(layout.sourceFolder.valueCell));
@@ -104,7 +104,7 @@ function ensureClaimConstructorSheet_(spreadsheet) {
   return sheet;
 }
 
-function migrateLegacyClaimConstructorLayout_(sheet, layout) {
+function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
   if (sheet.getRange('A6').getValue() !== CLAIM_CONSTRUCTOR_SETTINGS.OUTPUT_DOC_LABEL) {
     return false;
   }
@@ -127,12 +127,24 @@ function migrateLegacyClaimConstructorLayout_(sheet, layout) {
 
   const migratedDocUrl = sheet.getRange(layout.outputDoc.valueCell).getValue();
   if (migratedDocUrl && legacyDocUrl && migratedDocUrl !== legacyDocUrl) {
-    throw new Error('Найдены разные ссылки на текущий Google Doc; миграция остановлена без очистки старой ссылки.');
+    const validLegacyDocUrl = typeof extractGoogleDocId_ === 'function'
+      && extractGoogleDocId_(legacyDocUrl);
+    const preserved = validLegacyDocUrl
+      && typeof preserveClaimIntakeDocHistoryUrl_ === 'function'
+      && preserveClaimIntakeDocHistoryUrl_(
+        spreadsheet,
+        legacyDocUrl,
+        'Перенесен из прежней ячейки Конструктора'
+      );
+    if (!preserved) {
+      throw new Error('Не удалось сохранить прежнюю ссылку Google Doc в истории; старая ячейка оставлена без изменений.');
+    }
   }
   if (!migratedDocUrl) {
     sheet.getRange(layout.outputDoc.valueCell).setValue(legacyDocUrl);
   }
-  if (sheet.getRange(layout.outputDoc.valueCell).getValue() !== legacyDocUrl) {
+  if (legacyDocUrl && !migratedDocUrl
+      && sheet.getRange(layout.outputDoc.valueCell).getValue() !== legacyDocUrl) {
     throw new Error('Не удалось безопасно перенести ссылку на текущий Google Doc.');
   }
   setClaimConstructorCellIfBlank_(sheet.getRange(layout.outputDoc.errorCell), legacyDocError);

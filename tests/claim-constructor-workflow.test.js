@@ -518,6 +518,55 @@ function createHarness(sheetNames = ['Оклад']) {
 }
 
 {
+  const harness = createHarness(['Конструктор']);
+  const destinationDocUrl = 'https://docs.google.com/document/d/source-cleared-destination-123456789/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, '')
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl)
+    .seed(12, 1, 'Статус:')
+    .seed(12, 2, 'Миграция почти завершена');
+
+  const firstRepair = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const secondRepair = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+
+  assert.strictEqual(firstRepair.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(secondRepair.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(constructor.getRange(layout.status.phaseCell).getValue(), 'Миграция почти завершена');
+  assert.strictEqual(constructor.getRange(layout.normativeFolder.valueCell).getValue(), '');
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const legacyDocUrl = 'https://docs.google.com/document/d/conflicting-legacy-doc-123456789/edit';
+  const destinationDocUrl = 'https://docs.google.com/document/d/conflicting-current-doc-123456789/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, legacyDocUrl)
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl)
+    .seed(12, 1, 'Статус:')
+    .seed(12, 2, 'Уже перенесенный этап');
+
+  const firstRepair = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const secondRepair = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const history = secondRepair.questionnaire
+    .getRange(intakeLayout.docsHistory.firstRow, 1, intakeLayout.docsHistory.rowCount, 3)
+    .getValues();
+
+  assert.strictEqual(firstRepair.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(secondRepair.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(constructor.getRange(layout.normativeFolder.valueCell).getValue(), '');
+  assert.strictEqual(history.filter((row) => row[1] === legacyDocUrl).length, 1);
+}
+
+{
   const harness = createHarness();
   harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
   const layout = harness.context.getClaimConstructorLayout_();
