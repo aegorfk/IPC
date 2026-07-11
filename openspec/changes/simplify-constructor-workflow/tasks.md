@@ -14,13 +14,13 @@
 
 ## 3. Persistent Run State and Dashboard Reporting
 
-- [ ] 3.1 Define and test the constructor run-state schema, phase transitions, run-id generation, serialization, persistence, and completed-phase idempotency guards.
-- [ ] 3.2 Implement and concurrency-test a single-active-run policy using a fake/document `LockService`, active run-id comparison, expected-phase compare-and-advance, six-hour stale/orphaned-session detection including missing live triggers, and stale continuation no-ops.
-- [ ] 3.3 Implement and test constructor progress/status writes for running, complete, complete-with-warnings, and fatal states without modal technical alerts.
-- [ ] 3.4 Define and test normalized constructor issues with phase, source kind, source, reason, review/confidence status, known impact, and suggested action.
-- [ ] 3.5 Implement and test aggregation of existing quality-gate, VLM, diagnostic, reconstruction, and skipped-calculation signals while preserving their source rows.
-- [ ] 3.6 Implement and test dashboard result rendering that reads totals and output links from completed Sheets/Docs results and never calculates duplicate totals.
-- [ ] 3.7 Implement and test `onOpen()` hydration of an existing constructor from persisted run state and reapplication of persisted visibility mode without starting pipeline work.
+- [x] 3.1 Define and test the constructor run-state schema, phase transitions, run-id generation, serialization, persistence, and completed-phase idempotency guards.
+- [x] 3.2 Implement and concurrency-test a single-active-run policy using a fake/document `LockService`, active run-id comparison, expected-phase compare-and-advance, six-hour stale/orphaned-session detection including missing live triggers, and stale continuation no-ops.
+- [x] 3.3 Implement and test constructor progress/status writes for running, complete, complete-with-warnings, and fatal states without modal technical alerts.
+- [x] 3.4 Define and test normalized constructor issues with phase, source kind, source, reason, review/confidence status, known impact, and suggested action.
+- [x] 3.5 Implement and test aggregation of existing quality-gate, VLM, diagnostic, reconstruction, and skipped-calculation signals while preserving their source rows.
+- [x] 3.6 Implement and test dashboard result rendering that reads totals and output links from completed Sheets/Docs results and never calculates duplicate totals.
+- [x] 3.7 Implement and test `onOpen()` hydration of an existing constructor from persisted run state and reapplication of persisted visibility mode without starting pipeline work.
 
 ## 4. Reusable Non-UI Pipeline Entry Points
 

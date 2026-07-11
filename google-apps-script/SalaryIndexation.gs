@@ -195,6 +195,9 @@ const SALARY_PAYMENT_PARTS = [
 ];
 
 function onOpen() {
+  if (typeof hydrateClaimConstructorOnOpen_ === 'function') {
+    hydrateClaimConstructorOnOpen_(SpreadsheetApp.getActiveSpreadsheet());
+  }
   const ui = getSpreadsheetUi_();
   if (!ui) {
     console.log('onOpen только добавляет меню в таблицу. Для проверки из редактора запустите runIndexationFromEditor.');

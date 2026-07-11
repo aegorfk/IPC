@@ -199,6 +199,15 @@ function createHarness(sheetNames = ['Оклад']) {
   const driveFiles = new Map();
   const documents = new Map();
   const menus = [];
+  const triggers = [];
+  let uuidCounter = 0;
+  const documentLock = {
+    allow: true,
+    acquired: 0,
+    released: 0,
+    tryLock() { this.acquired++; return this.allow; },
+    releaseLock() { this.released++; },
+  };
 
   const context = {
     console,
@@ -223,7 +232,8 @@ function createHarness(sheetNames = ['Оклад']) {
     },
     JSON,
     LockService: {
-      getDocumentLock: () => ({ tryLock: () => true, releaseLock() {} }),
+      getDocumentLock: () => documentLock,
+      getScriptLock: () => documentLock,
     },
     Logger: { log() {} },
     Math,
@@ -234,7 +244,7 @@ function createHarness(sheetNames = ['Оклад']) {
       getDocumentProperties: () => documentProperties,
     },
     RegExp,
-    ScriptApp: { getProjectTriggers: () => [] },
+    ScriptApp: { getProjectTriggers: () => triggers },
     Session: { getScriptTimeZone: () => 'Europe/Moscow' },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
@@ -263,7 +273,7 @@ function createHarness(sheetNames = ['Оклад']) {
         }
         return date.toISOString();
       },
-      getUuid: () => 'uuid-1',
+      getUuid: () => `uuid-${++uuidCounter}`,
     },
   };
 
@@ -281,6 +291,8 @@ function createHarness(sheetNames = ['Оклад']) {
     driveFiles,
     documents,
     menus,
+    triggers,
+    documentLock,
   };
 }
 
@@ -487,6 +499,380 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(opened.columnWidths.get(1), 190);
   assert.strictEqual(opened.columnWidths.get(2), 520);
   assert.strictEqual(harness.spreadsheet.getSheets().length, 3);
+}
+
+{
+  const harness = createHarness();
+  const now = new Date('2026-07-11T09:00:00.000Z');
+  const run = harness.context.createClaimConstructorRun_({
+    folderId: 'folder-1',
+    docId: 'doc-1',
+  }, { now, parentRunId: 'prior-run' });
+
+  assert.strictEqual(run.version, 1);
+  assert.strictEqual(run.id, 'uuid-1');
+  assert.strictEqual(run.parentRunId, 'prior-run');
+  assert.strictEqual(run.phase, 'validating');
+  assert.strictEqual(run.phases.validating, 'running');
+  assert.strictEqual(run.phases.importing, 'pending');
+  assert.deepStrictEqual(Array.from(harness.context.getClaimConstructorPhaseOrder_()), [
+    'validating',
+    'importing',
+    'reconstructing',
+    'calculating',
+    'writing_doc',
+  ]);
+  assert.strictEqual(run.createdAt, now.toISOString());
+  assert.deepStrictEqual(Array.from(run.issues), []);
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({ folderId: 'folder-1', docId: 'doc-1' }, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const restored = harness.context.loadClaimConstructorRun_(harness.scriptProperties);
+
+  assert.strictEqual(restored.id, run.id);
+  assert.strictEqual(restored.inputs.folderId, 'folder-1');
+  assert.strictEqual(harness.context.serializeClaimConstructorRun_(restored), JSON.stringify(restored));
+  assert.strictEqual(harness.context.parseClaimConstructorRun_('{bad json'), null);
+}
+
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+
+  const advanced = harness.context.completeClaimConstructorPhase_(
+    run,
+    'validating',
+    'importing',
+    new Date('2026-07-11T09:01:00.000Z')
+  );
+  const repeated = harness.context.completeClaimConstructorPhase_(
+    run,
+    'validating',
+    'importing',
+    new Date('2026-07-11T09:02:00.000Z')
+  );
+
+  assert.strictEqual(advanced, true);
+  assert.strictEqual(repeated, false);
+  assert.strictEqual(run.phases.validating, 'done');
+  assert.strictEqual(run.phases.importing, 'running');
+  assert.strictEqual(run.phase, 'importing');
+  assert.strictEqual(run.updatedAt, '2026-07-11T09:01:00.000Z');
+  assert.strictEqual(harness.context.isClaimConstructorPhaseDone_(run, 'validating'), true);
+}
+
+{
+  const harness = createHarness();
+  const active = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+
+  const result = harness.context.startOrJoinClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T10:00:00.000Z'),
+    properties: harness.scriptProperties,
+  });
+
+  assert.strictEqual(result.joined, true);
+  assert.strictEqual(result.run.id, active.id);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+}
+
+{
+  const harness = createHarness();
+  harness.documentLock.allow = false;
+
+  const result = harness.context.startOrJoinClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T10:00:00.000Z'),
+    properties: harness.scriptProperties,
+  });
+
+  assert.strictEqual(result.busy, true);
+  assert.strictEqual(result.run, null);
+  assert.strictEqual(harness.scriptProperties.getProperty('CLAIM_CONSTRUCTOR_RUN_STATE'), null);
+  assert.strictEqual(harness.documentLock.released, 0);
+}
+
+{
+  const harness = createHarness();
+  const stale = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T00:00:00.000Z'),
+  });
+  harness.context.saveClaimConstructorRun_(stale, harness.scriptProperties);
+
+  const result = harness.context.startOrJoinClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T07:00:01.000Z'),
+    properties: harness.scriptProperties,
+  });
+
+  assert.strictEqual(result.joined, false);
+  assert.strictEqual(result.run.id, 'uuid-2');
+  assert.strictEqual(result.run.parentRunId, stale.id);
+  assert.strictEqual(result.replacedRun.status, 'failed');
+  assert.strictEqual(result.replacedRun.phase, 'failed');
+  assert.strictEqual(result.replacedRun.completedAt, '2026-07-11T07:00:01.000Z');
+}
+
+{
+  const harness = createHarness();
+  const active = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T00:00:00.000Z'),
+  });
+  harness.context.completeClaimConstructorPhase_(
+    active,
+    'validating',
+    'importing',
+    new Date('2026-07-11T00:01:00.000Z')
+  );
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  harness.scriptProperties.setProperty('ZUP_IMPORT_BATCH_STATE', JSON.stringify({
+    constructorRunId: active.id,
+    updatedAt: '2026-07-11T06:30:00.000Z',
+  }));
+
+  const result = harness.context.startOrJoinClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T07:00:01.000Z'),
+    properties: harness.scriptProperties,
+  });
+
+  assert.strictEqual(result.joined, true);
+  assert.strictEqual(result.run.id, active.id);
+}
+
+{
+  const harness = createHarness();
+  const active = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T00:00:00.000Z'),
+  });
+  harness.context.completeClaimConstructorPhase_(
+    active,
+    'validating',
+    'importing',
+    new Date('2026-07-11T00:01:00.000Z')
+  );
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  harness.scriptProperties.setProperty('ZUP_IMPORT_BATCH_STATE', JSON.stringify({
+    constructorRunId: active.id,
+    updatedAt: '2026-07-11T00:00:00.000Z',
+  }));
+  harness.triggers.push({ getHandlerFunction: () => 'resumeZupFolderImport_' });
+
+  const result = harness.context.startOrJoinClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T07:00:01.000Z'),
+    properties: harness.scriptProperties,
+  });
+
+  assert.strictEqual(result.joined, true);
+  assert.strictEqual(result.run.id, active.id);
+}
+
+{
+  const harness = createHarness();
+  const active = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+
+  const advanced = harness.context.advanceActiveClaimConstructorRun_(
+    active.id,
+    'validating',
+    'importing',
+    { now: new Date('2026-07-11T09:01:00.000Z'), properties: harness.scriptProperties }
+  );
+  const staleContinuation = harness.context.advanceActiveClaimConstructorRun_(
+    'old-run-id',
+    'importing',
+    'reconstructing',
+    { now: new Date('2026-07-11T09:02:00.000Z'), properties: harness.scriptProperties }
+  );
+  const repeated = harness.context.advanceActiveClaimConstructorRun_(
+    active.id,
+    'validating',
+    'importing',
+    { now: new Date('2026-07-11T09:03:00.000Z'), properties: harness.scriptProperties }
+  );
+
+  assert.strictEqual(advanced.phase, 'importing');
+  assert.strictEqual(staleContinuation, null);
+  assert.strictEqual(repeated, null);
+  assert.strictEqual(harness.context.loadClaimConstructorRun_(harness.scriptProperties).phase, 'importing');
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  run.phase = 'calculating';
+  run.progressText = 'Считаем недоплаты';
+  run.updatedAt = '2026-07-11T09:05:00.000Z';
+
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Расчет недоплат, индексации и пеней');
+  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Считаем недоплаты');
+  assert.strictEqual(sheet.getRange(layout.status.updatedAtCell).getValue(), '2026-07-11T09:05:00.000Z');
+
+  run.status = 'complete';
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово');
+
+  run.status = 'complete_with_warnings';
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Готово с замечаниями');
+
+  run.status = 'failed';
+  run.progressText = 'Нет доступа к документу';
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Ошибка');
+  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Нет доступа к документу');
+}
+
+{
+  const harness = createHarness();
+  const issue = harness.context.normalizeClaimConstructorIssue_({
+    severity: 'warning',
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'Расчетный листок.pdf, строка 12',
+    reason: 'Категория начисления требует проверки',
+    reviewStatus: 'VLM, уверенность 0.71',
+    suggestedAction: 'Сверить с расчетным листком',
+  });
+
+  assert.strictEqual(issue.severity, 'warning');
+  assert.strictEqual(issue.phase, 'importing');
+  assert.strictEqual(issue.sourceKind, 'payroll_slips');
+  assert.strictEqual(issue.source, 'Расчетный листок.pdf, строка 12');
+  assert.strictEqual(issue.reason, 'Категория начисления требует проверки');
+  assert.strictEqual(issue.reviewStatus, 'VLM, уверенность 0.71');
+  assert.strictEqual(issue.knownImpact, 'не определено');
+  assert.strictEqual(issue.suggestedAction, 'Сверить с расчетным листком');
+}
+
+{
+  const harness = createHarness();
+  const signals = {
+    qualityGateRows: [[
+      'Сотрудник', 'Предупреждение', 'На проверке', 'листок.pdf', '06.2026', '', 'Иванов', 'строка 12',
+      'ФИО различается', 'Сверить ФИО',
+    ]],
+    vlmRows: [[
+      'листок.pdf', 'application/pdf', 'gemini', 'VLM', 4, 0, 0, 0, 0, '', 'Низкая уверенность', '{}',
+    ]],
+    diagnosticIssues: [{ source: 'Импорт_1С_Диагностика!A2', reason: 'Не найдена дата выплаты' }],
+    reconstructionIssues: [{ source: 'Из_1С_Оклад!A7', reason: 'Строка не сопоставлена' }],
+    skippedCalculationIssues: [{ source: 'Оклад!A10', reason: 'Строка пропущена при расчете' }],
+  };
+  const snapshot = JSON.stringify(signals);
+
+  const issues = harness.context.aggregateClaimConstructorIssues_(signals);
+
+  assert.strictEqual(issues.length, 5);
+  assert.strictEqual(issues[0].phase, 'importing');
+  assert.strictEqual(issues[0].source, 'листок.pdf; 06.2026; строка 12');
+  assert.strictEqual(issues[1].reviewStatus, 'VLM');
+  assert.strictEqual(issues[2].phase, 'importing');
+  assert.strictEqual(issues[3].phase, 'reconstructing');
+  assert.strictEqual(issues[4].phase, 'calculating');
+  assert.strictEqual(JSON.stringify(signals), snapshot);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const results = {
+    totals: {
+      underpayment: 100000,
+      indexation: 12000,
+      liability: 8000,
+      total: 120000,
+    },
+    output: {
+      docUrl: 'https://docs.google.com/document/d/result-doc/edit',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/fake-spreadsheet-id/edit',
+    },
+  };
+
+  harness.context.renderClaimConstructorResults_(sheet, results);
+
+  assert.strictEqual(sheet.getRange(layout.resultFields.underpayment.valueCell).getValue(), 100000);
+  assert.strictEqual(sheet.getRange(layout.resultFields.indexation.valueCell).getValue(), 12000);
+  assert.strictEqual(sheet.getRange(layout.resultFields.liability.valueCell).getValue(), 8000);
+  assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 120000);
+  assert.strictEqual(sheet.getRange(layout.outputLinks.docCell).getValue(), results.output.docUrl);
+  assert.strictEqual(sheet.getRange(layout.outputLinks.spreadsheetCell).getValue(), results.output.spreadsheetUrl);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const issues = [harness.context.normalizeClaimConstructorIssue_({
+    severity: 'warning',
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Нужна сверка',
+    reviewStatus: 'VLM',
+    knownImpact: 'не определено',
+    suggestedAction: 'Сверить',
+  }), harness.context.normalizeClaimConstructorIssue_({
+    severity: 'error',
+    phase: 'calculating',
+    reason: 'Строка пропущена',
+  })];
+
+  harness.context.renderClaimConstructorIssues_(sheet, issues);
+  assert.deepStrictEqual(sheet.getRange(layout.issuesHeaderRow + 1, 1, 1, 8).getValues()[0], [
+    'warning', 'importing', 'payroll_slips', 'листок.pdf', 'Нужна сверка', 'VLM', 'не определено', 'Сверить',
+  ]);
+  harness.context.renderClaimConstructorIssues_(sheet, issues.slice(0, 1));
+  assert.strictEqual(sheet.getRange(layout.issuesHeaderRow + 2, 1).getValue(), '');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  harness.context.onOpen();
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Конструктор'), null);
+}
+
+{
+  const harness = createHarness(['Конструктор', 'Оклад']);
+  const sheet = harness.spreadsheet.getSheetByName('Конструктор');
+  const layout = harness.context.getClaimConstructorLayout_();
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  run.phase = 'calculating';
+  run.progressText = 'Восстановленный статус';
+  run.results = { totals: { total: 321 } };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.documentProperties.setProperty('CLAIM_CONSTRUCTOR_VISIBILITY_MODE', 'detail');
+  const visibilityCalls = [];
+  const pipelineCalls = [];
+  harness.context.applyClaimConstructorVisibilityMode_ = (mode) => visibilityCalls.push(mode);
+  harness.context.importZupFolder = () => pipelineCalls.push('import');
+  harness.context.populateZupReconstructionSheets = () => pipelineCalls.push('reconstruct');
+  harness.context.updateAllSheetsIndexation = () => pipelineCalls.push('calculate');
+
+  harness.context.onOpen();
+
+  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Восстановленный статус');
+  assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 321);
+  assert.deepStrictEqual(visibilityCalls, ['detail']);
+  assert.deepStrictEqual(pipelineCalls, []);
 }
 
 console.log('claim constructor characterization ok');
