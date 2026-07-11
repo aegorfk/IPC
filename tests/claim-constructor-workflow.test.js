@@ -567,6 +567,103 @@ function createHarness(sheetNames = ['Оклад']) {
 }
 
 {
+  const harness = createHarness(['Конструктор']);
+  const destinationDocUrl = 'https://docs.google.com/document/d/docs-row-without-status-source-cleared/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, '')
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl)
+    .seed(12, 2, 'Статус без восстановленной метки');
+
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+
+  assert.strictEqual(workspace.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(workspace.constructor.getRange(layout.status.phaseCell).getValue(), 'Статус без восстановленной метки');
+  assert.strictEqual(workspace.constructor.getRange(layout.normativeFolder.valueCell).getValue(), '');
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const legacyDocUrl = 'https://docs.google.com/document/d/docs-row-without-status-legacy/edit';
+  const destinationDocUrl = 'https://docs.google.com/document/d/docs-row-without-status-current/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, legacyDocUrl)
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl)
+    .seed(12, 2, 'Статус без восстановленной метки');
+
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const history = workspace.questionnaire
+    .getRange(intakeLayout.docsHistory.firstRow, 1, intakeLayout.docsHistory.rowCount, 3)
+    .getValues();
+
+  assert.strictEqual(workspace.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(workspace.constructor.getRange(layout.status.phaseCell).getValue(), 'Статус без восстановленной метки');
+  assert.strictEqual(history.filter((row) => row[1] === legacyDocUrl).length, 1);
+}
+
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const legacyDocUrl = 'https://docs.google.com/document/d/history-full-legacy-doc/edit';
+  const destinationDocUrl = 'https://docs.google.com/document/d/history-full-current-doc/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  const questionnaire = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(6, 2, legacyDocUrl)
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl);
+  questionnaire
+    .getRange(intakeLayout.docsHistory.firstRow, 1, intakeLayout.docsHistory.rowCount, 3)
+    .setValues(Array.from({ length: intakeLayout.docsHistory.rowCount }, (_, index) => [
+      `date-${index}`, `https://docs.google.com/document/d/existing-${index}/edit`, 'existing',
+    ]));
+
+  let repairError = null;
+  try {
+    harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  } catch (error) {
+    repairError = error;
+  }
+
+  assert.ok(repairError);
+  assert.ok(repairError.message.includes('Не удалось сохранить прежнюю ссылку Google Doc в истории'));
+  assert.strictEqual(constructor.getRange('B6').getValue(), legacyDocUrl);
+  assert.strictEqual(constructor.getRange('B9').getValue(), destinationDocUrl);
+  assert.strictEqual(constructor.getRange('A6').getValue(), 'Расписанный расчет:');
+}
+
+{
+  const harness = createHarness(['Конструктор']);
+  const destinationDocUrl = 'https://docs.google.com/document/d/status-new-totals-old-doc/edit';
+  const constructor = harness.spreadsheet.getSheetByName('Конструктор');
+  constructor
+    .seed(6, 1, 'Расписанный расчет:')
+    .seed(9, 1, 'Расписанный расчет:')
+    .seed(9, 2, destinationDocUrl)
+    .seed(12, 1, 'Статус:')
+    .seed(12, 2, 'Новый статус уже на месте')
+    .seed(14, 1, 'Итоги расчета')
+    .seed(15, 1, 'Недоплата')
+    .seed(15, 2, 12345);
+
+  const workspace = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+
+  assert.strictEqual(workspace.constructor.getRange(layout.outputDoc.valueCell).getValue(), destinationDocUrl);
+  assert.strictEqual(workspace.constructor.getRange(layout.status.phaseCell).getValue(), 'Новый статус уже на месте');
+  assert.strictEqual(workspace.constructor.getRange(layout.resultFields.underpayment.valueCell).getValue(), 12345);
+}
+
+{
   const harness = createHarness();
   harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
   const layout = harness.context.getClaimConstructorLayout_();

@@ -111,17 +111,34 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
 
   const legacyDocUrl = sheet.getRange('B6').getValue();
   const legacyDocError = sheet.getRange('B7').getValue();
-  const alreadyShifted = sheet.getRange(layout.outputDoc.labelCell).getValue() === layout.outputDoc.label
-    && sheet.getRange(layout.status.titleCell).getValue() === 'Статус:';
-  if (!alreadyShifted) {
-    const lastRow = sheet.getLastRow();
-    const columnCount = Math.max(sheet.getLastColumn(), layout.issueHeaders.length);
-    for (let row = lastRow; row >= 9; row--) {
-      const source = sheet.getRange(row, 1, 1, columnCount);
-      const values = source.getValues();
-      sheet.getRange(row + 3, 1, 1, columnCount).setValues(values);
-      source.clearContent();
-    }
+  const docsRowMigrated = sheet.getRange(layout.outputDoc.labelCell).getValue() === layout.outputDoc.label;
+  const fullLegacyLayout = sheet.getRange('A9').getValue() === 'Статус:';
+  const statusMigrated = sheet.getRange(layout.status.titleCell).getValue() === 'Статус:';
+  const legacyStatusBelowDocs = sheet.getRange('A10').getValue() === 'Прогресс:'
+    || sheet.getRange('A11').getValue() === 'Обновлено:'
+    || sheet.getRange('A12').getValue() === 'Завершено:'
+    || sheet.getRange('A13').getValue() === 'Замечаний:';
+  const totalsMigrated = sheet.getRange(layout.totalsStartRow, 1).getValue() === 'Итоги расчета';
+  const legacyTotals = sheet.getRange('A14').getValue() === 'Итоги расчета';
+  const issuesMigrated = sheet.getRange(layout.issuesHeaderRow - 1, 1).getValue() === 'Требует внимания'
+    || sheet.getRange(layout.issuesHeaderRow, 1).getValue() === 'Уровень';
+  const legacyIssues = sheet.getRange('A20').getValue() === 'Требует внимания'
+    || sheet.getRange('A21').getValue() === 'Уровень';
+  const lastRow = sheet.getLastRow();
+  const columnCount = Math.max(sheet.getLastColumn(), layout.issueHeaders.length);
+
+  if (!issuesMigrated && (fullLegacyLayout || legacyIssues)) {
+    moveLegacyClaimConstructorBlock_(sheet, 20, lastRow, 3, columnCount);
+  }
+  if (!totalsMigrated && (fullLegacyLayout || legacyTotals)) {
+    moveLegacyClaimConstructorBlock_(sheet, 14, 18, 3, columnCount);
+  }
+  if (!statusMigrated && fullLegacyLayout) {
+    moveLegacyClaimConstructorBlock_(sheet, 9, 13, 3, columnCount);
+  } else if (!statusMigrated && legacyStatusBelowDocs) {
+    moveLegacyClaimConstructorBlock_(sheet, 10, 13, 3, columnCount);
+  }
+  if (!docsRowMigrated) {
     sheet.getRange(layout.outputDoc.labelCell).setValue(layout.outputDoc.label);
   }
 
@@ -152,6 +169,15 @@ function migrateLegacyClaimConstructorLayout_(spreadsheet, sheet, layout) {
   sheet.getRange('B7').clearContent();
   sheet.getRange('A6').clearContent();
   return true;
+}
+
+function moveLegacyClaimConstructorBlock_(sheet, firstRow, lastRow, offset, columnCount) {
+  for (let row = lastRow; row >= firstRow; row--) {
+    const source = sheet.getRange(row, 1, 1, columnCount);
+    const values = source.getValues();
+    sheet.getRange(row + offset, 1, 1, columnCount).setValues(values);
+    source.clearContent();
+  }
 }
 
 function seedClaimConstructorInputsFromLegacyLabels_(spreadsheet, sheet, layout) {
