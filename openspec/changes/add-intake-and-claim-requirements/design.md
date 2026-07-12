@@ -59,6 +59,10 @@ Salary-indexation facts use an explicit normalized adapter field for the pre-ind
 
 Recovery-capable facts also carry adapter-provided source coordinates, the legal due date, the calculation end date, and explicit principal/indexation/material-liability destinations. These fields are traceability and writeback metadata only and never enter the five-part stable key. A destination may replace a formula only when the normalized layout explicitly declares that cell an adapter-owned calculation output; otherwise the formula is preserved and a review warning is emitted. Recovery timing does not alter indexation unless an existing methodology explicitly declares that dependency.
 
+For salary, Article 236 metadata carries the same first-half/second-half debt schedule produced by `buildSalaryDebtSchedule_`, including each segment's legal due date and principal share. Recoveries are allocated chronologically across those outstanding segments in deterministic due-date/order sequence; recovered shares accrue through the recovery date and remaining shares through the calculation end date. A single due date is used only by layouts whose adapter explicitly declares `single_due_date` timing.
+
+Calculation-layout discovery is semantic-first: recognized header/content semantics select the normalized adapter, while a sheet-name pattern is only a narrow hint/fallback. Every matching sheet is processed, including multiple sheets normalized to the same layout. The salary adapter is not a catch-all and cannot claim a sheet that lacks the required salary calculation semantics. 1C:ZUP retains adapter priority without entering the normalized domain identity.
+
 ### 5. Disputed items are included by default
 
 Newly discovered items, including disputed ones, are checked by default. Disputed items show the badge `спорное`. Before each rerender, unchecked five-part keys are captured in a workbook-scoped metadata registry. This preserves the user's choice if a temporary calculation failure makes an item disappear and the same key later returns. Explicitly checking an item removes its key from the registry. Monetary facts and totals are never retained there. New keys after rerun are checked automatically.
@@ -72,6 +76,10 @@ When a changed base affects derivative payments, the system recalculates those d
 Examples include vacation, average-earnings-based payments, and premium calculations whose base depends on corrected salary or underpayment values.
 
 Partial recoveries with a valid date and amount but no reliable allocation target are not applied to any specific principal, material-liability, or indexation total. They are stored in a disputed unallocated-recovery bucket and shown in audit/Docs so the user can allocate them later without silently distorting a base.
+
+The unallocated bucket is rendered as its own selected-by-default audit family with stable five-part keys and the badge `спорное`; it is excluded from the four calculated claim-family totals. Unsupported recovery-timing adjustment of indexation leaves the indexation amount unchanged, marks the existing audit position disputed, and emits one deduplicated methodology warning per affected target.
+
+After base and recovery writebacks, the all-sheets workflow detects semantic derivative dependencies, applies the registry, writes supported effects, and only then performs the final rescan and audit render. Vacation uses the existing reconstructed annual/average-earnings methodology and an explicitly adapter-owned output. Premium derivatives require an explicit existing base/output formula mapping; absent that mapping, the workflow preserves the amount, highlights the review target, and emits a nonblocking warning.
 
 ### 7. Docs write-out creates a new document in the same folder
 

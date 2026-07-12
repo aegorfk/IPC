@@ -4130,7 +4130,8 @@ function stubBatchSessionStartup(harness) {
     periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal', amount: 1000,
     disputed: false, sourceRef: 'Произвольный расчет!7',
     source: { sheetName: 'Произвольный расчет', row: 7 },
-    dueDate: new Date(2026, 0, 1), calculationEndDate: new Date(2026, 0, 31),
+    dueDate: new Date(2026, 0, 1), liabilityTiming: 'single_due_date',
+    calculationEndDate: new Date(2026, 0, 31),
     destinations: {
       principal: { sheetName: 'Произвольный расчет', row: 7, column: 4, adapterOwned: true },
       liability: { sheetName: 'Произвольный расчет', row: 7, column: 9, adapterOwned: true },
@@ -4251,7 +4252,8 @@ function stubBatchSessionStartup(harness) {
     periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal', amount: 1000,
     disputed: false, sourceRef: 'Любая расчетная форма!7',
     source: { sheetName: 'Любая расчетная форма', row: 7 },
-    dueDate: new Date(2026, 0, 1), calculationEndDate: new Date(2026, 0, 31),
+    dueDate: new Date(2026, 0, 1), liabilityTiming: 'single_due_date',
+    calculationEndDate: new Date(2026, 0, 31),
     destinations: {
       principal: { sheetName: 'Любая расчетная форма', row: 7, column: 4, adapterOwned: true },
       liability: { sheetName: 'Любая расчетная форма', row: 7, column: 9, adapterOwned: true },
@@ -4362,6 +4364,239 @@ function stubBatchSessionStartup(harness) {
   const issues = harness.context.aggregateClaimConstructorIssues_(signals);
   assert.strictEqual(issues.at(-1).phase, 'calculating');
   assert.ok(issues.at(-1).reason.includes('не распределено'));
+}
+
+// Task 4 regression: salary recoveries retain the two-part Article 236 schedule.
+{
+  const harness = createHarness();
+  const principal = {
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal', amount: 1000,
+    dueDate: new Date(2026, 0, 10), calculationEndDate: new Date(2026, 0, 31),
+    liabilitySchedule: [
+      { id: 'firstHalf', dueDate: new Date(2026, 0, 10), principal: 400 },
+      { id: 'secondHalf', dueDate: new Date(2026, 0, 20), principal: 600 },
+    ],
+  };
+  const liability = Object.assign({}, principal, {
+    family: 'material_liability', calculationItem: 'article_236', amount: 0,
+  });
+  const key = harness.context.buildStableClaimKey_(principal);
+  const rates = [{ date: new Date(2020, 0, 1), rate: 15 }];
+  const applied = harness.context.applyPartialRecoveries_([principal, liability], {
+    valid: [{ date: new Date(2026, 0, 25), amount: 500, allocation: key }],
+    unallocated: [], invalid: [],
+  }, rates);
+  assert.deepStrictEqual(Array.from(applied.liabilitySegments, (segment) => [
+    segment.schedulePart, segment.principal, harness.context.formatDate_(segment.dueDate), segment.kind,
+  ]), [
+    ['firstHalf', 400, '10.01.2026', 'recovered'],
+    ['secondHalf', 100, '20.01.2026', 'recovered'],
+    ['secondHalf', 500, '20.01.2026', 'outstanding'],
+  ]);
+  const simplified = harness.context.calculateSalaryCompensation_(
+    500, new Date(2026, 0, 10), new Date(2026, 0, 25), rates
+  ).amount + harness.context.calculateSalaryCompensation_(
+    500, new Date(2026, 0, 10), new Date(2026, 0, 31), rates
+  ).amount;
+  assert.notStrictEqual(
+    applied.claimFacts.find((fact) => fact.family === 'material_liability').amount,
+    simplified,
+    'two salary due dates must not collapse to one last/simplified due date'
+  );
+}
+
+// Unallocated recoveries are actual disputed, selected audit rows and do not alter totals.
+{
+  const harness = createHarness();
+  const state = {
+    valid: [], invalid: [],
+    unallocated: [{ rowIndex: 3, date: new Date(2026, 1, 15), amount: 250, allocation: '', disputed: true }],
+  };
+  const effects = harness.context.applyPartialRecoveries_([], state, []);
+  assert.strictEqual(effects.auditFacts.length, 1);
+  const fact = effects.auditFacts[0];
+  assert.strictEqual(fact.disputed, true);
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  harness.context.renderClaimAudit_(sheet, effects.auditFacts);
+  const rows = harness.spreadsheet
+    .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange)
+    .getValues();
+  const rendered = rows.find((row) => row[4] === harness.context.buildStableClaimKey_(fact));
+  assert.deepStrictEqual(Array.from(rendered.slice(0, 4)), [true, fact.baseLabel + ' — 15.02.2026', 'спорное', 250]);
+}
+
+// Formula replacement authority comes only from the layout adapter.
+{
+  const harness = createHarness(['Оклад']);
+  const sheet = harness.spreadsheet.getSheetByName('Оклад');
+  sheet.getRange(2, 1, 1, 18).setValues([[
+    '', '', '', 'Год', 'Мес', '', 'Оклад до индексации', 'Оклад', '', 'Невыплаченный оклад', 'Индексация', 'Пени', '', '', '', '', '', 'Дата выплаты',
+  ]]);
+  const table = harness.context.findTable_(sheet);
+  assert.strictEqual(table.layout.recoveryLiabilityOutput, true);
+  table.layout = Object.assign({}, table.layout, { recoveryLiabilityOutput: false });
+  const metadata = harness.context.buildClaimFactSourceMetadata_(
+    sheet, table, [[null]], new Date(2026, 0, 31), {}
+  )[0];
+  assert.strictEqual(metadata.destinations.liability.adapterOwned, false);
+  sheet.getRange(3, 12).setValue(99).setFormula('=A1');
+  const write = harness.context.writeRecoveryAdjustedResultsToSheets_(harness.spreadsheet, [{
+    destination: metadata.destinations.liability, value: 1, kind: 'liability',
+  }]);
+  assert.strictEqual(write.written, 0);
+  assert.strictEqual(sheet.getRange(3, 12).getFormula(), '=A1');
+  assert.strictEqual(write.warnings[0].code, 'formula_writeback_blocked');
+}
+
+// Unsupported recovery timing never mutates indexation and warns once per target.
+{
+  const harness = createHarness();
+  const principal = {
+    family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+    baseLabel: 'Ежемесячная премия', periodKey: '2026-01', periodLabel: '01.2026',
+    calculationItem: 'principal', amount: 1000, dueDate: new Date(2026, 0, 10),
+    liabilityTiming: 'single_due_date',
+    calculationEndDate: new Date(2026, 0, 31),
+    destinations: { indexation: { recoveryTimingSupported: false } },
+  };
+  const indexation = Object.assign({}, principal, {
+    family: 'underpayment_indexation', calculationItem: 'inflation_indexation', amount: 77,
+  });
+  const key = harness.context.buildStableClaimKey_(principal);
+  const effects = harness.context.applyPartialRecoveries_([principal, indexation], {
+    valid: [
+      { date: new Date(2026, 0, 15), amount: 100, allocation: key },
+      { date: new Date(2026, 0, 20), amount: 100, allocation: key },
+    ], unallocated: [], invalid: [],
+  }, [{ date: new Date(2020, 0, 1), rate: 15 }]);
+  assert.strictEqual(effects.claimFacts.find((fact) => fact.family === 'underpayment_indexation').amount, 77);
+  assert.strictEqual(effects.warnings.filter((warning) => warning.code === 'recovery_indexation_timing_unsupported').length, 1);
+}
+
+// Real discovery is semantic, vendor-neutral, and processes every matching sheet.
+{
+  const harness = createHarness(['Выплаты A', 'Выплаты B', 'Оклад кадровый']);
+  ['Выплаты A', 'Выплаты B'].forEach((name) => {
+    harness.spreadsheet.getSheetByName(name).getRange(1, 1, 1, 9).setValues([[
+      '', 'Размер надлежащей к выплате ежемесячной премии', 'Период', '', '', '',
+      'Недоплата по ежемесячным премиям', 'Сумма индексации недоплаты', 'Пени ст. 236',
+    ]]);
+  });
+  harness.spreadsheet.getSheetByName('Оклад кадровый').getRange(1, 1, 1, 3)
+    .setValues([['Год', 'Месяц', 'Сумма']]);
+  const discovered = harness.spreadsheet.getSheets().map((sheet) => harness.context.resolveSheetLayout_(sheet));
+  assert.deepStrictEqual(Array.from(discovered, (layout) => layout && layout.id), [
+    'monthlyPremiums', 'monthlyPremiums', null,
+  ]);
+  const processed = [];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
+    processed.push(sheet.getName());
+    return { sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 0, skipped: 0, claimFacts: [], totals: {} };
+  };
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.deepStrictEqual(processed, ['Выплаты A', 'Выплаты B']);
+}
+
+// The production orchestrator invokes derivative detection/writeback before the final rescan/audit.
+{
+  const harness = createHarness(['Оклад']);
+  const calls = [];
+  harness.context.resolveSheetLayout_ = () => ({ id: 'salary' });
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: 'Оклад', layoutId: 'salary', calculated: 0, skipped: 0, claimFacts: [], totals: {},
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  harness.context.detectDerivativePaymentDependencies_ = () => { calls.push('detect'); return []; };
+  harness.context.applyDerivativePaymentEffects_ = () => { calls.push('recalculate'); return { writeBacks: [], warnings: [], updatedFacts: [] }; };
+  harness.context.writeDerivativePaymentEffectsToSheets_ = () => { calls.push('write'); return { written: 0, warnings: [] }; };
+  harness.context.renderClaimAudit_ = () => { calls.push('audit'); };
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.deepStrictEqual(calls, ['detect', 'recalculate', 'write', 'audit']);
+}
+
+// Vacation exposes a real adapter-owned derivative through its existing annual-earnings methodology.
+{
+  const harness = createHarness(['Отпуска']);
+  const sheet = harness.spreadsheet.getSheetByName('Отпуска');
+  const layout = harness.context.getSheetLayout_('Отпуска');
+  const table = { headerRow: 1, layout, columns: { correctAnnualSalary: 1 } };
+  const dependencies = harness.context.buildVacationDerivativeDependencies_(
+    sheet, table, [[100]], [[125]]
+  );
+  assert.strictEqual(dependencies.length, 1);
+  assert.strictEqual(dependencies[0].layoutId, 'vacation');
+  assert.strictEqual(dependencies[0].dependencyKind, 'average_earnings');
+  assert.strictEqual(dependencies[0].destination.adapterOwned, true);
+  assert.strictEqual(dependencies[0].recalculate(), 125);
+}
+
+{
+  const harness = createHarness(['Отпуска']);
+  const sheet = harness.spreadsheet.getSheetByName('Отпуска');
+  sheet.getRange(2, 2).setValue(100);
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: 'Отпуска', layoutId: 'vacation', calculated: 1, skipped: 0,
+    totals: {}, claimFacts: [],
+    derivativeDependencies: [{
+      layoutId: 'vacation', dependencyKind: 'average_earnings', baseChanged: true,
+      destination: { sheetName: 'Отпуска', row: 2, column: 2, adapterOwned: true },
+      recalculate: () => 125,
+    }],
+  });
+  harness.context.rescanCalculationResultFromSheet_ = (spreadsheet, result) => result;
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), 125);
+  assert.strictEqual(sheet.getRange(2, 2).getBackground(), '#D9EAD3');
+  assert.strictEqual(results.calculationEffects.derivativeEffects.warnings.length, 0);
+}
+
+{
+  const harness = createHarness(['Ежемесячные']);
+  const sheet = harness.spreadsheet.getSheetByName('Ежемесячные');
+  sheet.getRange(2, 5).setValue(77);
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: 'Ежемесячные', layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+    totals: {}, claimFacts: [],
+  });
+  harness.context.applyPartialRecoveries_ = () => ({
+    claimFacts: [], auditFacts: [], liabilitySegments: [], warnings: [], overpayments: [],
+    unallocated: [], invalid: [],
+    writeBacks: [{
+      destination: { sheetName: 'Ежемесячные', row: 2, column: 5, adapterOwned: true },
+      value: 60, kind: 'principal', note: 'base changed',
+    }],
+  });
+  harness.context.rescanCalculationResultFromSheet_ = (spreadsheet, result) => result;
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 5).getValue(), 60, 'review-only derivative preserves post-recovery amount');
+  assert.strictEqual(sheet.getRange(2, 5).getBackground(), '#FFF2CC');
+  assert.strictEqual(
+    results.calculationEffects.derivativeEffects.warnings[0].code,
+    'derivative_requires_review'
+  );
+}
+
+{
+  const harness = createHarness();
+  const indexation = {
+    family: 'underpayment_indexation', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'inflation_indexation',
+    amount: 77, disputed: false,
+  };
+  const results = [{ claimFacts: [Object.assign({}, indexation)] }];
+  harness.context.applyCalculationEffectFactFlags_(results, {
+    claimFacts: [Object.assign({}, indexation, { amount: 999, disputed: true })],
+  });
+  assert.strictEqual(results[0].claimFacts[0].amount, 77, 'rescan amount remains authoritative');
+  assert.strictEqual(results[0].claimFacts[0].disputed, true, 'methodology dispute survives rescan');
 }
 
 console.log('claim constructor characterization ok');

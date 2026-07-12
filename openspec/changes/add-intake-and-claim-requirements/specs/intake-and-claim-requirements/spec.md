@@ -221,6 +221,44 @@ The system SHALL recalculate supported derivative payments affected by changed b
 - **AND** preserves a formula unless that destination is declared an adapter-owned calculation output
 - **AND** source sheet and cell coordinates remain traceability metadata outside the five-part claim key
 
+#### Scenario: Salary recovery preserves split liability schedule
+- **WHEN** a salary debt period has distinct first-half and second-half due dates and a partial recovery is allocated to that period
+- **THEN** recovery metadata uses the same principal shares and due dates as the existing salary debt schedule
+- **AND** allocates the recovery deterministically across outstanding schedule segments
+- **AND** calculates recovered shares through the recovery date and remaining shares through the calculation end date
+- **AND** does not collapse the result to one due date
+
+#### Scenario: Single due date requires adapter declaration
+- **WHEN** a normalized layout declares `single_due_date` liability timing
+- **THEN** the system may calculate recovery effects from that declared due date
+- **AND** otherwise does not invent a single-date financial mapping
+
+#### Scenario: Formula ownership is explicit for every output family
+- **WHEN** a principal, material-liability, indexation, or derivative destination contains a formula
+- **THEN** replacement occurs only if that layout explicitly declares the corresponding output adapter-owned
+- **AND** otherwise the formula and amount are preserved and a review warning is surfaced
+
+#### Scenario: Unsupported recovery timing leaves indexation unchanged
+- **WHEN** a recovery affects a target whose indexation methodology does not declare recovery-timing support
+- **THEN** indexation remains unchanged
+- **AND** one clear methodology warning is emitted per affected stable target
+- **AND** the issue is surfaced in constructor issues and the audit position is marked disputed
+
+### Requirement: Semantic calculation-sheet discovery
+The system SHALL discover calculation layouts from normalized header/content semantics before using a sheet-name hint and SHALL process every matching sheet.
+
+#### Scenario: Alternate names use semantic headers
+- **WHEN** a calculation sheet has an arbitrary vendor-neutral name and sufficient recognized headers for a supported layout
+- **THEN** the corresponding normalized adapter processes it
+
+#### Scenario: Multiple sheets share one layout
+- **WHEN** two or more sheets normalize to the same supported layout
+- **THEN** every matching sheet is processed independently
+
+#### Scenario: Salary does not claim unrelated content
+- **WHEN** a sheet name does not identify salary and its content lacks the required salary calculation headers
+- **THEN** the salary adapter does not process it
+
 ### Requirement: Selected claim write-out
 The system SHALL provide the final action `Расписать выбранные требования` and SHALL write only selected claim items into a new Google Docs calculation narrative.
 

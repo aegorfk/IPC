@@ -204,6 +204,7 @@ function buildClaimAuditModel_(claimFacts) {
     { family: 'material_liability', label: 'Материальная ответственность' },
     { family: 'salary_indexation', label: 'Индексация заработной платы' },
     { family: 'underpayment_indexation', label: 'Индексация недоплаты' },
+    { family: 'unallocated_recovery', label: 'Нераспределенные погашения', excludedFromClaimTotals: true },
   ];
   const factsByFamily = {};
   familyDefinitions.forEach((definition) => { factsByFamily[definition.family] = new Map(); });
@@ -246,13 +247,16 @@ function buildClaimAuditModel_(claimFacts) {
     return {
       family: definition.family,
       label: definition.label,
+      excludedFromClaimTotals: definition.excludedFromClaimTotals === true,
       total: roundClaimAuditMoney_(items.reduce((sum, item) => sum + item.amount, 0)),
       items,
     };
   }).filter(Boolean);
   return {
     groups,
-    total: roundClaimAuditMoney_(groups.reduce((sum, group) => sum + group.total, 0)),
+    total: roundClaimAuditMoney_(groups.reduce(
+      (sum, group) => sum + (group.excludedFromClaimTotals ? 0 : group.total), 0
+    )),
   };
 }
 

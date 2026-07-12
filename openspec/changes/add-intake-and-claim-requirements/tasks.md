@@ -46,7 +46,7 @@
 - [ ] 6.1 Add layout tests for two normal sheets, normative placeholder placement, and preserved values.
 - [ ] 6.2 Add questionnaire persistence and validation tests.
 - [ ] 6.3 Add audit grouping, disputed-default, and unchecked-selection persistence tests.
-- [ ] 6.4 Add partial recovery and derivative-payment warning tests.
+- [x] 6.4 Add partial recovery and derivative-payment warning tests, including split salary liability schedules, semantic multi-sheet discovery, explicit formula ownership, disputed unallocated audit rows, and unchanged unsupported recovery-timing indexation.
 - [ ] 6.5 Add Docs write-out tests for new-document creation in the same Drive folder.
 - [x] 6.6 Run local tests and strict OpenSpec validation.
 - [ ] 6.7 Push Apps Script changes and smoke-test the working Google Sheet after implementation.

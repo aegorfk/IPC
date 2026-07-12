@@ -318,6 +318,48 @@ const calendar = {
 }
 
 {
+  const row = [];
+  row[0] = 20;
+  row[1] = 20;
+  row[3] = 2024;
+  row[4] = 'мар';
+  row[7] = 20000;
+  row[9] = 2000;
+  const table = {
+    headerRow: 2,
+    layout: context.getSheetLayout_('Оклад'),
+    columns: {
+      workedDays: 0, workDays: 1, year: 3, month: 4,
+      correctAmount: 7, unpaidSalary: 9, totalUnderpayment: 9,
+      target: 10, penalty: 11, paymentDate: 17,
+    },
+  };
+  const inferred = {
+    firstHalf: { day: 20, monthOffset: 0, matches: 3, observations: 3 },
+    secondHalf: { day: 5, monthOffset: 1, matches: 3, observations: 3 },
+  };
+  const metadata = context.buildClaimFactSourceMetadata_(
+    { getName: () => 'Альтернативный payroll' },
+    table,
+    [row],
+    new Date(2024, 3, 30),
+    calendar,
+    inferred
+  )[0];
+  const expectedSchedule = context.buildSalaryDebtSchedule_(row, table, calendar, {
+    totalUnderpayment: 2000,
+    principal: 2000,
+    correctAmount: 20000,
+    inferredPaymentSchedule: inferred,
+  });
+  assert.deepStrictEqual(Array.from(metadata.liabilitySchedule, (segment) => [
+    segment.id, context.formatDate_(segment.dueDate), segment.principal,
+  ]), Array.from(expectedSchedule.slices, (segment) => [
+    segment.id, context.formatDate_(segment.dueDate), segment.underpaymentAmount,
+  ]));
+}
+
+{
   const table = {
     layout: context.getSheetLayout_('Оклад'),
     columns: {
