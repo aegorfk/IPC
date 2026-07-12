@@ -41,6 +41,7 @@ const SETTINGS = {
       targetColumn: 'H',
       totalUnderpaymentColumn: 'G',
       penaltyColumn: 'I',
+      recoveryPrincipalOutput: true,
       unpaidLabel: 'недоплата по ежемесячным премиям',
       totalLabel: 'недоплата по ежемесячным премиям',
       updateMonthlyIpc: false,
@@ -56,6 +57,7 @@ const SETTINGS = {
       targetColumn: 'H',
       totalUnderpaymentColumn: 'G',
       penaltyColumn: 'I',
+      recoveryPrincipalOutput: true,
       unpaidLabel: 'недоплата ежеквартальных премий',
       totalLabel: 'недоплата ежеквартальных премий',
       updateMonthlyIpc: false,
@@ -72,6 +74,7 @@ const SETTINGS = {
       targetColumn: 'K',
       totalUnderpaymentColumn: 'J',
       penaltyColumn: 'L',
+      recoveryPrincipalOutput: true,
       unpaidLabel: 'недоплата по отпускным выплатам',
       totalLabel: 'недоплата по отпускным выплатам',
       updateMonthlyIpc: false,
@@ -87,6 +90,7 @@ const SETTINGS = {
       targetColumn: 'H',
       totalUnderpaymentColumn: 'G',
       penaltyColumn: 'I',
+      recoveryPrincipalOutput: true,
       unpaidLabel: 'недоплата ежегодных премий',
       totalLabel: 'недоплата ежегодных премий',
       updateMonthlyIpc: false,
@@ -105,6 +109,7 @@ const SETTINGS = {
       targetColumn: 'K',
       totalUnderpaymentColumn: 'J',
       penaltyColumn: 'L',
+      recoveryPrincipalOutput: true,
       unpaidLabel: 'недоплата по окладу',
       totalLabel: 'недоплата по окладу',
       updateMonthlyIpc: true,
@@ -266,6 +271,13 @@ function updateAllSheetsIndexation() {
 }
 
 function runAllSheetsIndexation_(spreadsheet) {
+  if (typeof ensureClaimIntakeSheet_ === 'function') ensureClaimIntakeSheet_(spreadsheet);
+  const questionnaireState = typeof captureClaimQuestionnaireState_ === 'function'
+    ? captureClaimQuestionnaireState_(spreadsheet)
+    : { partialRecoveries: [] };
+  const recoveryState = typeof normalizePartialRecoveries_ === 'function'
+    ? normalizePartialRecoveries_(questionnaireState.partialRecoveries || [])
+    : { valid: [], invalid: [], unallocated: [] };
   const sheets = spreadsheet.getSheets();
   const results = [];
   const processedLayouts = new Set();
@@ -278,6 +290,8 @@ function runAllSheetsIndexation_(spreadsheet) {
       sheet = sheets.find(
         (candidate) =>
           !isGeneratedSheetName_(candidate.getName()) &&
+          candidate.getName() !== 'Анкета и требования' &&
+          candidate.getName() !== 'Конструктор' &&
           getSheetLayout_(candidate.getName()).id === layoutId
       );
       if (sheet && !processedLayouts.has(layoutId)) {
@@ -304,6 +318,41 @@ function runAllSheetsIndexation_(spreadsheet) {
   }
 
   deleteLegacyGeneratedSheets_(spreadsheet);
+  let recoveryRates = [];
+  let recoveryRateWarning = null;
+  if (recoveryState.valid.length) {
+    try {
+      recoveryRates = loadSalaryCompensationRates_();
+    } catch (error) {
+      recoveryRateWarning = {
+        code: 'recovery_rates_unavailable',
+        reason: `Не удалось загрузить ставки для перерасчета частичных погашений: ${error.message || error}`,
+      };
+    }
+  }
+  const recoveryEffects = applyPartialRecoveries_(
+    results.reduce((facts, result) => facts.concat(result.claimFacts || []), []),
+    recoveryState,
+    recoveryRates
+  );
+  if (recoveryRateWarning) recoveryEffects.warnings.push(recoveryRateWarning);
+  const recoveryWriteResult = writeRecoveryAdjustedResultsToSheets_(
+    spreadsheet,
+    recoveryEffects.writeBacks
+  );
+  recoveryEffects.warnings = recoveryEffects.warnings.concat(recoveryWriteResult.warnings);
+  if (recoveryWriteResult.written > 0) {
+    SpreadsheetApp.flush();
+    results.forEach((result, index) => {
+      if (!result.error) results[index] = rescanCalculationResultFromSheet_(spreadsheet, result);
+    });
+  }
+  if (results.length && (recoveryState.valid.length
+    || recoveryState.unallocated.length
+    || recoveryEffects.warnings.length)) {
+    results[0].calculationEffects = recoveryEffects;
+  }
+  results.calculationEffects = recoveryEffects;
   if (typeof renderClaimAudit_ === 'function' && typeof ensureClaimIntakeSheet_ === 'function') {
     renderClaimAudit_(
       ensureClaimIntakeSheet_(spreadsheet),
@@ -973,6 +1022,13 @@ function updateUnpaidSalaryIndexationCore_(params) {
     underpaymentValues: refreshedTotalUnderpaymentValues,
     indexationValues: targetValues,
     liabilityValues: penaltyValues,
+    sourceMetadata: buildClaimFactSourceMetadata_(
+      sheet,
+      table,
+      values,
+      penaltyEnd.date,
+      productionCalendar
+    ),
   });
 
   return {
@@ -987,6 +1043,81 @@ function updateUnpaidSalaryIndexationCore_(params) {
     totals,
     claimFacts,
   };
+}
+
+function buildClaimFactSourceMetadata_(sheet, table, rows, calculationEndDate, productionCalendar) {
+  return (rows || []).map((row, rowIndex) => {
+    const sheetRow = table.headerRow + rowIndex + 1;
+    const principalColumn = table.columns.totalUnderpayment + 1;
+    const liabilityColumn = table.columns.penalty + 1;
+    const indexationColumn = table.columns.target + 1;
+    const due = getRowPenaltyDueDate_(row, table, productionCalendar);
+    return {
+      source: {
+        sheetName: sheet.getName(),
+        row: sheetRow,
+        cells: {
+          principal: `${indexToColumnLetter_(principalColumn - 1)}${sheetRow}`,
+          indexation: `${indexToColumnLetter_(indexationColumn - 1)}${sheetRow}`,
+          liability: `${indexToColumnLetter_(liabilityColumn - 1)}${sheetRow}`,
+        },
+      },
+      dueDate: due && due.date,
+      calculationEndDate: calculationEndDate && new Date(calculationEndDate),
+      destinations: {
+        principal: {
+          sheetName: sheet.getName(), row: sheetRow, column: principalColumn,
+          adapterOwned: table.layout.recoveryPrincipalOutput === true,
+        },
+        liability: {
+          sheetName: sheet.getName(), row: sheetRow, column: liabilityColumn, adapterOwned: true,
+        },
+        indexation: {
+          sheetName: sheet.getName(), row: sheetRow, column: indexationColumn, adapterOwned: true,
+          recoveryTimingSupported: false,
+        },
+      },
+    };
+  });
+}
+
+function rescanCalculationResultFromSheet_(spreadsheet, result) {
+  const sheet = spreadsheet.getSheetByName(result.sheetName);
+  if (!sheet) return result;
+  const table = findTable_(sheet);
+  const rowCount = Math.max(0, sheet.getLastRow() - table.headerRow);
+  if (!rowCount) {
+    return Object.assign({}, result, {
+      totals: { underpayment: 0, indexation: 0, liability: 0 },
+      claimFacts: [],
+    });
+  }
+  const rows = sheet.getRange(table.headerRow + 1, 1, rowCount, sheet.getLastColumn()).getValues();
+  const underpaymentValues = sheet
+    .getRange(table.headerRow + 1, table.columns.totalUnderpayment + 1, rowCount, 1).getValues();
+  const indexationValues = sheet
+    .getRange(table.headerRow + 1, table.columns.target + 1, rowCount, 1).getValues();
+  const liabilityValues = sheet
+    .getRange(table.headerRow + 1, table.columns.penalty + 1, rowCount, 1).getValues();
+  const facts = buildClaimFactsFromCalculationRows_({
+    sheetName: sheet.getName(), table, rows, underpaymentValues, indexationValues, liabilityValues,
+  });
+  const previousByKey = new Map((result.claimFacts || []).map((fact) => [
+    buildStableClaimKey_(fact), fact,
+  ]));
+  facts.forEach((fact) => {
+    const previous = previousByKey.get(buildStableClaimKey_(fact));
+    if (!previous) return;
+    ['source', 'dueDate', 'calculationEndDate', 'destinations'].forEach((field) => {
+      if (previous[field] !== undefined) fact[field] = previous[field];
+    });
+  });
+  return Object.assign({}, result, {
+    totals: summarizeClaimConstructorCalculationTotals_(
+      underpaymentValues, indexationValues, liabilityValues
+    ),
+    claimFacts: facts,
+  });
 }
 
 function summarizeClaimConstructorCalculationTotals_(underpaymentValues, indexationValues, liabilityValues) {
@@ -1013,6 +1144,7 @@ function buildClaimFactsFromCalculationRows_(params) {
   rows.forEach((row, rowIndex) => {
     const period = parseRowPeriod_(row, columns);
     if (!period) return;
+    const sourceMetadata = settings.sourceMetadata && settings.sourceMetadata[rowIndex];
     const common = {
       layoutId,
       baseKind: base.kind,
@@ -1022,6 +1154,12 @@ function buildClaimFactsFromCalculationRows_(params) {
       disputed: false,
       sourceRef: `${settings.sheetName || layoutId}!${Number(table.headerRow || 0) + rowIndex + 1}`,
     };
+    if (sourceMetadata) {
+      common.source = sourceMetadata.source;
+      common.dueDate = sourceMetadata.dueDate;
+      common.calculationEndDate = sourceMetadata.calculationEndDate;
+      common.destinations = sourceMetadata.destinations;
+    }
     appendClaimFactIfPositive_(facts, common, 'underpayment', 'principal',
       readClaimFactAmount_(settings.underpaymentValues, rowIndex));
     if (layoutId === 'salary') {
@@ -1063,7 +1201,7 @@ function calculateSalaryIndexationFactAmount_(row, columns) {
 
 function appendClaimFactIfPositive_(facts, common, family, calculationItem, amount) {
   if (amount === null || !Number.isFinite(Number(amount)) || Number(amount) <= 0) return;
-  facts.push({
+  const fact = {
     family,
     layoutId: common.layoutId,
     baseKind: common.baseKind,
@@ -1074,7 +1212,273 @@ function appendClaimFactIfPositive_(facts, common, family, calculationItem, amou
     amount: roundMoney_(Number(amount)),
     disputed: common.disputed === true,
     sourceRef: common.sourceRef,
+  };
+  if (common.source) fact.source = common.source;
+  if (common.dueDate) fact.dueDate = common.dueDate;
+  if (common.calculationEndDate) fact.calculationEndDate = common.calculationEndDate;
+  if (common.destinations) fact.destinations = common.destinations;
+  facts.push(fact);
+}
+
+function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
+  const state = recoveryState || { valid: [], invalid: [], unallocated: [] };
+  const rates = compensationRates || [];
+  const facts = (claimFacts || []).map((fact) => Object.assign({}, fact));
+  const principalByKey = new Map();
+  facts.forEach((fact) => {
+    if (fact.family === 'underpayment' && fact.calculationItem === 'principal') {
+      principalByKey.set(buildStableClaimKey_(fact), fact);
+    }
   });
+  const valid = (state.valid || []).map((recovery, inputOrder) => ({ recovery, inputOrder }));
+  valid.sort((left, right) => {
+    const dateDifference = left.recovery.date.getTime() - right.recovery.date.getTime();
+    return dateDifference || left.inputOrder - right.inputOrder;
+  });
+  const byTarget = new Map();
+  valid.forEach((item) => {
+    if (!byTarget.has(item.recovery.allocation)) byTarget.set(item.recovery.allocation, []);
+    byTarget.get(item.recovery.allocation).push(item.recovery);
+  });
+
+  const warnings = (state.unallocated || []).map((recovery) => ({
+    code: 'unallocated_recovery',
+    disputed: true,
+    recovery,
+    reason: 'Частичное погашение не распределено и не уменьшает расчетные требования.',
+  }));
+  const overpayments = [];
+  const liabilitySegments = [];
+  const writeBacks = [];
+
+  byTarget.forEach((recoveries, targetKey) => {
+    const principal = principalByKey.get(targetKey);
+    if (!principal) {
+      recoveries.forEach((recovery) => warnings.push({
+        code: 'recovery_target_missing', recovery, targetKey,
+        reason: 'Целевое требование частичного погашения не найдено; остальные расчеты продолжены.',
+      }));
+      return;
+    }
+    if (!(principal.dueDate instanceof Date) || !(principal.calculationEndDate instanceof Date)) {
+      warnings.push({
+        code: 'recovery_dates_missing', targetKey,
+        reason: 'Для требования не заданы адаптером срок выплаты и дата окончания расчета.',
+      });
+      return;
+    }
+    if (!rates.length) {
+      warnings.push({
+        code: 'recovery_rates_missing', targetKey,
+        reason: 'Перерасчет частичного погашения пропущен: ставки ст. 236 ТК РФ не переданы в чистое расчетное ядро.',
+      });
+      return;
+    }
+    const initialPrincipal = Number(principal.amount) || 0;
+    let outstanding = initialPrincipal;
+    recoveries.forEach((recovery) => {
+      if (recovery.date > principal.calculationEndDate) {
+        warnings.push({
+          code: 'recovery_after_calculation_end', recovery, targetKey,
+          reason: 'Погашение позже даты окончания расчета не изменяет сумму на эту дату.',
+        });
+        return;
+      }
+      const applied = Math.min(outstanding, Number(recovery.amount) || 0);
+      if (applied > 0) {
+        const result = calculateSalaryCompensation_(
+          applied, principal.dueDate, recovery.date, rates
+        );
+        liabilitySegments.push({
+          targetKey,
+          kind: 'recovered',
+          principal: roundMoney_(applied),
+          dueDate: new Date(principal.dueDate),
+          endDate: new Date(recovery.date),
+          amount: result.amount,
+          intervals: result.intervals,
+        });
+        outstanding = roundMoney_(outstanding - applied);
+      }
+      const remainder = roundMoney_((Number(recovery.amount) || 0) - applied);
+      if (remainder > 0) {
+        const overpayment = { recovery, targetKey, applied: roundMoney_(applied), remainder };
+        overpayments.push(overpayment);
+        warnings.push({
+          code: 'recovery_overpayment',
+          overpayment,
+          reason: `Погашение превышает остаток требования на ${formatMoneyRu_(remainder, 2)}; остаток требует проверки.`,
+        });
+      }
+    });
+    if (outstanding > 0) {
+      const result = calculateSalaryCompensation_(
+        outstanding, principal.dueDate, principal.calculationEndDate, rates
+      );
+      liabilitySegments.push({
+        targetKey,
+        kind: 'outstanding',
+        principal: outstanding,
+        dueDate: new Date(principal.dueDate),
+        endDate: new Date(principal.calculationEndDate),
+        amount: result.amount,
+        intervals: result.intervals,
+      });
+    }
+    principal.amount = outstanding;
+    const relatedLiability = facts.find((fact) => fact.family === 'material_liability'
+      && fact.layoutId === principal.layoutId
+      && fact.baseKind === principal.baseKind
+      && fact.periodKey === principal.periodKey
+      && fact.calculationItem === 'article_236');
+    const liabilityAmount = roundMoney_(liabilitySegments
+      .filter((segment) => segment.targetKey === targetKey)
+      .reduce((sum, segment) => sum + segment.amount, 0));
+    if (relatedLiability) relatedLiability.amount = liabilityAmount;
+    const explanation = `Частичное погашение учтено хронологически. Исходная сумма: ${formatMoneyRu_(initialPrincipal, 2)}; остаток: ${formatMoneyRu_(outstanding, 2)}. Материальная ответственность по ст. 236 ТК РФ пересчитана до дат погашений и даты окончания расчета.`;
+    if (principal.destinations && principal.destinations.principal) {
+      writeBacks.push({
+        destination: principal.destinations.principal,
+        value: outstanding,
+        kind: 'principal',
+        note: explanation,
+      });
+    }
+    const liabilityDestination = principal.destinations && principal.destinations.liability
+      || relatedLiability && relatedLiability.destinations && relatedLiability.destinations.liability;
+    if (liabilityDestination) {
+      writeBacks.push({
+        destination: liabilityDestination,
+        value: liabilityAmount,
+        kind: 'liability',
+        note: explanation,
+      });
+    }
+  });
+
+  return {
+    claimFacts: facts.filter((fact) => Number(fact.amount) > 0),
+    liabilitySegments,
+    writeBacks,
+    warnings,
+    overpayments,
+    unallocated: state.unallocated || [],
+    invalid: state.invalid || [],
+  };
+}
+
+function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks) {
+  const result = { written: 0, warnings: [] };
+  (writeBacks || []).forEach((writeBack) => {
+    const destination = writeBack.destination || {};
+    const sheet = spreadsheet.getSheetByName(destination.sheetName);
+    if (!sheet || !destination.row || !destination.column) {
+      result.warnings.push({ code: 'writeback_destination_missing', writeBack });
+      return;
+    }
+    const range = sheet.getRange(destination.row, destination.column);
+    const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
+    if (formula && destination.adapterOwned !== true) {
+      result.warnings.push({
+        code: 'formula_writeback_blocked', writeBack,
+        reason: 'Формула сохранена: адаптер не объявил ячейку собственным расчетным выходом.',
+      });
+      return;
+    }
+    range.setValue(writeBack.value).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    if (typeof range.setNote === 'function') {
+      range.setNote(mergeCalculationEffectNote_(range.getNote(),
+        `Частичное погашение. ${writeBack.note || ''}`));
+    }
+    result.written++;
+  });
+  return result;
+}
+
+function getDerivativePaymentDependencyRegistry_() {
+  return {
+    'vacation|average_earnings': { supported: true, calculation: 'existing_vacation_methodology' },
+    'averageEarnings|average_earnings': { supported: true, calculation: 'existing_average_earnings_methodology' },
+  };
+}
+
+function applyDerivativePaymentEffects_(dependencies) {
+  const registry = getDerivativePaymentDependencyRegistry_();
+  const result = { updatedFacts: [], warnings: [], writeBacks: [] };
+  (dependencies || []).forEach((dependency) => {
+    if (!dependency || dependency.baseChanged !== true) return;
+    const key = `${dependency.layoutId}|${dependency.dependencyKind}`;
+    const definition = registry[key];
+    if (!definition || typeof dependency.recalculate !== 'function') {
+      const warning = {
+        code: 'derivative_requires_review',
+        layoutId: dependency.layoutId,
+        dependencyKind: dependency.dependencyKind,
+        reason: 'Зависимость производной выплаты неоднозначна; сумма не рассчитана и требует проверки.',
+      };
+      result.warnings.push(warning);
+      result.writeBacks.push({
+        destination: dependency.destination,
+        reviewOnly: true,
+        note: warning.reason,
+      });
+      return;
+    }
+    const amount = roundMoney_(Number(dependency.recalculate()));
+    if (!Number.isFinite(amount)) {
+      result.warnings.push({
+        code: 'derivative_calculation_invalid',
+        reason: 'Существующая методология не вернула числовой результат.',
+      });
+      return;
+    }
+    const fact = Object.assign({}, dependency.fact || {}, { amount, updated: true });
+    result.updatedFacts.push(fact);
+    result.writeBacks.push({
+      destination: dependency.destination,
+      value: amount,
+      kind: 'derivative',
+      note: 'Производная выплата изменена из-за изменения расчетной базы.',
+    });
+  });
+  return result;
+}
+
+function writeDerivativePaymentEffectsToSheets_(spreadsheet, writeBacks) {
+  const result = { written: 0, warnings: [] };
+  (writeBacks || []).forEach((writeBack) => {
+    const destination = writeBack.destination || {};
+    const sheet = spreadsheet.getSheetByName(destination.sheetName);
+    if (!sheet || !destination.row || !destination.column) {
+      result.warnings.push({ code: 'writeback_destination_missing', writeBack });
+      return;
+    }
+    const range = sheet.getRange(destination.row, destination.column);
+    const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
+    if (formula && destination.adapterOwned !== true) {
+      result.warnings.push({ code: 'formula_writeback_blocked', writeBack });
+      return;
+    }
+    if (writeBack.reviewOnly) {
+      range.setBackground('#FFF2CC');
+    } else {
+      range.setValue(writeBack.value)
+        .setNumberFormat(SETTINGS.MONEY_FORMAT)
+        .setBackground('#D9EAD3');
+      result.written++;
+    }
+    if (typeof range.setNote === 'function') {
+      range.setNote(mergeCalculationEffectNote_(range.getNote(), writeBack.note || ''));
+    }
+  });
+  return result;
+}
+
+function mergeCalculationEffectNote_(existingNote, ownedNote) {
+  const existing = String(existingNote || '').trim();
+  const addition = String(ownedNote || '').trim();
+  if (!addition || existing.indexOf(addition) >= 0) return existing;
+  return existing ? `${existing}\n${addition}` : addition;
 }
 
 function findTable_(sheet) {
@@ -2160,21 +2564,34 @@ function writeClaimCalculationResultToSheet_(sheetOrSpreadsheet, result, labelVa
   written += writeFirstLabeledValue_(effectiveLabelValues, [
     'сумма отпуска',
     'сумма отпуск',
-  ], result.vacationAmount, buildClaimCalculationSheetNote_(result, 'vacation'));
+  ], result.vacationAmount, buildClaimCalculationSheetNote_(result, 'vacation'), {
+    derivativeDependency: 'average_earnings',
+  });
   return written;
 }
 
-function writeFirstLabeledValue_(labelValues, aliases, value, note) {
+function writeFirstLabeledValue_(labelValues, aliases, value, note, options) {
   const entry = findFirstLabelEntry_(labelValues, aliases, false);
   if (!entry || !entry.sheet) {
     return 0;
   }
-  const range = entry.sheet
-    .getRange(entry.row + 1, entry.column + 2)
-    .setValue(value)
-    .setNumberFormat(SETTINGS.MONEY_FORMAT);
+  const range = entry.sheet.getRange(entry.row + 1, entry.column + 2);
+  const previousValue = typeof range.getValue === 'function' ? range.getValue() : null;
+  const previousNote = typeof range.getNote === 'function' ? range.getNote() : '';
+  const changed = parseMoney_(previousValue) !== null
+    && roundMoney_(parseMoney_(previousValue)) !== roundMoney_(Number(value));
+  range.setValue(value).setNumberFormat(SETTINGS.MONEY_FORMAT);
   if (note && range.setNote) {
-    range.setNote(note);
+    range.setNote(mergeCalculationEffectNote_(previousNote, note));
+  }
+  if (changed && options && options.derivativeDependency) {
+    if (typeof range.setBackground === 'function') range.setBackground('#D9EAD3');
+    if (typeof range.setNote === 'function') {
+      range.setNote(mergeCalculationEffectNote_(
+        range.getNote(),
+        'Производная выплата изменена из-за изменения расчетной базы.'
+      ));
+    }
   }
   return 1;
 }

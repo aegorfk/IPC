@@ -746,6 +746,7 @@ function aggregateClaimConstructorIssues_(signals) {
   appendClaimConstructorSignalIssues_(issues, values.diagnosticIssues, 'importing');
   appendClaimConstructorSignalIssues_(issues, values.reconstructionIssues, 'reconstructing');
   appendClaimConstructorSignalIssues_(issues, values.skippedCalculationIssues, 'calculating');
+  appendClaimConstructorSignalIssues_(issues, values.calculationEffectIssues, 'calculating');
   return issues;
 }
 
@@ -1303,12 +1304,28 @@ function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult,
         : `При расчете пропущено ${result.skipped} строк.`,
       reviewStatus: result.error ? 'ошибка расчета' : 'частичный расчет',
     }));
+  const calculationEffects = calculationResults && (
+    calculationResults.calculationEffects
+    || (calculationResults.find && calculationResults.find((result) => result.calculationEffects) || {})
+      .calculationEffects
+  );
+  const calculationEffectIssues = calculationEffects && calculationEffects.warnings
+    ? calculationEffects.warnings.map((warning) => ({
+        source: warning.targetKey || '',
+        reason: warning.reason || warning.code,
+        reviewStatus: warning.code === 'unallocated_recovery'
+          ? 'спорное нераспределенное погашение'
+          : 'требует проверки',
+        sourceKind: 'calculation_sheet',
+      }))
+    : [];
   return {
     qualityGateRows,
     vlmRows,
     diagnosticIssues,
     reconstructionIssues,
     skippedCalculationIssues,
+    calculationEffectIssues,
   };
 }
 

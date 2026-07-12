@@ -4123,6 +4123,247 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(rendered.find((row) => row[4])[4], harness.context.buildStableClaimKey_(claimFact));
 }
 
+{
+  const harness = createHarness(['Произвольный расчет']);
+  const principal = {
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal', amount: 1000,
+    disputed: false, sourceRef: 'Произвольный расчет!7',
+    source: { sheetName: 'Произвольный расчет', row: 7 },
+    dueDate: new Date(2026, 0, 1), calculationEndDate: new Date(2026, 0, 31),
+    destinations: {
+      principal: { sheetName: 'Произвольный расчет', row: 7, column: 4, adapterOwned: true },
+      liability: { sheetName: 'Произвольный расчет', row: 7, column: 9, adapterOwned: true },
+    },
+  };
+  const liability = Object.assign({}, principal, {
+    family: 'material_liability', calculationItem: 'article_236', amount: 3,
+  });
+  const key = harness.context.buildStableClaimKey_(principal);
+  const recoveries = {
+    valid: [
+      { rowIndex: 1, date: new Date(2026, 0, 21), amount: 400, allocation: key },
+      { rowIndex: 0, date: new Date(2026, 0, 11), amount: 300, allocation: key },
+    ],
+    unallocated: [{ rowIndex: 2, date: new Date(2026, 0, 15), amount: 50, allocation: '', disputed: true }],
+    invalid: [{ rowIndex: 3, date: null, amount: 10, allocation: key, errors: ['bad date'] }],
+  };
+  const original = JSON.stringify([principal, liability]);
+  const applied = harness.context.applyPartialRecoveries_([principal, liability], recoveries, [{
+    date: new Date(2020, 0, 1), rate: 15,
+  }]);
+
+  assert.strictEqual(JSON.stringify([principal, liability]), original, 'pure recovery core must not mutate facts');
+  assert.strictEqual(applied.claimFacts.find((fact) => fact.family === 'underpayment').amount, 300);
+  assert.strictEqual(applied.claimFacts.find((fact) => fact.family === 'material_liability').amount, 20);
+  assert.deepStrictEqual(Array.from(applied.liabilitySegments, (item) => [
+    item.principal,
+    `${item.endDate.getFullYear()}-${String(item.endDate.getMonth() + 1).padStart(2, '0')}-${String(item.endDate.getDate()).padStart(2, '0')}`,
+    item.amount,
+  ]), [
+    [300, '2026-01-11', 3],
+    [400, '2026-01-21', 8],
+    [300, '2026-01-31', 9],
+  ]);
+  assert.strictEqual(applied.unallocated.length, 1);
+  assert.strictEqual(applied.warnings.filter((item) => item.code === 'unallocated_recovery').length, 1);
+  assert.strictEqual(applied.invalid.length, 1);
+  assert.strictEqual(applied.writeBacks.length, 2);
+
+  const overpaid = harness.context.applyPartialRecoveries_([principal, liability], {
+    valid: [{ rowIndex: 0, date: new Date(2026, 0, 11), amount: 1200, allocation: key }],
+    unallocated: [], invalid: [],
+  }, [{ date: new Date(2020, 0, 1), rate: 15 }]);
+  assert.strictEqual(overpaid.claimFacts.find((fact) => fact.family === 'underpayment'), undefined);
+  assert.strictEqual(overpaid.overpayments[0].remainder, 200);
+  assert.strictEqual(overpaid.warnings[0].code, 'recovery_overpayment');
+
+  harness.context.loadSalaryCompensationRates_ = () => { throw new Error('pure core loaded external rates'); };
+  const missingRates = harness.context.applyPartialRecoveries_([principal, liability], {
+    valid: [{ rowIndex: 0, date: new Date(2026, 0, 11), amount: 100, allocation: key }],
+    unallocated: [], invalid: [],
+  });
+  assert.strictEqual(missingRates.claimFacts.find((fact) => fact.family === 'underpayment').amount, 1000);
+  assert.strictEqual(missingRates.warnings[0].code, 'recovery_rates_missing');
+}
+
+{
+  const harness = createHarness(['Произвольный расчет']);
+  const sheet = harness.spreadsheet.getSheetByName('Произвольный расчет');
+  sheet.getRange(7, 4).setValue(1000);
+  sheet.getRange(7, 9).setValue(3);
+  const result = harness.context.writeRecoveryAdjustedResultsToSheets_(harness.spreadsheet, [
+    { destination: { sheetName: 'Произвольный расчет', row: 7, column: 4, adapterOwned: true }, value: 300, kind: 'principal', note: 'recovery note' },
+    { destination: { sheetName: 'Произвольный расчет', row: 7, column: 9, adapterOwned: true }, value: 2, kind: 'liability', note: 'liability note' },
+  ]);
+  assert.strictEqual(result.written, 2);
+  assert.strictEqual(sheet.getRange(7, 4).getValue(), 300);
+  assert.ok(sheet.getRange(7, 9).getNote().includes('Частичное погашение'));
+
+  sheet.getRange(8, 4).setValue(999).setFormula('=A1');
+  const protectedResult = harness.context.writeRecoveryAdjustedResultsToSheets_(harness.spreadsheet, [{
+    destination: { sheetName: 'Произвольный расчет', row: 8, column: 4, adapterOwned: false },
+    value: 1, kind: 'principal', note: 'must not replace',
+  }]);
+  assert.strictEqual(sheet.getRange(8, 4).getFormula(), '=A1');
+  assert.strictEqual(sheet.getRange(8, 4).getValue(), 999);
+  assert.strictEqual(protectedResult.warnings[0].code, 'formula_writeback_blocked');
+}
+
+{
+  const harness = createHarness(['Производные выплаты']);
+  harness.spreadsheet.getSheetByName('Производные выплаты').getRange(3, 5).setValue(77);
+  const effects = harness.context.applyDerivativePaymentEffects_([
+    {
+      layoutId: 'vacation', dependencyKind: 'average_earnings', baseChanged: true,
+      currentAmount: 100, recalculate: () => 125,
+      destination: { sheetName: 'Производные выплаты', row: 2, column: 5, adapterOwned: true },
+      fact: { family: 'underpayment', layoutId: 'vacation', baseKind: 'vacation', periodKey: '2026-02', calculationItem: 'principal' },
+    },
+    {
+      layoutId: 'monthlyPremiums', dependencyKind: 'ambiguous_premium_base', baseChanged: true,
+      destination: { sheetName: 'Производные выплаты', row: 3, column: 5, adapterOwned: true },
+    },
+  ]);
+  assert.strictEqual(effects.writeBacks.length, 2);
+  assert.strictEqual(effects.updatedFacts[0].amount, 125);
+  assert.strictEqual(effects.warnings[0].code, 'derivative_requires_review');
+  const first = harness.context.writeDerivativePaymentEffectsToSheets_(harness.spreadsheet, effects.writeBacks);
+  const second = harness.context.writeDerivativePaymentEffectsToSheets_(harness.spreadsheet, effects.writeBacks);
+  const sheet = harness.spreadsheet.getSheetByName('Производные выплаты');
+  assert.strictEqual(first.written, 1);
+  assert.strictEqual(second.written, 1, 'repeat write remains idempotent');
+  assert.strictEqual(sheet.getRange(2, 5).getValue(), 125);
+  assert.strictEqual(sheet.getRange(2, 5).getBackground(), '#D9EAD3');
+  assert.ok(sheet.getRange(2, 5).getNote().includes('изменения расчетной базы'));
+  assert.strictEqual(sheet.getRange(3, 5).getValue(), 77, 'unsupported dependency must preserve existing amount');
+  assert.strictEqual(sheet.getRange(3, 5).getBackground(), '#FFF2CC');
+  assert.ok(sheet.getRange(3, 5).getNote().includes('требует проверки'));
+}
+
+{
+  const harness = createHarness(['Любая расчетная форма']);
+  const sheet = harness.spreadsheet.getSheetByName('Любая расчетная форма');
+  sheet.getRange(7, 4).setValue(1000);
+  sheet.getRange(7, 9).setValue(30);
+  const principal = {
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal', amount: 1000,
+    disputed: false, sourceRef: 'Любая расчетная форма!7',
+    source: { sheetName: 'Любая расчетная форма', row: 7 },
+    dueDate: new Date(2026, 0, 1), calculationEndDate: new Date(2026, 0, 31),
+    destinations: {
+      principal: { sheetName: 'Любая расчетная форма', row: 7, column: 4, adapterOwned: true },
+      liability: { sheetName: 'Любая расчетная форма', row: 7, column: 9, adapterOwned: true },
+    },
+  };
+  const liability = Object.assign({}, principal, {
+    family: 'material_liability', calculationItem: 'article_236', amount: 30,
+  });
+  const key = harness.context.buildStableClaimKey_(principal);
+  let questionnaireCaptured = false;
+  let rescannedAfterWrite = false;
+  harness.context.captureClaimQuestionnaireState_ = () => {
+    questionnaireCaptured = true;
+    return { partialRecoveries: [[true, '11.01.2026', 400, key]] };
+  };
+  harness.context.loadSalaryCompensationRates_ = () => [{ date: new Date(2020, 0, 1), rate: 15 }];
+  harness.context.isGeneratedSheetName_ = () => false;
+  harness.context.getSheetLayout_ = () => ({ id: 'salary' });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    assert.strictEqual(questionnaireCaptured, true, 'questionnaire must be captured before base calculation');
+    return {
+      sheetName: 'Любая расчетная форма', layoutId: 'salary', calculated: 1, skipped: 0,
+      totals: { underpayment: 1000, indexation: 0, liability: 30 },
+      claimFacts: [principal, liability],
+    };
+  };
+  harness.context.rescanCalculationResultFromSheet_ = (spreadsheet, result) => {
+    rescannedAfterWrite = sheet.getRange(7, 4).getValue() === 600;
+    return Object.assign({}, result, {
+      totals: { underpayment: sheet.getRange(7, 4).getValue(), indexation: 0, liability: sheet.getRange(7, 9).getValue() },
+      claimFacts: [
+        Object.assign({}, principal, { amount: sheet.getRange(7, 4).getValue() }),
+        Object.assign({}, liability, { amount: sheet.getRange(7, 9).getValue() }),
+      ],
+    });
+  };
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(rescannedAfterWrite, true);
+  assert.strictEqual(results[0].totals.underpayment, 600);
+  assert.strictEqual(results[0].totals.liability, 22);
+  assert.strictEqual(results[0].calculationEffects.liabilitySegments.length, 2,
+    'effects must remain serializable with the calculation result');
+  const auditRows = harness.spreadsheet
+    .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange)
+    .getValues();
+  assert.strictEqual(auditRows.find((row) => row[4] === key)[3], 600, 'audit consumes rescanned Sheets fact');
+  assert.strictEqual(results.calculationEffects.unallocated.length, 0);
+}
+
+{
+  const harness = createHarness();
+  const dueDate = new Date(2026, 1, 5);
+  const endDate = new Date(2026, 2, 31);
+  const facts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Любая форма',
+    table: { headerRow: 4, layout: { id: 'monthlyPremiums' }, columns: { period: 0 } },
+    rows: [['Февраль 2026']], underpaymentValues: [[100]], indexationValues: [[10]], liabilityValues: [[5]],
+    sourceMetadata: [{
+      source: { sheetName: 'Любая форма', row: 5, cells: { principal: 'D5', liability: 'I5' } },
+      dueDate, calculationEndDate: endDate,
+      destinations: {
+        principal: { sheetName: 'Любая форма', row: 5, column: 4, adapterOwned: true },
+        liability: { sheetName: 'Любая форма', row: 5, column: 9, adapterOwned: true },
+      },
+    }],
+  });
+  const principal = facts.find((fact) => fact.family === 'underpayment');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(principal.source)), {
+    sheetName: 'Любая форма', row: 5, cells: { principal: 'D5', liability: 'I5' },
+  });
+  assert.strictEqual(principal.dueDate, dueDate);
+  assert.strictEqual(principal.calculationEndDate, endDate);
+  assert.strictEqual(principal.destinations.principal.column, 4);
+  assert.strictEqual(harness.context.buildStableClaimKey_(principal).split('|').length, 5);
+}
+
+{
+  const harness = createHarness(['Итоги']);
+  const sheet = harness.spreadsheet.getSheetByName('Итоги');
+  sheet.getRange(1, 2).setValue(20).setBackground('#ABCDEF').setNote('Пользовательская заметка');
+  const result = {
+    wageAmount: 100, penaltyAmount: 10, vacationAmount: 25,
+    averageDailyEarning: 5, startDate: new Date(2026, 0, 1), endDate: new Date(2026, 0, 31),
+    workingDays: 20, vacationDays: 5,
+  };
+  const written = harness.context.writeClaimCalculationResultToSheet_(sheet, result, [{
+    sheet, row: 0, column: 0, label: 'сумма отпуска', values: [20],
+  }]);
+  assert.strictEqual(written, 1);
+  assert.strictEqual(sheet.getRange(1, 2).getValue(), 25);
+  assert.strictEqual(sheet.getRange(1, 2).getBackground(), '#D9EAD3');
+  assert.ok(sheet.getRange(1, 2).getNote().includes('Пользовательская заметка'));
+  assert.ok(sheet.getRange(1, 2).getNote().includes('изменения расчетной базы'));
+}
+
+{
+  const harness = createHarness();
+  const results = [];
+  results.calculationEffects = {
+    warnings: [{ code: 'unallocated_recovery', reason: 'Погашение не распределено.' }],
+  };
+  const signals = harness.context.collectClaimConstructorIssueSignals_(
+    harness.spreadsheet, {}, results
+  );
+  assert.strictEqual(signals.calculationEffectIssues.length, 1);
+  const issues = harness.context.aggregateClaimConstructorIssues_(signals);
+  assert.strictEqual(issues.at(-1).phase, 'calculating');
+  assert.ok(issues.at(-1).reason.includes('не распределено'));
+}
+
 console.log('claim constructor characterization ok');
 
 module.exports = {

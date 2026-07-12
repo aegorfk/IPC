@@ -57,6 +57,8 @@ Claim identity is vendor- and employer-neutral. Facts and stable keys use exactl
 
 Salary-indexation facts use an explicit normalized adapter field for the pre-indexation salary column (or an equivalent direct indexation amount source). The resolver places that semantic field in `table.columns`; fact generation never assumes that the cell immediately left of the corrected amount has this meaning. If the adapter cannot provide the semantic mapping, no salary-indexation fact is fabricated.
 
+Recovery-capable facts also carry adapter-provided source coordinates, the legal due date, the calculation end date, and explicit principal/indexation/material-liability destinations. These fields are traceability and writeback metadata only and never enter the five-part stable key. A destination may replace a formula only when the normalized layout explicitly declares that cell an adapter-owned calculation output; otherwise the formula is preserved and a review warning is emitted. Recovery timing does not alter indexation unless an existing methodology explicitly declares that dependency.
+
 ### 5. Disputed items are included by default
 
 Newly discovered items, including disputed ones, are checked by default. Disputed items show the badge `спорное`. Before each rerender, unchecked five-part keys are captured in a workbook-scoped metadata registry. This preserves the user's choice if a temporary calculation failure makes an item disappear and the same key later returns. Explicitly checking an item removes its key from the registry. Monetary facts and totals are never retained there. New keys after rerun are checked automatically.

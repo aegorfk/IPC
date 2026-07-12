@@ -27,10 +27,10 @@
 
 ## 4. Calculation Effects
 
-- [ ] 4.1 Apply valid partial recoveries to the selected bases and affected material-liability calculations.
-- [ ] 4.2 Place unknown-allocation partial recoveries in a disputed unallocated bucket without reducing allocated totals.
-- [ ] 4.3 Recalculate supported derivative payments when their base changes.
-- [ ] 4.4 Highlight affected derivative-payment rows with fill and explanation without blocking other calculations.
+- [x] 4.1 Apply valid partial recoveries to the selected bases and affected material-liability calculations.
+- [x] 4.2 Place unknown-allocation partial recoveries in a disputed unallocated bucket without reducing allocated totals.
+- [x] 4.3 Recalculate supported derivative payments when their base changes.
+- [x] 4.4 Highlight affected derivative-payment rows with fill and explanation without blocking other calculations.
 
 ## 5. Docs Write-Out
 

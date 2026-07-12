@@ -215,6 +215,12 @@ The system SHALL recalculate supported derivative payments affected by changed b
 - **THEN** the system marks the item for review
 - **AND** continues unrelated calculations
 
+#### Scenario: Recovery writeback uses explicit adapter ownership
+- **WHEN** a recovery changes a principal or material-liability amount
+- **THEN** the system writes only to the normalized adapter's explicit destination
+- **AND** preserves a formula unless that destination is declared an adapter-owned calculation output
+- **AND** source sheet and cell coordinates remain traceability metadata outside the five-part claim key
+
 ### Requirement: Selected claim write-out
 The system SHALL provide the final action `Расписать выбранные требования` and SHALL write only selected claim items into a new Google Docs calculation narrative.
 
