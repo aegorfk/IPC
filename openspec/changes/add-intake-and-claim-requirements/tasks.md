@@ -34,12 +34,12 @@
 
 ## 5. Docs Write-Out
 
-- [ ] 5.1 Rename the final action to `Расписать выбранные требования`.
-- [ ] 5.2 Implement selected-claim payload generation including selections, disputed flags, partial recoveries, chosen average earnings scenario, and derivative-payment warnings.
-- [ ] 5.3 Create a new Google Docs file on every write-out run.
-- [ ] 5.4 Place each new Docs file in the same Google Drive folder as the current or previously generated calculation document.
-- [ ] 5.5 Fail with a corrective message if the current or previous calculation-document folder cannot be resolved.
-- [ ] 5.6 Store generated Docs history without overwriting previous document links.
+- [x] 5.1 Rename the final action to `Расписать выбранные требования`.
+- [x] 5.2 Implement selected-claim payload generation including selections, disputed flags, partial recoveries, chosen average earnings scenario, and derivative-payment warnings.
+- [x] 5.3 Create a new Google Docs file on every write-out run.
+- [x] 5.4 Place each new Docs file in the same Google Drive folder as the current or previously generated calculation document.
+- [x] 5.5 Fail with a corrective message if the current or previous calculation-document folder cannot be resolved.
+- [x] 5.6 Store generated Docs history without overwriting previous document links.
 
 ## 6. Tests And Validation
 
