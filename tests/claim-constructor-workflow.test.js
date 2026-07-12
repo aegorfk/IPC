@@ -402,6 +402,7 @@ class FakeSheet {
 
 class FakeSpreadsheet {
   constructor(sheetNames) {
+    this.title = 'Расчет требований';
     this.sheets = sheetNames.map((name, index) => new FakeSheet(name, index + 100));
     this.sheets.forEach((sheet) => { sheet.spreadsheet = this; });
     this.activeSheet = this.sheets[0] || null;
@@ -557,17 +558,34 @@ function createHarness(sheetNames = ['Оклад']) {
       Spreadsheets: {
         get(spreadsheetId, options) {
           assert.strictEqual(spreadsheetId, spreadsheet.getId());
-          assert.strictEqual(options && options.fields, 'spreadsheetId');
+          assert.strictEqual(
+            options && options.fields, 'spreadsheetId,properties(title)'
+          );
           spreadsheet.serviceCalls.sheetsGets =
             (spreadsheet.serviceCalls.sheetsGets || 0) + 1;
           if (spreadsheet.failSheetsGetError) throw spreadsheet.failSheetsGetError;
-          return { spreadsheetId };
+          return { spreadsheetId, properties: { title: spreadsheet.title } };
         },
         batchUpdate(resource, spreadsheetId) {
           assert.strictEqual(spreadsheetId, spreadsheet.getId());
           spreadsheet.serviceCalls.sheetsBatchUpdates =
             (spreadsheet.serviceCalls.sheetsBatchUpdates || 0) + 1;
           const requests = resource && resource.requests || [];
+          const preflightRequest = requests.length === 1
+            ? requests[0].updateSpreadsheetProperties : null;
+          if (preflightRequest) {
+            spreadsheet.serviceCalls.sheetsPreflightBatchUpdates =
+              (spreadsheet.serviceCalls.sheetsPreflightBatchUpdates || 0) + 1;
+            assert.strictEqual(resource.includeSpreadsheetInResponse, false);
+            assert.strictEqual(preflightRequest.fields, 'title');
+            assert.strictEqual(preflightRequest.properties.title, spreadsheet.title);
+            if (spreadsheet.failSheetsPreflightBatchUpdateError) {
+              throw spreadsheet.failSheetsPreflightBatchUpdateError;
+            }
+            return {};
+          }
+          spreadsheet.serviceCalls.sheetsRestoreBatchUpdates =
+            (spreadsheet.serviceCalls.sheetsRestoreBatchUpdates || 0) + 1;
           spreadsheet.serviceCalls.sheetsUpdateCellsRequests =
             (spreadsheet.serviceCalls.sheetsUpdateCellsRequests || 0) + requests.length;
           if (spreadsheet.failSheetsBatchUpdateOnce) {
@@ -5642,6 +5660,10 @@ function stubBatchSessionStartup(harness) {
   assert.ok(harness.spreadsheet.getRangeByName(
     harness.context.getClaimIntakeLayout_().claimSelections.namedRange
   ), 'setup named ranges remain valid');
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsGets, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsPreflightBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsRestoreBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsBatchUpdates, 2);
 }
 
 function assertRollbackPreflightFailurePreservesRunState(configureFailure, expectedError) {
@@ -5681,6 +5703,7 @@ function assertRollbackPreflightFailurePreservesRunState(configureFailure, expec
   const beforeProperties = harness.documentProperties.getProperties();
   const beforeWriteAttempts = harness.spreadsheet.writeAttempts;
   const beforeNamedRange = harness.spreadsheet.getRangeByName(audit.namedRange);
+  const beforeTitle = harness.spreadsheet.title;
   configureFailure(harness);
 
   assert.throws(
@@ -5693,6 +5716,7 @@ function assertRollbackPreflightFailurePreservesRunState(configureFailure, expec
   assert.strictEqual(JSON.stringify(intake.getDataRange().getValues()), beforeIntake);
   assert.deepStrictEqual(harness.documentProperties.getProperties(), beforeProperties);
   assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), beforeNamedRange);
+  assert.strictEqual(harness.spreadsheet.title, beforeTitle);
   assert.strictEqual(harness.spreadsheet.writeAttempts, beforeWriteAttempts);
   assert.strictEqual(harness.documentLock.acquired, 1);
   assert.strictEqual(harness.documentLock.released, 1);
@@ -5710,6 +5734,15 @@ assertRollbackPreflightFailurePreservesRunState(
     harness.spreadsheet.failSheetsGetError = new Error('authorization denied');
   },
   /Advanced Sheets service v4 preflight failed: authorization denied/
+);
+
+// Read authorization alone is insufficient: the no-op write must also succeed.
+assertRollbackPreflightFailurePreservesRunState(
+  (harness) => {
+    harness.spreadsheet.failSheetsPreflightBatchUpdateError =
+      new Error('write authorization denied');
+  },
+  /Advanced Sheets service v4 preflight failed: write authorization denied/
 );
 
 // A successful run authenticates rollback support exactly once, not once per range.
@@ -5733,6 +5766,9 @@ assertRollbackPreflightFailurePreservesRunState(
   harness.context.runAllSheetsIndexation_(harness.spreadsheet);
   assert.strictEqual(coreCalls, 1);
   assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsGets, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsPreflightBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsRestoreBatchUpdates || 0, 0);
 }
 
 // Final safety: only an explicitly structured data-quality issue may continue the run.

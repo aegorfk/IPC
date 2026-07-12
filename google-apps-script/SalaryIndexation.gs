@@ -368,11 +368,21 @@ function preflightCalculationRollbackService_(spreadsheet) {
   const spreadsheetId = spreadsheet.getId();
   try {
     const metadata = Sheets.Spreadsheets.get(
-      spreadsheetId, { fields: 'spreadsheetId' }
+      spreadsheetId, { fields: 'spreadsheetId,properties(title)' }
     );
-    if (!metadata || metadata.spreadsheetId !== spreadsheetId) {
+    if (!metadata || metadata.spreadsheetId !== spreadsheetId
+      || !metadata.properties || typeof metadata.properties.title !== 'string') {
       throw new Error('spreadsheet metadata could not be verified');
     }
+    Sheets.Spreadsheets.batchUpdate({
+      requests: [{
+        updateSpreadsheetProperties: {
+          properties: { title: metadata.properties.title },
+          fields: 'title',
+        },
+      }],
+      includeSpreadsheetInResponse: false,
+    }, spreadsheetId);
   } catch (error) {
     const reason = error && error.message ? error.message : String(error);
     throw new Error(`Advanced Sheets service v4 preflight failed: ${reason}. `

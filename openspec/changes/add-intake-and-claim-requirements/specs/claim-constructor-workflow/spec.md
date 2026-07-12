@@ -73,9 +73,11 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 
 #### Scenario: Rollback service is preflighted before mutation
 - **WHEN** the all-sheets financial workflow acquires its transaction lock
-- **THEN** it validates Advanced Sheets v4 metadata-read and batch-update methods and performs one authenticated spreadsheet metadata read for the run
+- **THEN** it validates Advanced Sheets v4 metadata-read and batch-update methods and reads `spreadsheetId` plus the current title once for the run
+- **AND** it proves write authorization with one `updateSpreadsheetProperties` request that writes the exact current title with `fields: title` and `includeSpreadsheetInResponse: false`
 - **AND** preflight completes before workspace setup, baseline restoration, calculation cores, or any financial, audit, named-range, or document-property mutation
-- **AND** a missing service or authentication/configuration failure produces a clear corrective fatal error and releases the lock with workbook state unchanged
+- **AND** a missing service or read/write authentication/configuration failure produces a clear corrective fatal error and releases the lock with workbook state unchanged
+- **AND** a later rollback uses its own `UpdateCells` batch only when restoration is required
 - **AND** the rollback path retains its own availability guard
 
 #### Scenario: Large owned surfaces are snapshotted in batches
