@@ -52,8 +52,20 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 
 #### Scenario: Fatal transaction failure
 - **WHEN** an owned calculation write, derivative write, audit render, flush, or relevant property write fails
-- **THEN** all snapshotted values, formulas, notes, backgrounds, number formats, audit cells and extent, and relevant properties are restored
+- **THEN** the audit snapshot covers the union of the prior named-range extent and the planned target extent before render mutation
+- **AND** all snapshotted values or formulas, notes, backgrounds, number formats, data validations, audit cells and prior named-range extent, and relevant properties are restored exactly
 - **AND** the lock is released and the fatal error is rethrown
+
+#### Scenario: Protected formula is nonfatal
+- **WHEN** recovery targets a formula cell that the semantic adapter does not declare as its owned output
+- **THEN** the formula is preserved and a source-aware `formula_writeback_blocked` review warning is emitted
+- **AND** unrelated authorized writes and calculations continue
+- **AND** recovery baseline state is persisted only for destinations that were actually written
+
+#### Scenario: Final rescan uses cached semantics
+- **WHEN** recovery or derivative writes require a final rescan
+- **THEN** the rescan uses the descriptor and table mapping cached during initial discovery
+- **AND** semantic resolution and table discovery occur exactly once per sheet for the run
 
 #### Scenario: Vacation uses successful current-run sources
 - **WHEN** non-vacation calculation sources succeed

@@ -5192,10 +5192,6 @@ function stubBatchSessionStartup(harness) {
   } else if (failurePoint === 'audit') {
     harness.context.renderClaimAudit_ = () => {
       intake.getRange(auditLayout.firstRow, 1).setValue('changed audit');
-      intake.getRange(auditLayout.firstRow + 1, 1).setValue('new audit row');
-      harness.spreadsheet.setNamedRange(
-        auditLayout.namedRange, intake.getRange(auditLayout.firstRow, 1, 2, 5)
-      );
       throw new Error('audit fatal');
     };
   } else {
@@ -5269,6 +5265,189 @@ function stubBatchSessionStartup(harness) {
   fallback.context.runAllSheetsIndexation_(fallback.spreadsheet);
   assert.strictEqual(scriptLock.acquired, 1);
   assert.strictEqual(scriptLock.released, 1);
+}
+
+// Remaining contract: a protected formula is a contextual nonfatal warning; unrelated writes commit.
+{
+  const harness = createHarness(['A', 'B']);
+  const sheets = ['A', 'B'].map((name) => harness.spreadsheet.getSheetByName(name));
+  sheets[0].getRange(2, 2).setValue(100).setFormula('=SOURCE_A()');
+  sheets[1].getRange(2, 2).setValue(100);
+  const descriptors = sheets.map((sheet) => ({
+    id: 'monthlyPremiums', layout: {
+      id: 'monthlyPremiums', recoveryPrincipalOutput: sheet.getName() === 'B',
+      recoveryLiabilityOutput: true,
+    },
+    sheet, headerRow: 1,
+    semanticColumns: { period: 0, unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
+  }));
+  harness.context.discoverCalculationSheetDescriptors_ = () => descriptors;
+  const makeFact = (sheet, descriptor, dueDay) => ({
+    family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+    baseLabel: 'Ежемесячная премия', periodKey: '2026-01', periodLabel: '01.2026',
+    calculationItem: 'principal', amount: Number(sheet.getRange(2, 2).getValue()),
+    dueDate: new Date(2026, 0, dueDay), calculationEndDate: new Date(2026, 0, 31),
+    liabilityTiming: 'single_due_date',
+    source: { sheetId: sheet.getSheetId(), sheetName: sheet.getName(), row: 2, adapterId: 'monthlyPremiums' },
+    destinations: { principal: {
+      sheetName: sheet.getName(), row: 2, column: 2,
+      adapterOwned: descriptor.layout.recoveryPrincipalOutput,
+    } },
+  });
+  const stableKey = harness.context.buildStableClaimKey_(makeFact(sheets[0], descriptors[0], 1));
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.normalizePartialRecoveries_ = () => ({
+    valid: [{ date: new Date(2026, 0, 15), amount: 150, allocation: stableKey }],
+    invalid: [], unallocated: [],
+  });
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet, descriptor }) => ({
+    sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+    totals: {}, claimFacts: [makeFact(sheet, descriptor, sheet.getName() === 'A' ? 1 : 2)],
+    derivativeDependencies: [], derivativeWarnings: [],
+  });
+  harness.context.applyPartialRecoveries_ = (claimFacts) => ({
+    claimFacts,
+    auditFacts: [], liabilitySegments: [], warnings: [], overpayments: [],
+    unallocated: [], invalid: [],
+    writeBacks: [
+      { destination: makeFact(sheets[0], descriptors[0], 1).destinations.principal,
+        value: 0, kind: 'principal', note: 'protected' },
+      { destination: makeFact(sheets[1], descriptors[1], 2).destinations.principal,
+        value: 50, kind: 'principal', note: 'allowed' },
+    ],
+    sourceAdjustments: [
+      { targetKey: stableKey,
+        sourceIdentity: harness.context.getRecoverySourceIdentity_(makeFact(sheets[0], descriptors[0], 1)),
+        source: makeFact(sheets[0], descriptors[0], 1).source,
+        destination: makeFact(sheets[0], descriptors[0], 1).destinations.principal,
+        baselinePrincipal: 100, adjustedPrincipal: 0, fingerprint: 'formula-case' },
+      { targetKey: stableKey,
+        sourceIdentity: harness.context.getRecoverySourceIdentity_(makeFact(sheets[1], descriptors[1], 2)),
+        source: makeFact(sheets[1], descriptors[1], 2).source,
+        destination: makeFact(sheets[1], descriptors[1], 2).destinations.principal,
+        baselinePrincipal: 100, adjustedPrincipal: 50, fingerprint: 'formula-case' },
+    ],
+  });
+  harness.context.detectDerivativePaymentDependencies_ = () => [];
+  harness.context.rescanCalculationResultFromSheet_ = (spreadsheet, result) => result;
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.deepStrictEqual(Array.from(results.calculationEffects.writeBacks, (writeBack) => [
+    writeBack.destination.sheetName, writeBack.value,
+  ]), [['A', 0], ['B', 50]]);
+  assert.strictEqual(sheets[0].getRange(2, 2).getFormula(), '=SOURCE_A()');
+  assert.strictEqual(sheets[0].getRange(2, 2).getValue(), 100);
+  assert.strictEqual(sheets[1].getRange(2, 2).getValue(), 50);
+  const warning = results.calculationEffects.warnings.find((item) =>
+    item.code === 'formula_writeback_blocked'
+  );
+  assert.strictEqual(warning.source, 'A!R2C2');
+  assert.strictEqual(
+    harness.context.collectClaimConstructorIssueSignals_(harness.spreadsheet, {}, results)
+      .calculationEffectIssues.find((issue) => issue.reason.includes('Формула сохранена')).source,
+    'A!R2C2'
+  );
+  const registry = JSON.parse(
+    harness.documentProperties.getProperty('CLAIM_RECOVERY_BASELINES_V1')
+  );
+  assert.deepStrictEqual(Array.from(Object.values(registry), (entry) => entry.destination.sheetName), ['B']);
+}
+
+// Remaining contract: final rescan reuses the initial descriptor and never resolves semantics twice.
+{
+  const harness = createHarness(['Расчет']);
+  const sheet = harness.spreadsheet.getSheetByName('Расчет');
+  sheet.getRange(1, 1, 2, 4).setValues([
+    ['Период', 'Недоплата по ежемесячной премии', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    ['01.2026', 100, 0, 0],
+  ]);
+  let resolveCalls = 0;
+  const realResolve = harness.context.resolveSheetLayout_;
+  harness.context.resolveSheetLayout_ = (candidate) => {
+    resolveCalls++;
+    return realResolve(candidate);
+  };
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.normalizePartialRecoveries_ = () => ({ valid: [], invalid: [], unallocated: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ descriptor }) => ({
+    sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+    totals: {}, claimFacts: [], derivativeWarnings: [], derivativeDependencies: [{
+      layoutId: 'averageEarnings', dependencyKind: 'average_earnings', baseChanged: true,
+      destination: { sheetName: sheet.getName(), row: 2, column: 3, adapterOwned: true },
+      recalculate: () => 5,
+    }],
+    table: harness.context.findTable_(sheet, descriptor),
+  });
+  harness.context.applyPartialRecoveries_ = () => ({
+    claimFacts: [], auditFacts: [], liabilitySegments: [], sourceAdjustments: [],
+    warnings: [], overpayments: [], unallocated: [], invalid: [],
+    writeBacks: [{
+      destination: { sheetName: sheet.getName(), row: 2, column: 2, adapterOwned: true },
+      value: 90, kind: 'principal', note: 'force rescan',
+    }],
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(resolveCalls, 1, 'one semantic resolution for the sheet in the whole run');
+  assert.doesNotThrow(() => JSON.stringify(results), 'descriptor cache stays internal and serializable');
+}
+
+// Remaining contract: post-render failure restores the entire planned audit union exactly.
+{
+  const harness = createHarness(['Источник', 'Анкета и требования']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const audit = harness.context.getClaimIntakeLayout_().claimSelections;
+  const futureRow = audit.firstRow + 3;
+  const checkboxRow = futureRow - 1;
+  const customValidation = { type: 'custom', formula: '=LEN(B66)>0' };
+  intake.getRange(audit.firstRow, 1, 1, 5)
+    .setValues([[false, 'old audit', '', 1, 'old|layout|base|period|item']]);
+  harness.spreadsheet.setNamedRange(
+    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 5)
+  );
+  intake.getRange(checkboxRow, 1).insertCheckboxes().setValue(false);
+  intake.getRange(futureRow, 1).setValue('future value').setDataValidation(customValidation);
+  intake.getRange(futureRow, 2).setValue('formula display').setFormula('=A1');
+  intake.getRange(futureRow, 3).setNote('future note').setBackground('#123456');
+  intake.getRange(futureRow, 4).setNumberFormat('future-format');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, source, headerRow: 1,
+    sheet: source, semanticColumns: {},
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  const facts = [1, 2, 3].map((month) => ({
+    family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+    baseLabel: 'Премия', periodKey: `2026-0${month}`, periodLabel: `0${month}.2026`,
+    calculationItem: 'principal', amount: month * 10,
+  }));
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: source.getName(), layoutId: 'monthlyPremiums', calculated: 3, skipped: 0,
+    totals: {}, claimFacts: facts, derivativeWarnings: [], derivativeDependencies: [],
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const realRender = harness.context.renderClaimAudit_;
+  harness.context.renderClaimAudit_ = (...args) => {
+    realRender(...args);
+    throw new Error('injected post-render audit failure');
+  };
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /injected post-render audit failure/
+  );
+  assert.strictEqual(intake.getRange(futureRow, 1).getValue(), 'future value');
+  assert.deepStrictEqual(intake.getRange(futureRow, 1).getDataValidation(), customValidation);
+  assert.strictEqual(intake.getRange(futureRow, 2).getValue(), 'formula display');
+  assert.strictEqual(intake.getRange(futureRow, 2).getFormula(), '=A1');
+  assert.strictEqual(intake.getRange(futureRow, 3).getNote(), 'future note');
+  assert.strictEqual(intake.getRange(futureRow, 3).getBackground(), '#123456');
+  assert.strictEqual(intake.getRange(futureRow, 4).getNumberFormat(), 'future-format');
+  assert.strictEqual(intake.getRange(checkboxRow, 1).getValue(), false);
+  assert.deepStrictEqual(intake.getRange(checkboxRow, 1).getDataValidation(), { type: 'checkbox' });
+  const restoredRange = harness.spreadsheet.getRangeByName(audit.namedRange);
+  assert.strictEqual(restoredRange.getNumRows(), 1);
 }
 
 console.log('claim constructor characterization ok');

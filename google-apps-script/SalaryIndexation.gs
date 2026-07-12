@@ -379,6 +379,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       compensationRates,
       successfulSourceSnapshot: [],
       failedSourceLayouts: new Set(),
+      resultCaches: new Map(),
     };
     const ordered = descriptors.slice().sort((left, right) =>
       Number(left.layout.id === 'vacation') - Number(right.layout.id === 'vacation')
@@ -421,6 +422,10 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
           compensationRates,
           runContext,
         });
+        const resultTable = result.table || buildTableFromDescriptor_(descriptor);
+        if (Object.prototype.hasOwnProperty.call(result, 'table')) delete result.table;
+        if (Object.prototype.hasOwnProperty.call(result, 'descriptor')) delete result.descriptor;
+        runContext.resultCaches.set(result, { descriptor, table: resultTable });
         results.push(result);
         if (layoutId !== 'vacation') {
           Array.prototype.push.apply(
@@ -472,7 +477,10 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     if (recoveryWriteResult.written > 0 || derivativeWriteResult.written > 0) {
       results.forEach((result, index) => {
         if (!result.error && !result.warning) {
-          results[index] = rescanCalculationResultFromSheet_(spreadsheet, result);
+          const resultCache = runContext.resultCaches.get(result) || {};
+          results[index] = rescanCalculationResultFromSheet_(
+            spreadsheet, result, resultCache.table, resultCache.descriptor
+          );
         }
       });
     }
@@ -483,11 +491,16 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       results[0].calculationEffects = recoveryEffects;
     }
     let auditModel = null;
+    const auditFacts = results.reduce(
+      (facts, result) => facts.concat(result.claimFacts || []), []
+    ).concat(recoveryEffects.auditFacts || []);
     if (typeof renderClaimAudit_ === 'function' && intakeSheet) {
+      extendCalculationTransactionAuditSnapshot_(
+        transactionSnapshot, spreadsheet, intakeSheet, auditFacts
+      );
       auditModel = renderClaimAudit_(
         intakeSheet,
-        results.reduce((facts, result) => facts.concat(result.claimFacts || []), [])
-          .concat(recoveryEffects.auditFacts || []),
+        auditFacts,
         { deferPropertyWrite: true }
       );
     }
@@ -516,12 +529,15 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     if (cells.has(key)) return;
     const range = sheet.getRange(row, column);
     cells.set(key, {
+      key,
       range,
       value: range.getValue(),
       formula: typeof range.getFormula === 'function' ? range.getFormula() : '',
       note: typeof range.getNote === 'function' ? range.getNote() : '',
       background: typeof range.getBackground === 'function' ? range.getBackground() : '',
       numberFormat: typeof range.getNumberFormat === 'function' ? range.getNumberFormat() : '',
+      dataValidation: typeof range.getDataValidation === 'function'
+        ? range.getDataValidation() : null,
     });
   };
   const ownedSemantics = new Set([
@@ -544,8 +560,8 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     const audit = getClaimIntakeLayout_().claimSelections;
     const sheet = spreadsheet.getSheetByName('Анкета и требования');
     auditNamedRange = spreadsheet.getRangeByName(audit.namedRange);
-    const extent = auditNamedRange && auditNamedRange.getNumRows
-      ? auditNamedRange.getNumRows() : 1;
+    const extent = sheet
+      ? getClaimAuditRenderedExtent_(sheet, audit, auditNamedRange) : 1;
     if (sheet) {
       auditSnapshot = { sheet, audit, extent };
       for (let row = audit.firstRow; row < audit.firstRow + extent; row++) {
@@ -559,12 +575,53 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     ? PropertiesService.getDocumentProperties() : null;
   return {
     cells: Array.from(cells.values()),
+    cellKeys: new Set(cells.keys()),
     auditNamedRange,
     auditSnapshot,
     properties,
     propertyValues: properties && typeof properties.getProperties === 'function'
       ? properties.getProperties() : {},
   };
+}
+
+function extendCalculationTransactionAuditSnapshot_(snapshot, spreadsheet, sheet, claimFacts) {
+  if (!snapshot || !sheet || typeof getClaimIntakeLayout_ !== 'function') return;
+  const audit = getClaimIntakeLayout_().claimSelections;
+  const model = buildClaimAuditModel_(claimFacts || []);
+  const plannedExtent = Math.max(1, model.groups.reduce(
+    (count, group) => count + 1 + group.items.length, 0
+  ));
+  const namedRange = spreadsheet.getRangeByName(audit.namedRange);
+  const previousExtent = getClaimAuditRenderedExtent_(sheet, audit, namedRange);
+  const unionExtent = Math.max(previousExtent, plannedExtent);
+  if (!snapshot.auditSnapshot) {
+    snapshot.auditSnapshot = { sheet, audit, extent: previousExtent, unionExtent };
+  } else {
+    snapshot.auditSnapshot.unionExtent = Math.max(
+      snapshot.auditSnapshot.unionExtent || snapshot.auditSnapshot.extent,
+      unionExtent
+    );
+  }
+  if (!snapshot.cellKeys) snapshot.cellKeys = new Set();
+  for (let row = audit.firstRow; row < audit.firstRow + unionExtent; row++) {
+    for (let column = 1; column <= audit.columnCount; column++) {
+      const key = `${sheet.getSheetId ? sheet.getSheetId() : sheet.getName()}|${row}|${column}`;
+      if (snapshot.cellKeys.has(key)) continue;
+      const range = sheet.getRange(row, column);
+      snapshot.cellKeys.add(key);
+      snapshot.cells.push({
+        key,
+        range,
+        value: range.getValue(),
+        formula: typeof range.getFormula === 'function' ? range.getFormula() : '',
+        note: typeof range.getNote === 'function' ? range.getNote() : '',
+        background: typeof range.getBackground === 'function' ? range.getBackground() : '',
+        numberFormat: typeof range.getNumberFormat === 'function' ? range.getNumberFormat() : '',
+        dataValidation: typeof range.getDataValidation === 'function'
+          ? range.getDataValidation() : null,
+      });
+    }
+  }
 }
 
 function rollbackCalculationTransaction_(spreadsheet, snapshot) {
@@ -580,29 +637,6 @@ function rollbackCalculationTransaction_(spreadsheet, snapshot) {
       }
     }
   });
-  if (snapshot.auditSnapshot) {
-    try {
-      const audit = snapshot.auditSnapshot.audit;
-      const current = spreadsheet.getRangeByName(audit.namedRange);
-      const currentExtent = current && current.getNumRows ? current.getNumRows() : 0;
-      if (currentExtent > snapshot.auditSnapshot.extent) {
-        const extra = snapshot.auditSnapshot.sheet.getRange(
-          audit.firstRow + snapshot.auditSnapshot.extent, 1,
-          currentExtent - snapshot.auditSnapshot.extent, audit.columnCount
-        );
-        extra.clearContent();
-        if (typeof extra.clearDataValidations === 'function') extra.clearDataValidations();
-        if (typeof extra.setNotes === 'function') extra.setNotes(Array.from(
-          { length: currentExtent - snapshot.auditSnapshot.extent },
-          () => Array(audit.columnCount).fill('')
-        ));
-        if (typeof extra.setBackgrounds === 'function') extra.setBackgrounds(Array.from(
-          { length: currentExtent - snapshot.auditSnapshot.extent },
-          () => Array(audit.columnCount).fill('')
-        ));
-      }
-    } catch (error) { errors.push(error); }
-  }
   if (snapshot.auditNamedRange && typeof getClaimIntakeLayout_ === 'function') {
     try {
       spreadsheet.setNamedRange(
@@ -634,7 +668,9 @@ function verifyCalculationTransactionRollback_(snapshot, errors) {
       || (typeof range.getNote === 'function' && range.getNote() !== cell.note)
       || (typeof range.getBackground === 'function' && range.getBackground() !== cell.background)
       || (typeof range.getNumberFormat === 'function'
-        && range.getNumberFormat() !== cell.numberFormat)) {
+        && range.getNumberFormat() !== cell.numberFormat)
+      || (typeof range.getDataValidation === 'function'
+        && !calculationDataValidationsEqual_(range.getDataValidation(), cell.dataValidation))) {
       errors.push(new Error('Транзакционный rollback не восстановил расчетную ячейку.'));
     }
   });
@@ -661,6 +697,20 @@ function verifyCalculationTransactionRollback_(snapshot, errors) {
   }
   if (errors.length) throw new Error(`Rollback failed: ${errors.map((error) =>
     error.message || error).join('; ')}`);
+}
+
+function calculationDataValidationsEqual_(left, right) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (typeof left.getCriteriaType === 'function'
+    && typeof right.getCriteriaType === 'function') {
+    const leftType = String(left.getCriteriaType());
+    const rightType = String(right.getCriteriaType());
+    const leftValues = typeof left.getCriteriaValues === 'function' ? left.getCriteriaValues() : [];
+    const rightValues = typeof right.getCriteriaValues === 'function' ? right.getCriteriaValues() : [];
+    return leftType === rightType && JSON.stringify(leftValues) === JSON.stringify(rightValues);
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isFatalCalculationMutationError_(error) {
@@ -1433,10 +1483,12 @@ function buildClaimFactSourceMetadata_(
   });
 }
 
-function rescanCalculationResultFromSheet_(spreadsheet, result) {
+function rescanCalculationResultFromSheet_(spreadsheet, result, cachedTable, cachedDescriptor) {
   const sheet = spreadsheet.getSheetByName(result.sheetName);
   if (!sheet) return result;
-  const table = findTable_(sheet);
+  const descriptor = cachedDescriptor || result.descriptor;
+  const table = cachedTable || result.table
+    || (descriptor ? buildTableFromDescriptor_(descriptor) : findTable_(sheet));
   const rowCount = Math.max(0, sheet.getLastRow() - table.headerRow);
   if (!rowCount) {
     return Object.assign({}, result, {
@@ -1492,6 +1544,17 @@ function rescanCalculationResultFromSheet_(spreadsheet, result) {
     ),
     claimFacts: facts,
   });
+}
+
+function buildTableFromDescriptor_(descriptor) {
+  if (!descriptor) return null;
+  return {
+    headerRow: descriptor.headerRow,
+    headerValues: descriptor.headerValues || [],
+    layout: descriptor.layout,
+    columns: Object.assign({}, descriptor.semanticColumns || {}),
+    descriptor,
+  };
 }
 
 function summarizeClaimConstructorCalculationTotals_(underpaymentValues, indexationValues, liabilityValues) {
@@ -1886,7 +1949,9 @@ function findRecoveryRelatedFact_(facts, principal, family, calculationItem) {
 
 function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks, options) {
   const settings = options || {};
-  const result = { success: false, written: 0, writtenBacks: [], warnings: [] };
+  const result = {
+    success: false, written: 0, writtenBacks: [], blockedWriteBacks: [], warnings: [],
+  };
   const lock = settings.lockHeld ? null : getRecoveryWriteLock_();
   let acquired = settings.lockHeld === true;
   try {
@@ -1914,8 +1979,11 @@ function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks, options)
       if (formula && destination.adapterOwned !== true) {
         result.warnings.push({
           code: 'formula_writeback_blocked', writeBack,
+          source: `${destination.sheetName}!R${destination.row}C${destination.column}`,
+          destination: Object.assign({}, destination),
           reason: 'Формула сохранена: адаптер не объявил ячейку собственным расчетным выходом.',
         });
+        result.blockedWriteBacks.push(writeBack);
         return;
       }
       const cellKey = [destination.sheetName, destination.row, destination.column].join('|');
@@ -1931,7 +1999,6 @@ function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks, options)
       }
       preparedWrites.push({ writeBack, range });
     });
-    if (result.warnings.length) return result;
     try {
       preparedWrites.forEach((prepared) => {
         const writeBack = prepared.writeBack;
@@ -2002,6 +2069,10 @@ function restoreRecoveryWriteSnapshot_(snapshot) {
   if (typeof range.setNote === 'function') range.setNote(snapshot.note);
   if (typeof range.setBackground === 'function') range.setBackground(snapshot.background);
   if (typeof range.setNumberFormat === 'function') range.setNumberFormat(snapshot.numberFormat);
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'dataValidation')
+    && typeof range.setDataValidation === 'function') {
+    range.setDataValidation(snapshot.dataValidation || null);
+  }
   if (typeof range.getFormula === 'function' && range.getFormula() !== snapshot.formula) {
     throw new Error('Формула не восстановлена');
   }
@@ -2019,6 +2090,11 @@ function restoreRecoveryWriteSnapshot_(snapshot) {
   if (typeof range.getNumberFormat === 'function'
     && range.getNumberFormat() !== snapshot.numberFormat) {
     throw new Error('Формат числа не восстановлен');
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'dataValidation')
+    && typeof range.getDataValidation === 'function'
+    && !calculationDataValidationsEqual_(range.getDataValidation(), snapshot.dataValidation)) {
+    throw new Error('Проверка данных не восстановлена');
   }
 }
 
@@ -2089,6 +2165,17 @@ function persistRecoveryBaselineState_(prepared, recoveryEffects, writeResult, o
     if (!baseline) return;
     const previous = prepared.registry && prepared.registry[baseline.registryKey];
     if (previous) nextRegistry[baseline.registryKey] = Object.assign({}, previous);
+  });
+  const blockedPrincipalKeys = new Set(((writeResult && writeResult.blockedWriteBacks) || [])
+    .filter((writeBack) => writeBack.kind === 'principal' && writeBack.destination)
+    .map((writeBack) => [writeBack.destination.sheetName, writeBack.destination.row,
+      writeBack.destination.column].join('|')));
+  ((prepared && prepared.claimFacts) || []).forEach((fact) => {
+    const baseline = fact && fact._recoveryBaseline;
+    const destination = fact && fact.destinations && fact.destinations.principal;
+    if (!baseline || !destination) return;
+    const destinationKey = [destination.sheetName, destination.row, destination.column].join('|');
+    if (blockedPrincipalKeys.has(destinationKey)) delete nextRegistry[baseline.registryKey];
   });
   const factByAdjustmentKey = new Map(((prepared && prepared.claimFacts) || [])
     .filter((fact) => fact && fact._recoveryBaseline)
@@ -2270,6 +2357,7 @@ function writeVacationDerivativeCell_(sheet, destination, value, note, marker, a
   if (formula && adapterOwned !== true) {
     warnings.push({
       code: 'formula_writeback_blocked', destination,
+      source: `${destination.sheetName}!R${destination.row}C${destination.column}`,
       reason: 'Формула сохранена: семантическая колонка не объявлена выходом адаптера отпускных.',
     });
     return false;
@@ -2445,7 +2533,12 @@ function writeDerivativePaymentEffectsToSheets_(spreadsheet, writeBacks) {
     const range = sheet.getRange(destination.row, destination.column);
     const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
     if (formula && destination.adapterOwned !== true) {
-      result.warnings.push({ code: 'formula_writeback_blocked', writeBack });
+      result.warnings.push({
+        code: 'formula_writeback_blocked', writeBack,
+        source: `${destination.sheetName}!R${destination.row}C${destination.column}`,
+        destination: Object.assign({}, destination),
+        reason: 'Формула сохранена: адаптер не объявил ячейку собственным расчетным выходом.',
+      });
       return;
     }
     if (writeBack.reviewOnly) {
