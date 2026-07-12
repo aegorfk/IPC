@@ -32,6 +32,10 @@ class FakeRange {
     return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'value');
   }
 
+  getNotes() {
+    return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'note');
+  }
+
   getSheet() { return this.sheet; }
   getRow() { return this.row; }
   getColumn() { return this.column; }
@@ -57,6 +61,11 @@ class FakeRange {
 
   setValues(values) {
     this.sheet.writeGrid(this.row, this.column, values, 'value');
+    return this;
+  }
+
+  setNotes(notes) {
+    this.sheet.writeGrid(this.row, this.column, notes, 'note');
     return this;
   }
 
@@ -195,6 +204,14 @@ class FakeSheet {
   }
 
   writeGrid(row, column, values, kind) {
+    this.spreadsheet.serviceCalls.writes++;
+    this.spreadsheet.serviceCalls[`${kind || 'value'}Writes`] =
+      (this.spreadsheet.serviceCalls[`${kind || 'value'}Writes`] || 0) + 1;
+    this.spreadsheet.writeAttempts++;
+    if (this.spreadsheet.failWriteAt === this.spreadsheet.writeAttempts) {
+      this.spreadsheet.failWriteAt = null;
+      throw new Error('injected sheet write failure');
+    }
     const store = this.getStateStore(kind);
     values.forEach((valuesRow, rowOffset) => {
       valuesRow.forEach((value, columnOffset) => {
@@ -302,6 +319,9 @@ class FakeSpreadsheet {
     this.namedRanges = new Map();
     this.toasts = [];
     this.visibilityOperations = [];
+    this.writeAttempts = 0;
+    this.failWriteAt = null;
+    this.serviceCalls = { writes: 0, namedRangeSets: 0 };
   }
 
   getId() { return 'fake-spreadsheet-id'; }
@@ -316,7 +336,10 @@ class FakeSpreadsheet {
     this.sheets.splice(targetIndex, 0, sheet);
     return sheet;
   }
-  setNamedRange(name, range) { this.namedRanges.set(name, range); }
+  setNamedRange(name, range) {
+    this.serviceCalls.namedRangeSets++;
+    this.namedRanges.set(name, range);
+  }
   getRangeByName(name) { return this.namedRanges.get(name) || null; }
   getNamedRanges() {
     return Array.from(this.namedRanges.entries()).map(([name, range]) => ({
@@ -331,9 +354,24 @@ class FakeSpreadsheet {
 class FakeProperties {
   constructor() {
     this.values = new Map();
+    this.getPropertyCalls = 0;
+    this.getPropertiesCalls = 0;
+    this.setPropertiesCalls = 0;
   }
-  getProperty(name) { return this.values.has(name) ? this.values.get(name) : null; }
+  getProperty(name) {
+    this.getPropertyCalls++;
+    return this.values.has(name) ? this.values.get(name) : null;
+  }
+  getProperties() {
+    this.getPropertiesCalls++;
+    return Object.fromEntries(this.values);
+  }
   setProperty(name, value) { this.values.set(name, String(value)); return this; }
+  setProperties(values) {
+    this.setPropertiesCalls++;
+    Object.keys(values || {}).forEach((name) => this.values.set(name, String(values[name])));
+    return this;
+  }
   deleteProperty(name) { this.values.delete(name); return this; }
 }
 
@@ -2867,6 +2905,8 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(first.added, true);
   assert.strictEqual(first.row, layout.partialRecoveries.firstRow + 1);
   assert.strictEqual(second.row, layout.partialRecoveries.firstRow + 2);
+  assert.strictEqual(harness.documentLock.acquired, 2);
+  assert.strictEqual(harness.documentLock.released, 2);
   assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 2).getValue(), '10.01.2026');
   assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow + 1, 1).getValue(), true);
   assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow + 2, 1).getValue(), true);
@@ -2905,6 +2945,21 @@ function stubBatchSessionStartup(harness) {
     harness.spreadsheet.toasts.at(-1).message,
     'Нет свободных строк для частичных погашений'
   );
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const control = sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+  const result = harness.context.onEdit({
+    range: control,
+    source: harness.spreadsheet,
+    value: 'FALSE',
+  });
+  assert.strictEqual(result.handled, false);
+  assert.strictEqual(control.getValue(), false);
+  assert.notStrictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
 }
 
 {
@@ -3011,6 +3066,284 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(sheet.getRange(firstRow, 4).getNote(), '');
   assert.strictEqual(sheet.getRange(firstRow + 1, 1).getBackground(), '#FFFFFF');
   assert.strictEqual(sheet.getRange(firstRow + 1, 4).getNote(), '');
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Неизвестно',
+    manualAverageEnabled: false,
+    averageEarnings: {
+      calculated: { amount: 3200, context: '2025 год' },
+      user: { amount: 3500, context: '2026 год' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [[true, '10.01.2026', 100, 'claim:initial']],
+  }, harness.spreadsheet);
+  const questionnaireCells = [
+    layout.employerSector.valueCell,
+    layout.manualAverageEnabled.valueCell,
+    layout.calculatedAverage.valueCell,
+    layout.calculatedAverageContext.valueCell,
+    layout.manualAverage.valueCell,
+    layout.manualAverageContext.valueCell,
+    layout.finalAverageScenario.valueCell,
+  ];
+  const snapshot = () => JSON.stringify({
+    fields: questionnaireCells.map((cell) => sheet.getRange(cell).getValue()),
+    recoveries: sheet.getRange(
+      layout.partialRecoveries.firstRow,
+      1,
+      layout.partialRecoveries.rowCount,
+      4
+    ).getValues(),
+  });
+  const before = snapshot();
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Несуществующий сектор',
+    averageEarnings: {
+      calculated: { amount: 9999, context: 'изменено' },
+      user: { amount: 8888, context: 'изменено' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [[true, '11.01.2026', 200, 'claim:changed']],
+  }, harness.spreadsheet), /Неизвестный сектор работодателя/);
+  assert.strictEqual(snapshot(), before);
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Частная организация',
+    averageEarnings: {
+      calculated: { amount: 9999, context: 'изменено' },
+      user: { amount: 8888, context: 'изменено' },
+      selectedSource: 'bogus',
+    },
+  }, harness.spreadsheet), /Неизвестный источник среднего заработка/);
+  assert.strictEqual(snapshot(), before);
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Частная организация',
+    averageEarnings: {
+      calculated: { amount: 0, context: 'изменено' },
+      user: { amount: 8888, context: 'изменено' },
+      selectedSource: 'calculated',
+    },
+  }, harness.spreadsheet), /положительный средний заработок/);
+  assert.strictEqual(snapshot(), before);
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Частная организация',
+    averageEarnings: {
+      calculated: { amount: 9999, context: 'изменено' },
+      user: { amount: 8888, context: 'изменено' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [{ active: true, date: '11.01.2026', amount: 200 }],
+  }, harness.spreadsheet), /строка частичного погашения/);
+  assert.strictEqual(snapshot(), before);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Неизвестно',
+    manualAverageEnabled: false,
+    averageEarnings: {
+      calculated: { amount: 3200, context: '2025 год' },
+      user: { amount: 3500, context: '2026 год' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [[true, '10.01.2026', 100, 'claim:initial']],
+  }, harness.spreadsheet);
+  const before = JSON.stringify(sheet.getDataRange().getValues());
+  harness.documentLock.acquired = 0;
+  harness.documentLock.released = 0;
+  harness.documentLock.flushes = 0;
+  harness.spreadsheet.failWriteAt = harness.spreadsheet.writeAttempts + 2;
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Частная организация',
+    manualAverageEnabled: true,
+    averageEarnings: {
+      calculated: { amount: 9999, context: 'changed calculated' },
+      user: { amount: 8888, context: 'changed user' },
+      selectedSource: 'user',
+    },
+    partialRecoveries: [[true, '11.01.2026', 200, 'claim:changed']],
+  }, harness.spreadsheet), /injected sheet write failure/);
+
+  assert.strictEqual(JSON.stringify(sheet.getDataRange().getValues()), before);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+  assert.strictEqual(harness.documentLock.flushes, 1);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Неизвестно',
+    manualAverageEnabled: false,
+    averageEarnings: {
+      calculated: { amount: 3200, context: '2025 год' },
+      user: { amount: 3500, context: '2026 год' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [[true, '10.01.2026', 100, 'claim:initial']],
+  }, harness.spreadsheet);
+  const before = JSON.stringify(sheet.getDataRange().getValues());
+  harness.documentLock.flushError = new Error('injected questionnaire flush failure');
+
+  assert.throws(() => harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Частная организация',
+    manualAverageEnabled: true,
+    averageEarnings: {
+      calculated: { amount: 9999, context: 'changed calculated' },
+      user: { amount: 8888, context: 'changed user' },
+      selectedSource: 'user',
+    },
+    partialRecoveries: [[true, '11.01.2026', 200, 'claim:changed']],
+  }, harness.spreadsheet), /injected questionnaire flush failure/);
+
+  assert.strictEqual(JSON.stringify(sheet.getDataRange().getValues()), before);
+  assert.strictEqual(harness.documentLock.released, 2);
+}
+
+{
+  const harness = createHarness();
+  harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Неизвестно',
+    manualAverageEnabled: true,
+    averageEarnings: {
+      calculated: { amount: 3200, context: '2025 год' },
+      user: { amount: 3500, context: '2026 год' },
+      selectedSource: 'user',
+    },
+  }, harness.spreadsheet);
+  const captured = harness.context.captureClaimQuestionnaireState_(harness.spreadsheet);
+  assert.strictEqual(captured.manualAverageEnabled, true);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const actionRow = sheet.getRange(12, 2, 1, 2).setValues([['Добавить', true]]);
+  const result = harness.context.onEdit({
+    range: actionRow,
+    source: harness.spreadsheet,
+    value: 'TRUE',
+  });
+  assert.strictEqual(result.handled, true);
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.actionControlCell).getValue(), false);
+  assert.notStrictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const actionPaste = sheet.getRange(12, 3, 1, 2).setValues([[true, 'pasted']]);
+  const result = harness.context.onEdit({ range: actionPaste, source: harness.spreadsheet });
+  assert.strictEqual(result.handled, true);
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.actionControlCell).getValue(), false);
+  assert.notStrictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const firstRow = layout.partialRecoveries.firstRow;
+  sheet.getRange(firstRow, 1, 1, 4).setValues([[true, '31.02.2026', 100, 'claim:a']]);
+  const mixedPaste = sheet.getRange(12, 3, 3, 2);
+  sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+  const result = harness.context.onEdit({ range: mixedPaste, source: harness.spreadsheet });
+  assert.strictEqual(result.handled, true);
+  assert.strictEqual(result.type, 'validate_partial_recoveries');
+  assert.strictEqual(result.result.invalid.length, 1);
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.actionControlCell).getValue(), false);
+  assert.notStrictEqual(sheet.getRange(firstRow + 1, 1).getValue(), true);
+}
+
+{
+  const harness = createHarness();
+  const eventSpreadsheet = new FakeSpreadsheet(['Анкета и требования']);
+  const sheet = harness.context.ensureClaimIntakeSheet_(eventSpreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const control = sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+  const result = harness.context.onEdit({ range: control, source: eventSpreadsheet, value: 'TRUE' });
+  assert.strictEqual(result.result.row, layout.partialRecoveries.firstRow);
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
+  assert.strictEqual(harness.spreadsheet.getSheetByName(layout.sheetName), null);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const control = sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+  harness.documentLock.onTryLock = () => {
+    sheet.getRange(layout.partialRecoveries.firstRow, 1).setValue(true);
+    harness.documentLock.onTryLock = null;
+  };
+  harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0 };
+  harness.documentLock.acquired = 0;
+  harness.documentLock.released = 0;
+  const result = harness.context.onEdit({
+    range: control,
+    source: harness.spreadsheet,
+    value: 'TRUE',
+  });
+  assert.strictEqual(result.result.row, layout.partialRecoveries.firstRow + 1);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.namedRangeSets, 0);
+  assert.ok(harness.spreadsheet.serviceCalls.valueWrites <= 3);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const control = sheet.getRange(layout.partialRecoveries.actionControlCell).setValue(true);
+  harness.documentLock.onTryLock = () => {
+    control.setValue(false);
+    harness.documentLock.onTryLock = null;
+  };
+  const result = harness.context.onEdit({
+    range: control,
+    source: harness.spreadsheet,
+    value: 'TRUE',
+  });
+  assert.strictEqual(result.handled, false);
+  assert.notStrictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 1).getValue(), true);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  sheet.getRange(layout.partialRecoveries.firstRow, 1, 1, 4)
+    .setValues([[true, '31.02.2026', 100, 'claim:a']]);
+  harness.documentLock.acquired = 0;
+  harness.documentLock.released = 0;
+  harness.documentProperties.getPropertyCalls = 0;
+  harness.documentProperties.getPropertiesCalls = 0;
+
+  harness.context.validateClaimPartialRecoveries_(harness.spreadsheet);
+
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+  assert.strictEqual(harness.documentProperties.getPropertiesCalls, 1);
+  assert.strictEqual(harness.documentProperties.getPropertyCalls, 0);
 }
 
 console.log('claim constructor characterization ok');

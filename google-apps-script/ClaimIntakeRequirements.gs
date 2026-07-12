@@ -241,9 +241,7 @@ function readAverageEarningsState_(spreadsheet) {
   };
 }
 
-function writeAverageEarningsState_(state, spreadsheet) {
-  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
-  const layout = getClaimIntakeLayout_();
+function normalizeAverageEarningsStateForWrite_(state) {
   const value = state || {};
   const calculated = value.calculated || {};
   const user = value.user || {};
@@ -251,15 +249,38 @@ function writeAverageEarningsState_(state, spreadsheet) {
   if (selected !== 'calculated' && selected !== 'user') {
     throw new Error('Неизвестный источник среднего заработка');
   }
-  const normalized = {
+  [calculated, user].forEach((scenario) => {
+    if (scenario.amount !== undefined
+      && typeof scenario.amount !== 'number'
+      && typeof scenario.amount !== 'string') {
+      throw new Error('Средний заработок должен быть числом');
+    }
+    if (scenario.context !== undefined
+      && scenario.context !== null
+      && typeof scenario.context !== 'string') {
+      throw new Error('Контекст среднего заработка должен быть строкой');
+    }
+  });
+  const selectedScenario = selected === 'user' ? user : calculated;
+  if (parseClaimPositiveAmount_(selectedScenario.amount) === null) {
+    throw new Error('Укажите положительный средний заработок для выбранного сценария');
+  }
+  return {
     calculatedAmount: calculated.amount === undefined ? '' : calculated.amount,
     calculatedContext: calculated.context || '',
     userAmount: user.amount === undefined ? '' : user.amount,
     userContext: user.context || '',
+    selectedSource: selected,
     selectedScenario: selected === 'user'
       ? CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]
       : CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0],
   };
+}
+
+function writeAverageEarningsState_(state, spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const layout = getClaimIntakeLayout_();
+  const normalized = normalizeAverageEarningsStateForWrite_(state);
   target.getRangeByName(layout.calculatedAverage.namedRange)
     .setValue(normalized.calculatedAmount);
   target.getRangeByName(layout.calculatedAverageContext.namedRange)
@@ -320,6 +341,7 @@ function captureClaimQuestionnaireState_(spreadsheet) {
   const layout = getClaimIntakeLayout_();
   return {
     employerSector: target.getRangeByName(layout.employerSector.namedRange).getValue(),
+    manualAverageEnabled: target.getRangeByName(layout.manualAverageEnabled.namedRange).getValue() === true,
     averageEarnings: readAverageEarningsState_(target),
     partialRecoveries: target.getRangeByName(layout.partialRecoveries.namedRange).getValues(),
   };
@@ -329,46 +351,179 @@ function readClaimQuestionnaireState_(spreadsheet) {
   return captureClaimQuestionnaireState_(spreadsheet);
 }
 
+function normalizeClaimQuestionnaireStateForWrite_(state, layout) {
+  const value = state || {};
+  const normalized = {};
+  if (value.employerSector !== undefined) {
+    if (CLAIM_INTAKE_SETTINGS.SECTOR_VALUES.indexOf(value.employerSector) < 0) {
+      throw new Error('Неизвестный сектор работодателя');
+    }
+    normalized.employerSector = value.employerSector;
+  }
+  if (value.manualAverageEnabled !== undefined) {
+    if (typeof value.manualAverageEnabled !== 'boolean') {
+      throw new Error('Признак ручного среднего заработка должен быть логическим значением');
+    }
+    normalized.manualAverageEnabled = value.manualAverageEnabled;
+  }
+  if (value.averageEarnings !== undefined) {
+    normalized.averageEarnings = normalizeAverageEarningsStateForWrite_(value.averageEarnings);
+  }
+  if (value.partialRecoveries !== undefined) {
+    if (!Array.isArray(value.partialRecoveries)) {
+      throw new Error('Частичные погашения должны быть массивом строк');
+    }
+    normalized.partialRecoveries = value.partialRecoveries
+      .slice(0, layout.partialRecoveries.rowCount)
+      .map((row) => {
+        if (!Array.isArray(row)) {
+          throw new Error('Каждая строка частичного погашения должна быть массивом');
+        }
+        const result = row.slice(0, layout.partialRecoveries.columnCount);
+        while (result.length < layout.partialRecoveries.columnCount) result.push('');
+        return result;
+      });
+    while (normalized.partialRecoveries.length < layout.partialRecoveries.rowCount) {
+      normalized.partialRecoveries.push(['', '', '', '']);
+    }
+  }
+  return normalized;
+}
+
+function getClaimIntakeMutationLock_() {
+  return LockService.getDocumentLock() || LockService.getScriptLock();
+}
+
+function withClaimIntakeMutationLock_(callback, options) {
+  const settings = options || {};
+  if (settings.lockHeld) return callback();
+  const lock = getClaimIntakeMutationLock_();
+  if (!lock || !lock.tryLock(5000)) {
+    throw new Error('Анкета занята другим процессом; повторите попытку');
+  }
+  let result;
+  let operationError = null;
+  try {
+    result = callback();
+  } catch (error) {
+    operationError = error;
+  }
+  try {
+    SpreadsheetApp.flush();
+  } catch (error) {
+    if (typeof settings.onFlushError === 'function') {
+      try {
+        settings.onFlushError(error);
+        SpreadsheetApp.flush();
+      } catch (rollbackError) {
+        // Preserve the original flush error while still releasing the lock.
+      }
+    }
+    if (!operationError) operationError = error;
+  } finally {
+    lock.releaseLock();
+  }
+  if (operationError) throw operationError;
+  return result;
+}
+
 function writeClaimQuestionnaireState_(state, spreadsheet) {
   const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const layout = getClaimIntakeLayout_();
-  const value = state || {};
-  if (value.employerSector !== undefined) {
-    target.getRangeByName(layout.employerSector.namedRange).setValue(value.employerSector);
-  }
-  if (value.averageEarnings) {
-    writeAverageEarningsState_(value.averageEarnings, target);
-  }
-  if (value.partialRecoveries) {
-    const range = target.getRangeByName(layout.partialRecoveries.namedRange);
-    const rows = value.partialRecoveries.slice(0, layout.partialRecoveries.rowCount)
-      .map((row) => Array.from(row).slice(0, layout.partialRecoveries.columnCount));
-    while (rows.length < layout.partialRecoveries.rowCount) {
-      rows.push(['', '', '', '']);
+  const normalized = normalizeClaimQuestionnaireStateForWrite_(state, layout);
+  const lockOptions = {};
+  let rollback = null;
+  lockOptions.onFlushError = () => {
+    if (rollback) rollback();
+  };
+  return withClaimIntakeMutationLock_(() => {
+    const sheet = target.getSheetByName(layout.sheetName) || ensureClaimIntakeSheet_(target);
+    const mutations = [];
+    if (normalized.employerSector !== undefined) {
+      mutations.push({
+        range: sheet.getRange(layout.employerSector.valueCell),
+        values: [[normalized.employerSector]],
+      });
     }
-    range.setValues(rows.map((row) => {
-      while (row.length < layout.partialRecoveries.columnCount) row.push('');
-      return row;
-    }));
-  }
-  return captureClaimQuestionnaireState_(target);
+    if (normalized.manualAverageEnabled !== undefined) {
+      mutations.push({
+        range: sheet.getRange(layout.manualAverageEnabled.valueCell),
+        values: [[normalized.manualAverageEnabled]],
+      });
+    }
+    if (normalized.averageEarnings) {
+      mutations.push(
+        {
+          range: sheet.getRange(6, 2, 1, 2),
+          values: [[
+            normalized.averageEarnings.calculatedAmount,
+            normalized.averageEarnings.calculatedContext,
+          ]],
+        },
+        {
+          range: sheet.getRange(8, 2, 1, 2),
+          values: [[
+            normalized.averageEarnings.userAmount,
+            normalized.averageEarnings.userContext,
+          ]],
+        },
+        {
+          range: sheet.getRange(layout.finalAverageScenario.valueCell),
+          values: [[normalized.averageEarnings.selectedScenario]],
+        }
+      );
+    }
+    if (normalized.partialRecoveries) {
+      mutations.push({
+        range: sheet.getRange(
+          layout.partialRecoveries.firstRow,
+          1,
+          layout.partialRecoveries.rowCount,
+          layout.partialRecoveries.columnCount
+        ),
+        values: normalized.partialRecoveries,
+      });
+    }
+    const snapshots = mutations.map((mutation) => mutation.range.getValues());
+    rollback = () => {
+      for (let index = mutations.length - 1; index >= 0; index--) {
+        mutations[index].range.setValues(snapshots[index]);
+      }
+    };
+    try {
+      mutations.forEach((mutation) => mutation.range.setValues(mutation.values));
+      return captureClaimQuestionnaireState_(target);
+    } catch (error) {
+      rollback();
+      throw error;
+    }
+  }, lockOptions);
 }
 
-function addClaimPartialRecovery() {
-  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-  ensureClaimIntakeSheet_(spreadsheet);
+function addClaimPartialRecovery(options) {
+  const settings = options || {};
+  const spreadsheet = settings.spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const layout = getClaimIntakeLayout_();
-  const range = spreadsheet.getRangeByName(layout.partialRecoveries.namedRange);
-  const rows = range.getValues();
-  const emptyIndex = rows.findIndex((row) => !row[0] && row.slice(1).every(isClaimIntakeEmpty_));
-  if (emptyIndex < 0) {
-    const error = 'Нет свободных строк для частичных погашений';
-    spreadsheet.toast(error, 'Анкета и требования');
-    return { added: false, error };
-  }
-  const row = layout.partialRecoveries.firstRow + emptyIndex;
-  spreadsheet.getSheetByName(layout.sheetName).getRange(row, 1).setValue(true);
-  return { added: true, row };
+  return withClaimIntakeMutationLock_(() => {
+    const sheet = settings.sheet
+      || spreadsheet.getSheetByName(layout.sheetName)
+      || ensureClaimIntakeSheet_(spreadsheet);
+    const rows = sheet.getRange(
+      layout.partialRecoveries.firstRow,
+      1,
+      layout.partialRecoveries.rowCount,
+      layout.partialRecoveries.columnCount
+    ).getValues();
+    const emptyIndex = rows.findIndex((row) => !row[0] && row.slice(1).every(isClaimIntakeEmpty_));
+    if (emptyIndex < 0) {
+      const error = 'Нет свободных строк для частичных погашений';
+      spreadsheet.toast(error, 'Анкета и требования');
+      return { added: false, error };
+    }
+    const row = layout.partialRecoveries.firstRow + emptyIndex;
+    sheet.getRange(row, 1).setValue(true);
+    return { added: true, row };
+  }, settings);
 }
 
 function onEdit(e) {
@@ -380,31 +535,64 @@ function onEdit(e) {
 
   const row = editedRange.getRow();
   const column = editedRange.getColumn();
+  const rowCount = editedRange.getNumRows();
+  const columnCount = editedRange.getNumColumns();
+  const editedLastRow = row + rowCount - 1;
+  const editedLastColumn = column + columnCount - 1;
   const actionControl = sheet.getRange(layout.partialRecoveries.actionControlCell);
-  if (row === actionControl.getRow() && column === actionControl.getColumn()) {
-    const checked = e.value === 'TRUE' || editedRange.getValue() === true;
-    if (!checked) return { handled: false };
-    try {
-      return { handled: true, type: 'add', result: addClaimPartialRecovery() };
-    } finally {
-      actionControl.setValue(false);
-    }
-  }
-
-  const editedLastRow = row + editedRange.getNumRows() - 1;
-  const editedLastColumn = column + editedRange.getNumColumns() - 1;
+  const actionRow = actionControl.getRow();
+  const actionColumn = actionControl.getColumn();
+  const touchesAction = row <= actionRow
+    && editedLastRow >= actionRow
+    && column <= actionColumn
+    && editedLastColumn >= actionColumn;
+  const exactAction = row === actionRow
+    && column === actionColumn
+    && rowCount === 1
+    && columnCount === 1;
   const recoveriesFirstRow = layout.partialRecoveries.firstRow;
   const recoveriesLastRow = recoveriesFirstRow + layout.partialRecoveries.rowCount - 1;
   const touchesRecoveryInputs = row <= recoveriesLastRow
     && editedLastRow >= recoveriesFirstRow
     && column <= 4
     && editedLastColumn >= 1;
-  if (!touchesRecoveryInputs) return { handled: false };
-  return {
-    handled: true,
-    type: 'validate_partial_recoveries',
-    result: validateClaimPartialRecoveries_(sheet.getParent()),
-  };
+  if (!touchesAction && !touchesRecoveryInputs) return { handled: false };
+
+  const spreadsheet = e.source || sheet.getParent();
+  return withClaimIntakeMutationLock_(() => {
+    if (touchesAction && !exactAction && actionControl.getValue() === true) {
+      actionControl.setValue(false);
+    }
+    if (exactAction) {
+      const checked = (e.value === 'TRUE' || e.value === true)
+        && actionControl.getValue() === true;
+      if (!checked) {
+        if (actionControl.getValue() === true) actionControl.setValue(false);
+        return { handled: false };
+      }
+      try {
+        return {
+          handled: true,
+          type: 'add',
+          result: addClaimPartialRecovery({ spreadsheet, sheet, lockHeld: true }),
+        };
+      } finally {
+        actionControl.setValue(false);
+      }
+    }
+    if (touchesRecoveryInputs) {
+      return {
+        handled: true,
+        type: 'validate_partial_recoveries',
+        result: validateClaimPartialRecoveries_(spreadsheet, {
+          spreadsheet,
+          sheet,
+          lockHeld: true,
+        }),
+      };
+    }
+    return { handled: true, type: 'ignored_action_paste' };
+  }, { spreadsheet, sheet });
 }
 
 function isClaimIntakeEmpty_(value) {
@@ -468,32 +656,101 @@ function parseClaimPositiveAmount_(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function validateClaimPartialRecoveries_(spreadsheet) {
-  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+function validateClaimPartialRecoveries_(spreadsheet, options) {
+  const settings = options || {};
+  const target = spreadsheet || settings.spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const layout = getClaimIntakeLayout_();
-  const sheet = target.getSheetByName(layout.sheetName);
-  const range = target.getRangeByName(layout.partialRecoveries.namedRange);
-  const result = normalizePartialRecoveries_(range.getValues());
-  const invalidByRow = indexClaimRecoveryRows_(result.invalid);
-  const unallocatedByRow = indexClaimRecoveryRows_(result.unallocated);
-  for (let index = 0; index < layout.partialRecoveries.rowCount; index++) {
-    const rowRange = sheet.getRange(layout.partialRecoveries.firstRow + index, 1, 1, 4);
-    clearClaimRecoveryValidation_(rowRange);
-    if (invalidByRow[index]) {
-      applyClaimRecoveryValidation_(
-        rowRange,
-        CLAIM_INTAKE_SETTINGS.RECOVERY_ERROR_BACKGROUND,
-        invalidByRow[index].errors.join('. ')
+  return withClaimIntakeMutationLock_(() => {
+    const sheet = settings.sheet
+      || target.getSheetByName(layout.sheetName)
+      || ensureClaimIntakeSheet_(target);
+    const range = sheet.getRange(
+      layout.partialRecoveries.firstRow,
+      1,
+      layout.partialRecoveries.rowCount,
+      layout.partialRecoveries.columnCount
+    );
+    const result = normalizePartialRecoveries_(range.getValues());
+    const invalidByRow = indexClaimRecoveryRows_(result.invalid);
+    const unallocatedByRow = indexClaimRecoveryRows_(result.unallocated);
+    const backgrounds = range.getBackgrounds();
+    const noteRange = sheet.getRange(
+      layout.partialRecoveries.firstRow,
+      4,
+      layout.partialRecoveries.rowCount,
+      1
+    );
+    const notes = noteRange.getNotes();
+    const nextBackgrounds = backgrounds.map((row) => row.slice());
+    const nextNotes = notes.map((row) => row.slice());
+    const properties = PropertiesService.getDocumentProperties();
+    const ownership = properties.getProperties();
+    const propertyUpdates = {};
+    const propertyDeletes = [];
+    let backgroundsChanged = false;
+    let notesChanged = false;
+
+    for (let index = 0; index < layout.partialRecoveries.rowCount; index++) {
+      const absoluteRow = layout.partialRecoveries.firstRow + index;
+      const key = getClaimRecoveryValidationPropertyKeyForRow_(sheet, absoluteRow);
+      let previous = null;
+      if (ownership[key]) {
+        try {
+          previous = JSON.parse(ownership[key]);
+        } catch (error) {
+          previous = null;
+        }
+      }
+      const baseBackgrounds = backgrounds[index].map((background, columnIndex) =>
+        previous && background === previous.ownedBackground
+          ? previous.backgrounds[columnIndex]
+          : background
       );
-    } else if (unallocatedByRow[index]) {
-      applyClaimRecoveryValidation_(
-        rowRange,
-        CLAIM_INTAKE_SETTINGS.RECOVERY_WARNING_BACKGROUND,
-        'Не указано требование: распределение будет уточнено, погашение считается спорным'
-      );
+      const baseNote = previous && notes[index][0] === previous.ownedNote
+        ? previous.note || ''
+        : notes[index][0];
+      let desired = null;
+      if (invalidByRow[index]) {
+        desired = {
+          background: CLAIM_INTAKE_SETTINGS.RECOVERY_ERROR_BACKGROUND,
+          message: invalidByRow[index].errors.join('. '),
+        };
+      } else if (unallocatedByRow[index]) {
+        desired = {
+          background: CLAIM_INTAKE_SETTINGS.RECOVERY_WARNING_BACKGROUND,
+          message: 'Не указано требование: распределение будет уточнено, погашение считается спорным',
+        };
+      }
+      const desiredBackgrounds = desired
+        ? Array(layout.partialRecoveries.columnCount).fill(desired.background)
+        : baseBackgrounds;
+      const desiredNote = desired ? desired.message : baseNote;
+      if (JSON.stringify(desiredBackgrounds) !== JSON.stringify(backgrounds[index])) {
+        nextBackgrounds[index] = desiredBackgrounds;
+        backgroundsChanged = true;
+      }
+      if (desiredNote !== notes[index][0]) {
+        nextNotes[index][0] = desiredNote;
+        notesChanged = true;
+      }
+      if (desired) {
+        const serialized = JSON.stringify({
+          backgrounds: baseBackgrounds,
+          note: baseNote,
+          ownedBackground: desired.background,
+          ownedNote: desired.message,
+        });
+        if (ownership[key] !== serialized) propertyUpdates[key] = serialized;
+      } else if (ownership[key]) {
+        propertyDeletes.push(key);
+      }
     }
-  }
-  return result;
+    if (backgroundsChanged) range.setBackgrounds(nextBackgrounds);
+    if (notesChanged) noteRange.setNotes(nextNotes);
+    if (Object.keys(propertyUpdates).length) properties.setProperties(propertyUpdates);
+    propertyDeletes.forEach((key) => properties.deleteProperty(key));
+    return result;
+  }, settings);
 }
 
 function indexClaimRecoveryRows_(items) {
@@ -541,7 +798,11 @@ function clearClaimRecoveryValidation_(rowRange) {
 }
 
 function getClaimRecoveryValidationPropertyKey_(rowRange) {
-  return `CLAIM_RECOVERY_VALIDATION_${rowRange.getSheet().getSheetId()}_${rowRange.getRow()}`;
+  return getClaimRecoveryValidationPropertyKeyForRow_(rowRange.getSheet(), rowRange.getRow());
+}
+
+function getClaimRecoveryValidationPropertyKeyForRow_(sheet, row) {
+  return `CLAIM_RECOVERY_VALIDATION_${sheet.getSheetId()}_${row}`;
 }
 
 function preserveClaimIntakeDocHistoryUrl_(spreadsheet, docUrl, note) {
