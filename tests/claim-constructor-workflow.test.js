@@ -98,6 +98,12 @@ class FakeRange {
     return this.sheet.readGrid(this.row, this.column, 1, 1, 'validation')[0][0] || null;
   }
 
+  clearDataValidations() {
+    const empty = Array.from({ length: this.rowCount }, () => Array(this.columnCount).fill(''));
+    this.sheet.writeGrid(this.row, this.column, empty, 'validation');
+    return this;
+  }
+
   insertCheckboxes() {
     const values = Array.from({ length: this.rowCount }, () => Array(this.columnCount).fill(false));
     this.setValues(values);
@@ -180,6 +186,7 @@ class FakeSheet {
     this.numberFormats = new Map();
     this.frozenRows = 0;
     this.columnWidths = new Map();
+    this.hiddenColumns = new Set();
   }
 
   key(row, column) {
@@ -311,6 +318,12 @@ class FakeSheet {
   isSheetHidden() { return this.hidden; }
   setFrozenRows(count) { this.frozenRows = count; return this; }
   setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
+  hideColumns(column, count) {
+    const size = count || 1;
+    for (let offset = 0; offset < size; offset++) this.hiddenColumns.add(column + offset);
+    return this;
+  }
+  isColumnHiddenByUser(column) { return this.hiddenColumns.has(column); }
   setRowHeight() { return this; }
   autoResizeRows() { return this; }
 }
@@ -3482,6 +3495,305 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#D9EAD3');
   assert.strictEqual(sheet.getRange(row, 4).getNote(), 'Пользовательская заметка');
   assert.strictEqual(harness.documentProperties.values.size, 0);
+}
+
+{
+  const harness = createHarness();
+  const salaryTable = {
+    headerRow: 2,
+    layout: { id: 'salary' },
+    columns: { year: 3, month: 4, correctAmount: 7 },
+  };
+  const salaryRows = [
+    ['', '', '', 2026, 'Январь', '', 100000, 104000],
+  ];
+  const salaryFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Оклад',
+    table: salaryTable,
+    rows: salaryRows,
+    underpaymentValues: [[12000]],
+    indexationValues: [[800]],
+    liabilityValues: [[450]],
+  });
+  const premiumFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Ежемесячные',
+    table: {
+      headerRow: 1,
+      layout: { id: 'monthlyPremiums' },
+      columns: { period: 2 },
+    },
+    rows: [['', '', 'Февраль 2026']],
+    underpaymentValues: [[3000]],
+    indexationValues: [[120]],
+    liabilityValues: [[75]],
+  });
+  const vacationFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Отпуска',
+    table: {
+      headerRow: 1,
+      layout: { id: 'vacation' },
+      columns: { period: 0 },
+    },
+    rows: [[new Date('2026-03-10T00:00:00.000Z')]],
+    underpaymentValues: [[5000]],
+    indexationValues: [[200]],
+    liabilityValues: [[90]],
+  });
+  const facts = salaryFacts.concat(premiumFacts, vacationFacts);
+
+  assert.deepStrictEqual(Array.from(new Set(facts.map((fact) => fact.family))), [
+    'underpayment',
+    'salary_indexation',
+    'underpayment_indexation',
+    'material_liability',
+  ]);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(salaryFacts)),
+    [
+      {
+        family: 'underpayment',
+        baseKind: 'salary',
+        baseLabel: 'Оклад',
+        periodKey: '2026-01',
+        periodLabel: '01.2026',
+        calculationItem: 'principal',
+        amount: 12000,
+        disputed: false,
+        sourceRef: 'Оклад!3',
+      },
+      {
+        family: 'salary_indexation',
+        baseKind: 'salary',
+        baseLabel: 'Оклад',
+        periodKey: '2026-01',
+        periodLabel: '01.2026',
+        calculationItem: 'salary_indexation',
+        amount: 4000,
+        disputed: false,
+        sourceRef: 'Оклад!3',
+      },
+      {
+        family: 'underpayment_indexation',
+        baseKind: 'salary',
+        baseLabel: 'Оклад',
+        periodKey: '2026-01',
+        periodLabel: '01.2026',
+        calculationItem: 'inflation_indexation',
+        amount: 800,
+        disputed: false,
+        sourceRef: 'Оклад!3',
+      },
+      {
+        family: 'material_liability',
+        baseKind: 'salary',
+        baseLabel: 'Оклад',
+        periodKey: '2026-01',
+        periodLabel: '01.2026',
+        calculationItem: 'article_236',
+        amount: 450,
+        disputed: false,
+        sourceRef: 'Оклад!3',
+      },
+    ]
+  );
+  assert.strictEqual(facts.filter((fact) => fact.family === 'underpayment').length, 3);
+  assert.strictEqual(
+    facts.reduce((sum, fact) => sum + (fact.family === 'material_liability' ? fact.amount : 0), 0),
+    615
+  );
+}
+
+{
+  const harness = createHarness();
+  const base = {
+    family: 'underpayment',
+    baseKind: 'salary',
+    baseLabel: 'Старый отображаемый текст',
+    periodKey: '2026|01',
+    periodLabel: 'Январь 2026',
+    calculationItem: 'principal|monthly',
+    amount: 100,
+    disputed: false,
+    sourceRef: 'Оклад!3',
+  };
+  const first = harness.context.buildStableClaimKey_(base);
+  const changedDisplay = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    baseLabel: 'Новый отображаемый текст',
+    periodLabel: '01.2026',
+    amount: 999,
+  }));
+  const changedPeriod = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    periodKey: '2026-02',
+  }));
+  const changedFamily = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    family: 'material_liability',
+  }));
+
+  assert.strictEqual(first, changedDisplay);
+  assert.notStrictEqual(first, changedPeriod);
+  assert.notStrictEqual(first, changedFamily);
+  assert.strictEqual(first.split('|').length, 4);
+  assert.ok(!first.includes('2026|01'));
+  assert.ok(!first.includes('principal|monthly'));
+}
+
+{
+  const harness = createHarness();
+  const facts = [
+    {
+      family: 'underpayment', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+      periodLabel: '01.2026', calculationItem: 'principal', amount: 1000, disputed: false,
+      sourceRef: 'Оклад!3',
+    },
+    {
+      family: 'underpayment', baseKind: 'monthly_premium', baseLabel: 'Ежемесячная премия',
+      periodKey: '2026-02', periodLabel: '02.2026', calculationItem: 'principal', amount: 300,
+      disputed: true, sourceRef: 'Ежемесячные!2',
+    },
+    {
+      family: 'material_liability', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+      periodLabel: '01.2026', calculationItem: 'article_236', amount: 50, disputed: false,
+      sourceRef: 'Оклад!3',
+    },
+    {
+      family: 'salary_indexation', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+      periodLabel: '01.2026', calculationItem: 'salary_indexation', amount: 200, disputed: false,
+      sourceRef: 'Оклад!3',
+    },
+    {
+      family: 'underpayment_indexation', baseKind: 'monthly_premium', baseLabel: 'Ежемесячная премия',
+      periodKey: '2026-02', periodLabel: '02.2026', calculationItem: 'inflation_indexation', amount: 20,
+      disputed: false, sourceRef: 'Ежемесячные!2',
+    },
+  ];
+  const model = harness.context.buildClaimAuditModel_(facts);
+
+  assert.deepStrictEqual(Array.from(model.groups, (group) => group.label), [
+    'Взыскать недоплату',
+    'Материальная ответственность',
+    'Индексация заработной платы',
+    'Индексация недоплаты',
+  ]);
+  assert.deepStrictEqual(Array.from(model.groups, (group) => group.total), [1300, 50, 200, 20]);
+  assert.deepStrictEqual(
+    Array.from(model.groups[0].items, (item) => item.label),
+    ['Оклад — 01.2026', 'Ежемесячная премия — 02.2026']
+  );
+  assert.strictEqual(model.groups[0].items[1].selected, true);
+  assert.strictEqual(model.groups[0].items[1].badge, 'спорное');
+  assert.ok(!model.groups[0].items[1].badge.includes('включено'));
+
+  const oldKey = model.groups[0].items[0].key;
+  const newKey = model.groups[1].items[0].key;
+  const merged = harness.context.mergeClaimSelections_(
+    [{ key: oldKey, selected: false }],
+    [{ key: oldKey }, { key: newKey, disputed: true }]
+  );
+  assert.strictEqual(merged[0].selected, false);
+  assert.strictEqual(merged[1].selected, true);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  sheet.getRange(layout.employerSector.valueCell).setValue('Частная организация');
+  sheet.getRange(layout.docsHistory.firstRow, 1, 1, 3)
+    .setValues([['12.07.2026', 'https://docs.google.com/document/d/keep/edit', 'existing']]);
+  const facts = [
+    {
+      family: 'underpayment', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+      periodLabel: '01.2026', calculationItem: 'principal', amount: 1000, disputed: true,
+      sourceRef: 'Оклад!3',
+    },
+    {
+      family: 'material_liability', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+      periodLabel: '01.2026', calculationItem: 'article_236', amount: 50, disputed: false,
+      sourceRef: 'Оклад!3',
+    },
+  ];
+
+  harness.context.renderClaimAudit_(sheet, facts);
+  const rendered = sheet.getRange(
+    layout.claimSelections.firstRow,
+    1,
+    layout.claimSelections.rowCount,
+    layout.claimSelections.columnCount
+  ).getValues();
+  const itemRows = rendered.filter((row) => row[4]);
+  assert.strictEqual(sheet.getRange(layout.claimSelections.titleCell).getValue(), 'Аудит и требования');
+  assert.strictEqual(itemRows.length, 2);
+  assert.strictEqual(itemRows[0][0], true);
+  assert.strictEqual(itemRows[0][2], 'спорное');
+  assert.ok(rendered.some((row) => String(row[1]).includes('Материальная ответственность — 50,00')));
+  assert.strictEqual(rendered.filter((row) => /Общий подытог/.test(String(row[1]))).length, 0);
+  assert.strictEqual(rendered.filter((row) => /Материальная ответственность/.test(String(row[1]))).length, 1);
+  assert.ok(!rendered.flat().join(' ').includes('Все позиции включены по умолчанию'));
+  assert.ok(!rendered.flat().join(' ').includes('6 оснований'));
+  assert.ok(!rendered.flat().join(' ').includes('по базам'));
+  assert.strictEqual(sheet.isColumnHiddenByUser(5), true);
+
+  sheet.getRange(layout.claimSelections.firstRow + 1, 1).setValue(false);
+  harness.context.renderClaimAudit_(sheet, facts.concat({
+    family: 'underpayment_indexation', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+    periodLabel: '01.2026', calculationItem: 'inflation_indexation', amount: 20, disputed: false,
+    sourceRef: 'Оклад!3',
+  }));
+  const rerendered = sheet.getRange(
+    layout.claimSelections.firstRow,
+    1,
+    layout.claimSelections.rowCount,
+    layout.claimSelections.columnCount
+  ).getValues().filter((row) => row[4]);
+  assert.strictEqual(rerendered.find((row) => row[4] === itemRows[0][4])[0], false);
+  assert.strictEqual(rerendered.find((row) => row[4] !== itemRows[0][4] && row[4] !== itemRows[1][4])[0], true);
+  assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
+  assert.deepStrictEqual(
+    sheet.getRange(layout.docsHistory.firstRow, 1, 1, 3).getValues()[0],
+    ['12.07.2026', 'https://docs.google.com/document/d/keep/edit', 'existing']
+  );
+
+  harness.context.renderClaimAudit_(sheet, []);
+  const empty = sheet.getRange(
+    layout.claimSelections.firstRow,
+    1,
+    layout.claimSelections.rowCount,
+    layout.claimSelections.columnCount
+  ).getValues();
+  assert.strictEqual(empty[0][1], 'Расчетные позиции пока не найдены');
+  assert.strictEqual(empty.filter((row) => row[4]).length, 0);
+  assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
+}
+
+{
+  const harness = createHarness(['Оклад']);
+  const claimFact = {
+    family: 'underpayment', baseKind: 'salary', baseLabel: 'Оклад', periodKey: '2026-01',
+    periodLabel: '01.2026', calculationItem: 'principal', amount: 1000, disputed: false,
+    sourceRef: 'Оклад!3',
+  };
+  harness.context.isGeneratedSheetName_ = () => false;
+  harness.context.getSheetLayout_ = () => ({ id: 'salary' });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: 'Оклад', layoutId: 'salary', calculated: 1, skipped: 0,
+    totals: { underpayment: 1000, indexation: 0, liability: 0 },
+    claimFacts: [claimFact],
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  assert.ok(intake, 'mass calculation must create the audit workspace');
+  const layout = harness.context.getClaimIntakeLayout_();
+  const rendered = intake.getRange(
+    layout.claimSelections.firstRow,
+    1,
+    layout.claimSelections.rowCount,
+    layout.claimSelections.columnCount
+  ).getValues();
+  assert.strictEqual(rendered.filter((row) => row[4]).length, 1);
+  assert.strictEqual(rendered.find((row) => row[4])[4], harness.context.buildStableClaimKey_(claimFact));
 }
 
 console.log('claim constructor characterization ok');

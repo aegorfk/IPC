@@ -296,11 +296,18 @@ function runAllSheetsIndexation_(spreadsheet) {
         skipped: 0,
         error: reason,
         totals: { underpayment: 0, indexation: 0, liability: 0 },
+        claimFacts: [],
       });
     }
   }
 
   deleteLegacyGeneratedSheets_(spreadsheet);
+  if (typeof renderClaimAudit_ === 'function' && typeof ensureClaimIntakeSheet_ === 'function') {
+    renderClaimAudit_(
+      ensureClaimIntakeSheet_(spreadsheet),
+      results.reduce((facts, result) => facts.concat(result.claimFacts || []), [])
+    );
+  }
   return results;
 }
 
@@ -599,6 +606,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
       calculated: 0,
       skipped: 0,
       totals: { underpayment: 0, indexation: 0, liability: 0 },
+      claimFacts: [],
     };
   }
 
@@ -956,6 +964,14 @@ function updateUnpaidSalaryIndexationCore_(params) {
     sheet.getRange(table.headerRow + 1, table.columns.target + 1, rowCount, 1).getValues(),
     sheet.getRange(table.headerRow + 1, table.columns.penalty + 1, rowCount, 1).getValues()
   );
+  const claimFacts = buildClaimFactsFromCalculationRows_({
+    sheetName: sheet.getName(),
+    table,
+    rows: values,
+    underpaymentValues: refreshedTotalUnderpaymentValues,
+    indexationValues: targetValues,
+    liabilityValues: penaltyValues,
+  });
 
   return {
     sheetName: sheet.getName(),
@@ -967,6 +983,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
     updatedIndexation: true,
     updatedPenalty: true,
     totals,
+    claimFacts,
   };
 }
 
@@ -980,6 +997,79 @@ function summarizeClaimConstructorCalculationTotals_(underpaymentValues, indexat
     indexation: sum(indexationValues),
     liability: sum(liabilityValues),
   };
+}
+
+function buildClaimFactsFromCalculationRows_(params) {
+  const settings = params || {};
+  const rows = settings.rows || [];
+  const table = settings.table || {};
+  const columns = table.columns || {};
+  const layoutId = table.layout && table.layout.id ? table.layout.id : 'unknown';
+  const base = getClaimFactBase_(layoutId);
+  const facts = [];
+
+  rows.forEach((row, rowIndex) => {
+    const period = parseRowPeriod_(row, columns);
+    if (!period) return;
+    const common = {
+      baseKind: base.kind,
+      baseLabel: base.label,
+      periodKey: `${period.year}-${pad2_(period.month)}`,
+      periodLabel: `${pad2_(period.month)}.${period.year}`,
+      disputed: false,
+      sourceRef: `${settings.sheetName || layoutId}!${Number(table.headerRow || 0) + rowIndex + 1}`,
+    };
+    appendClaimFactIfPositive_(facts, common, 'underpayment', 'principal',
+      readClaimFactAmount_(settings.underpaymentValues, rowIndex));
+    if (layoutId === 'salary') {
+      appendClaimFactIfPositive_(facts, common, 'salary_indexation', 'salary_indexation',
+        calculateSalaryIndexationFactAmount_(row, columns));
+    }
+    appendClaimFactIfPositive_(facts, common, 'underpayment_indexation', 'inflation_indexation',
+      readClaimFactAmount_(settings.indexationValues, rowIndex));
+    appendClaimFactIfPositive_(facts, common, 'material_liability', 'article_236',
+      readClaimFactAmount_(settings.liabilityValues, rowIndex));
+  });
+  return facts;
+}
+
+function getClaimFactBase_(layoutId) {
+  const bases = {
+    salary: { kind: 'salary', label: 'Оклад' },
+    monthlyPremiums: { kind: 'monthly_premium', label: 'Ежемесячная премия' },
+    quarterlyPremiums: { kind: 'quarterly_premium', label: 'Ежеквартальная премия' },
+    annualPremiums: { kind: 'annual_premium', label: 'Ежегодная премия' },
+    vacation: { kind: 'vacation', label: 'Отпускные' },
+  };
+  return bases[layoutId] || { kind: normalizeText_(layoutId) || 'unknown', label: 'Иное начисление' };
+}
+
+function readClaimFactAmount_(values, rowIndex) {
+  const value = values && values[rowIndex] ? parseMoney_(values[rowIndex][0]) : null;
+  return value === null ? null : roundMoney_(value);
+}
+
+function calculateSalaryIndexationFactAmount_(row, columns) {
+  if (!Number.isInteger(columns.correctAmount) || columns.correctAmount < 1) return null;
+  const indexedSalary = parseMoney_(row[columns.correctAmount]);
+  const salaryBeforeIndexation = parseMoney_(row[columns.correctAmount - 1]);
+  if (indexedSalary === null || salaryBeforeIndexation === null) return null;
+  return roundMoney_(indexedSalary - salaryBeforeIndexation);
+}
+
+function appendClaimFactIfPositive_(facts, common, family, calculationItem, amount) {
+  if (amount === null || !Number.isFinite(Number(amount)) || Number(amount) <= 0) return;
+  facts.push({
+    family,
+    baseKind: common.baseKind,
+    baseLabel: common.baseLabel,
+    periodKey: common.periodKey,
+    periodLabel: common.periodLabel,
+    calculationItem,
+    amount: roundMoney_(Number(amount)),
+    disputed: common.disputed === true,
+    sourceRef: common.sourceRef,
+  });
 }
 
 function findTable_(sheet) {

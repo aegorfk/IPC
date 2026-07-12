@@ -16,13 +16,13 @@
 
 ## 3. Audit And Requirements
 
-- [ ] 3.1 Build `Аудит и требования` groups from existing payroll-slip import, reconstruction, and calculation results.
-- [ ] 3.2 Render `Взыскать недоплату` with second-level basis and period items.
-- [ ] 3.3 Render `Материальная ответственность` with second-level items tied to underlying principal bases and group total in the heading.
-- [ ] 3.4 Render separate `Индексация заработной платы` and `Индексация недоплаты` groups.
-- [ ] 3.5 Generate stable claim keys and preserve user-unchecked selections across reruns.
-- [ ] 3.6 Select newly discovered claim items by default, including disputed items, and show disputed items with the `спорное` badge.
-- [ ] 3.7 Remove obsolete audit captions and duplicate subtotal rows from the generated layout.
+- [x] 3.1 Build `Аудит и требования` groups from existing payroll-slip import, reconstruction, and calculation results.
+- [x] 3.2 Render `Взыскать недоплату` with second-level basis and period items.
+- [x] 3.3 Render `Материальная ответственность` with second-level items tied to underlying principal bases and group total in the heading.
+- [x] 3.4 Render separate `Индексация заработной платы` and `Индексация недоплаты` groups.
+- [x] 3.5 Generate stable claim keys and preserve user-unchecked selections across reruns.
+- [x] 3.6 Select newly discovered claim items by default, including disputed items, and show disputed items with the `спорное` badge.
+- [x] 3.7 Remove obsolete audit captions and duplicate subtotal rows from the generated layout.
 
 ## 4. Calculation Effects
 

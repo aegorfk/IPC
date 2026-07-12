@@ -178,6 +178,149 @@ function insertClaimIntakeCheckboxesPreservingValues_(range) {
   range.setValues(values);
 }
 
+function buildStableClaimKey_(item) {
+  const value = item || {};
+  return [value.family, value.baseKind, value.periodKey, value.calculationItem]
+    .map((part) => encodeURIComponent(normalizeText_(part)))
+    .join('|');
+}
+
+function buildClaimAuditModel_(claimFacts) {
+  const familyDefinitions = [
+    { family: 'underpayment', label: 'Взыскать недоплату' },
+    { family: 'material_liability', label: 'Материальная ответственность' },
+    { family: 'salary_indexation', label: 'Индексация заработной платы' },
+    { family: 'underpayment_indexation', label: 'Индексация недоплаты' },
+  ];
+  const factsByFamily = {};
+  familyDefinitions.forEach((definition) => { factsByFamily[definition.family] = new Map(); });
+
+  (claimFacts || []).forEach((fact) => {
+    if (!fact || !factsByFamily[fact.family]) return;
+    const amount = Number(fact.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const key = buildStableClaimKey_(fact);
+    const existing = factsByFamily[fact.family].get(key);
+    if (existing) {
+      existing.amount = roundClaimAuditMoney_(existing.amount + amount);
+      existing.disputed = existing.disputed || fact.disputed === true;
+      if (fact.sourceRef && existing.sourceRefs.indexOf(fact.sourceRef) < 0) {
+        existing.sourceRefs.push(fact.sourceRef);
+      }
+      return;
+    }
+    factsByFamily[fact.family].set(key, {
+      key,
+      family: fact.family,
+      baseKind: fact.baseKind,
+      baseLabel: fact.baseLabel,
+      periodKey: fact.periodKey,
+      periodLabel: fact.periodLabel,
+      calculationItem: fact.calculationItem,
+      label: `${fact.baseLabel || 'Основание'} — ${fact.periodLabel || fact.periodKey}`,
+      amount: roundClaimAuditMoney_(amount),
+      disputed: fact.disputed === true,
+      badge: fact.disputed === true ? 'спорное' : '',
+      selected: true,
+      sourceRefs: fact.sourceRef ? [fact.sourceRef] : [],
+    });
+  });
+
+  const groups = familyDefinitions.map((definition) => {
+    const items = Array.from(factsByFamily[definition.family].values());
+    if (!items.length) return null;
+    return {
+      family: definition.family,
+      label: definition.label,
+      total: roundClaimAuditMoney_(items.reduce((sum, item) => sum + item.amount, 0)),
+      items,
+    };
+  }).filter(Boolean);
+  return {
+    groups,
+    total: roundClaimAuditMoney_(groups.reduce((sum, group) => sum + group.total, 0)),
+  };
+}
+
+function mergeClaimSelections_(existingSelections, currentItems) {
+  const prior = new Map();
+  (existingSelections || []).forEach((item) => {
+    if (!item || !item.key) return;
+    if (item.selected === true || item.selected === false) prior.set(item.key, item.selected);
+  });
+  return (currentItems || []).map((item) => Object.assign({}, item, {
+    selected: prior.has(item.key) ? prior.get(item.key) : true,
+  }));
+}
+
+function readExistingClaimSelections_(sheet) {
+  const layout = getClaimIntakeLayout_().claimSelections;
+  return sheet.getRange(
+    layout.firstRow,
+    1,
+    layout.rowCount,
+    layout.columnCount
+  ).getValues().reduce((items, row) => {
+    const key = String(row[4] || '').trim();
+    if (key) items.push({ key, selected: row[0] === true });
+    return items;
+  }, []);
+}
+
+function renderClaimAudit_(sheet, claimFacts) {
+  const layout = getClaimIntakeLayout_();
+  const audit = layout.claimSelections;
+  const model = buildClaimAuditModel_(claimFacts);
+  const prior = readExistingClaimSelections_(sheet);
+  const merged = mergeClaimSelections_(prior, model.groups.reduce(
+    (items, group) => items.concat(group.items),
+    []
+  ));
+  const selectedByKey = new Map(merged.map((item) => [item.key, item.selected]));
+  model.groups.forEach((group) => {
+    group.items.forEach((item) => { item.selected = selectedByKey.get(item.key); });
+  });
+
+  const rows = [];
+  model.groups.forEach((group) => {
+    rows.push(['', `${group.label} — ${formatClaimAuditAmount_(group.total)}`, '', '', '']);
+    group.items.forEach((item) => {
+      rows.push([item.selected, item.label, item.badge, item.amount, item.key]);
+    });
+  });
+  if (!rows.length) rows.push(['', 'Расчетные позиции пока не найдены', '', '', '']);
+  if (rows.length > audit.rowCount) {
+    throw new Error(`Для аудита требуется ${rows.length} строк, доступно ${audit.rowCount}`);
+  }
+
+  const range = sheet.getRange(
+    audit.firstRow,
+    1,
+    audit.rowCount,
+    audit.columnCount
+  );
+  range.clearContent();
+  if (typeof range.clearDataValidations === 'function') range.clearDataValidations();
+  sheet.getRange(audit.titleCell).setValue('Аудит и требования');
+  sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount).setValues(rows);
+  rows.forEach((row, index) => {
+    if (!row[4]) return;
+    insertClaimIntakeCheckboxesPreservingValues_(sheet.getRange(audit.firstRow + index, 1));
+  });
+  sheet.getRange(audit.firstRow, 4, audit.rowCount, 1).setNumberFormat('#,##0.00');
+  if (typeof sheet.hideColumns === 'function') sheet.hideColumns(5);
+  return model;
+}
+
+function roundClaimAuditMoney_(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function formatClaimAuditAmount_(value) {
+  const fixed = Number(value || 0).toFixed(2).replace('.', ',');
+  return fixed.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+}
+
 function formatClaimIntakeSheet_(sheet, layout, created) {
   sheet.setFrozenRows(2);
   sheet.setColumnWidth(1, 260);
