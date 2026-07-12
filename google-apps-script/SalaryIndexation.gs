@@ -633,17 +633,15 @@ function extendCalculationTransactionAuditSnapshot_(snapshot, spreadsheet, sheet
 
 function rollbackCalculationTransaction_(spreadsheet, snapshot) {
   const errors = [];
-  (snapshot.batches || []).forEach((batch) => {
-    let restored = false;
-    for (let attempt = 0; attempt < 2 && !restored; attempt++) {
-      try {
-        restoreCalculationRangeSnapshot_(batch);
-        restored = true;
-      } catch (error) {
-        if (attempt === 1) errors.push(error);
-      }
+  let restored = false;
+  for (let attempt = 0; attempt < 2 && !restored; attempt++) {
+    try {
+      restoreCalculationRangeSnapshots_(spreadsheet, snapshot.batches || []);
+      restored = true;
+    } catch (error) {
+      if (attempt === 1) errors.push(error);
     }
-  });
+  }
   if (snapshot.auditNamedRangeExisted && snapshot.auditNamedRange
     && snapshot.auditNamedRangeName) {
     try {
@@ -709,34 +707,105 @@ function verifyCalculationRangeSnapshots_(batches, errors) {
     );
     const formulas = range.getFormulas();
     const values = range.getValues();
-    const valuesRestored = batch.values.every((row, rowIndex) => row.every((value, columnIndex) =>
-      batch.formulas[rowIndex][columnIndex]
-        ? formulas[rowIndex][columnIndex] === batch.formulas[rowIndex][columnIndex]
-        : values[rowIndex][columnIndex] === value
+    const valuesRestored = batch.values.every((row, rowIndex) => row.every(
+      (value, columnIndex) => {
+        const expectedFormula = batch.formulas[rowIndex][columnIndex] || '';
+        const actualFormula = formulas[rowIndex][columnIndex] || '';
+        return expectedFormula
+          ? actualFormula === expectedFormula
+          : actualFormula === '' && calculationSnapshotValuesEqual_(
+            values[rowIndex][columnIndex], value
+          );
+      }
     ));
-    if (!valuesRestored
-      || JSON.stringify(range.getNotes()) !== JSON.stringify(batch.notes)
-      || JSON.stringify(range.getBackgrounds()) !== JSON.stringify(batch.backgrounds)
-      || JSON.stringify(range.getNumberFormats()) !== JSON.stringify(batch.numberFormats)
-      || !calculationValidationMatricesEqual_(
-        range.getDataValidations(), batch.dataValidations
-      )) {
-      errors.push(new Error('Транзакционный rollback не восстановил расчетную ячейку.'));
+    const notesRestored = JSON.stringify(range.getNotes()) === JSON.stringify(batch.notes);
+    const backgroundsRestored = JSON.stringify(range.getBackgrounds())
+      === JSON.stringify(batch.backgrounds);
+    const formatsRestored = JSON.stringify(range.getNumberFormats())
+      === JSON.stringify(batch.numberFormats);
+    const validationsRestored = calculationValidationMatricesEqual_(
+      range.getDataValidations(), batch.dataValidations
+    );
+    if (!valuesRestored || !notesRestored || !backgroundsRestored
+      || !formatsRestored || !validationsRestored) {
+      errors.push(new Error(`Транзакционный rollback не восстановил диапазон ${batch.key}`
+        + ` (values=${valuesRestored}, notes=${notesRestored}, backgrounds=${backgroundsRestored},`
+        + ` formats=${formatsRestored}, validations=${validationsRestored}).`));
     }
   });
 }
 
-function restoreCalculationRangeSnapshot_(batch) {
-  const range = batch.sheet.getRange(
-    batch.row, batch.column, batch.rowCount, batch.columnCount
+function calculationSnapshotValuesEqual_(left, right) {
+  const leftIsDate = Object.prototype.toString.call(left) === '[object Date]';
+  const rightIsDate = Object.prototype.toString.call(right) === '[object Date]';
+  if (leftIsDate || rightIsDate) {
+    return leftIsDate && rightIsDate && left.getTime() === right.getTime();
+  }
+  return left === right;
+}
+
+function restoreCalculationRangeSnapshots_(spreadsheet, batches) {
+  const snapshots = batches || [];
+  if (snapshots.length) {
+    if (typeof Sheets === 'undefined' || !Sheets.Spreadsheets
+      || typeof Sheets.Spreadsheets.batchUpdate !== 'function') {
+      throw new Error('Advanced Sheets service is unavailable; rollback cannot restore exact values.');
+    }
+    const timezone = spreadsheet.getSpreadsheetTimeZone();
+    Sheets.Spreadsheets.batchUpdate({
+      requests: snapshots.map((batch) => ({
+        updateCells: {
+          range: {
+            sheetId: batch.sheet.getSheetId(),
+            startRowIndex: batch.row - 1,
+            endRowIndex: batch.row - 1 + batch.rowCount,
+            startColumnIndex: batch.column - 1,
+            endColumnIndex: batch.column - 1 + batch.columnCount,
+          },
+          rows: batch.values.map((row, rowIndex) => ({
+            values: row.map((value, columnIndex) => ({
+              userEnteredValue: buildCalculationUserEnteredValue_(
+                value, batch.formulas[rowIndex][columnIndex], timezone
+              ),
+            })),
+          })),
+          fields: 'userEnteredValue',
+        },
+      })),
+    }, spreadsheet.getId());
+  }
+  snapshots.forEach((batch) => {
+    const range = batch.sheet.getRange(
+      batch.row, batch.column, batch.rowCount, batch.columnCount
+    );
+    range.setNotes(batch.notes);
+    range.setBackgrounds(batch.backgrounds);
+    range.setNumberFormats(batch.numberFormats);
+    range.setDataValidations(batch.dataValidations);
+  });
+}
+
+function buildCalculationUserEnteredValue_(value, formula, timezone) {
+  if (formula) return { formulaValue: formula };
+  if (value === '' || value === null || value === undefined) return {};
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    return { numberValue: calculationDateToSheetsSerial_(value, timezone) };
+  }
+  if (typeof value === 'number') return { numberValue: value };
+  if (typeof value === 'boolean') return { boolValue: value };
+  return { stringValue: String(value) };
+}
+
+function calculationDateToSheetsSerial_(value, timezone) {
+  const local = Utilities.formatDate(value, timezone, "yyyy-MM-dd'T'HH:mm:ss.SSS");
+  const match = local.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})$/
   );
-  range.setValues(batch.values.map((row, rowIndex) => row.map((value, columnIndex) =>
-    batch.formulas[rowIndex][columnIndex] || value
-  )));
-  range.setNotes(batch.notes);
-  range.setBackgrounds(batch.backgrounds);
-  range.setNumberFormats(batch.numberFormats);
-  range.setDataValidations(batch.dataValidations);
+  if (!match) throw new Error('Не удалось преобразовать дату для точного rollback.');
+  return Date.UTC(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]), Number(match[6]), Number(match[7])
+  ) / 86400000 + 25569;
 }
 
 function restoreCalculationDescriptorSnapshot_(snapshot, descriptor) {
@@ -744,13 +813,13 @@ function restoreCalculationDescriptorSnapshot_(snapshot, descriptor) {
     batch.sheet === descriptor.sheet
   );
   const errors = [];
-  batches.forEach((batch) => {
-    try {
-      restoreCalculationRangeSnapshot_(batch);
-    } catch (error) {
-      errors.push(error);
-    }
-  });
+  try {
+    restoreCalculationRangeSnapshots_(
+      snapshot.auditSpreadsheet || descriptor.sheet.getParent(), batches
+    );
+  } catch (error) {
+    errors.push(error);
+  }
   try {
     SpreadsheetApp.flush();
   } catch (error) {

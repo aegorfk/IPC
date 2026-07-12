@@ -74,8 +74,10 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 #### Scenario: Large owned surfaces are snapshotted in batches
 - **WHEN** an adapter owns many rows across one or more contiguous output-column ranges
 - **THEN** values, formulas, notes, backgrounds, number formats, and validations are snapshotted and restored with a bounded number of bulk range calls proportional to ranges, not cells
-- **AND** each rectangular snapshot is restored with one mixed formula-or-literal matrix and one `setValues` call
-- **AND** formulas and neighboring nonformula values are restored exactly without per-formula range writes
+- **AND** all rectangular user-entered values are restored by one Advanced Sheets v4 `batchUpdate` with one `UpdateCellsRequest` per rectangle and `fields: userEnteredValue`
+- **AND** formulas use `formulaValue`, while literal strings including leading `=`, numbers, booleans, blanks, and spreadsheet-timezone Date serials use their explicit nonformula representations
+- **AND** verification requires exact formula equality for formula cells and both an empty actual formula and exact typed value for nonformula cells
+- **AND** an unavailable Advanced Sheets service fails fatally before any restore write
 
 #### Scenario: Protected formula is nonfatal
 - **WHEN** recovery targets a formula cell that the semantic adapter does not declare as its owned output

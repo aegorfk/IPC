@@ -42,6 +42,16 @@ class FakeRange {
 
   setNumberFormats(values) {
     this.sheet.writeGrid(this.row, this.column, values, 'numberFormat');
+    values.forEach((rowValues, rowOffset) => {
+      rowValues.forEach((format, columnOffset) => {
+        if (!/d{1,4}|y{2,4}/i.test(format || '')) return;
+        const key = this.sheet.key(this.row + rowOffset, this.column + columnOffset);
+        const value = this.sheet.cells.get(key);
+        if (typeof value !== 'number') return;
+        const utcMillis = Math.round((value - 25569) * 86400000);
+        this.sheet.cells.set(key, new Date(utcMillis - 3 * 60 * 60 * 1000));
+      });
+    });
     return this;
   }
 
@@ -543,6 +553,53 @@ function createHarness(sheetNames = ['Оклад']) {
       },
     },
     Session: { getScriptTimeZone: () => 'Europe/Moscow' },
+    Sheets: {
+      Spreadsheets: {
+        batchUpdate(resource, spreadsheetId) {
+          assert.strictEqual(spreadsheetId, spreadsheet.getId());
+          spreadsheet.serviceCalls.sheetsBatchUpdates =
+            (spreadsheet.serviceCalls.sheetsBatchUpdates || 0) + 1;
+          const requests = resource && resource.requests || [];
+          spreadsheet.serviceCalls.sheetsUpdateCellsRequests =
+            (spreadsheet.serviceCalls.sheetsUpdateCellsRequests || 0) + requests.length;
+          if (spreadsheet.failSheetsBatchUpdateOnce) {
+            spreadsheet.failSheetsBatchUpdateOnce = false;
+            throw new Error('injected Sheets batchUpdate failure');
+          }
+          requests.forEach((request) => {
+            const update = request.updateCells;
+            assert.strictEqual(update.fields, 'userEnteredValue');
+            const grid = update.range;
+            const sheet = spreadsheet.getSheets().find(
+              (candidate) => candidate.getSheetId() === grid.sheetId
+            );
+            if (!sheet) throw new Error(`Missing sheet id ${grid.sheetId}`);
+            (update.rows || []).forEach((rowData, rowOffset) => {
+              (rowData.values || []).forEach((cellData, columnOffset) => {
+                const row = grid.startRowIndex + rowOffset + 1;
+                const column = grid.startColumnIndex + columnOffset + 1;
+                const key = sheet.key(row, column);
+                const entered = cellData.userEnteredValue || {};
+                sheet.formulas.delete(key);
+                if (Object.prototype.hasOwnProperty.call(entered, 'formulaValue')) {
+                  sheet.formulas.set(key, entered.formulaValue);
+                  sheet.cells.set(key, entered.formulaValue);
+                } else if (Object.prototype.hasOwnProperty.call(entered, 'stringValue')) {
+                  sheet.cells.set(key, entered.stringValue);
+                } else if (Object.prototype.hasOwnProperty.call(entered, 'numberValue')) {
+                  sheet.cells.set(key, entered.numberValue);
+                } else if (Object.prototype.hasOwnProperty.call(entered, 'boolValue')) {
+                  sheet.cells.set(key, entered.boolValue);
+                } else {
+                  sheet.cells.set(key, '');
+                }
+              });
+            });
+          });
+          return {};
+        },
+      },
+    },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
       getUi: () => ({
@@ -576,6 +633,10 @@ function createHarness(sheetNames = ['Оклад']) {
     UrlFetchApp: { fetch() { throw new Error('Unexpected UrlFetchApp.fetch'); } },
     Utilities: {
       formatDate(date, timezone, format) {
+        if (format === "yyyy-MM-dd'T'HH:mm:ss.SSS") {
+          const shifted = new Date(date.getTime() + 3 * 60 * 60 * 1000);
+          return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}T${String(shifted.getUTCHours()).padStart(2, '0')}:${String(shifted.getUTCMinutes()).padStart(2, '0')}:${String(shifted.getUTCSeconds()).padStart(2, '0')}.${String(shifted.getUTCMilliseconds()).padStart(3, '0')}`;
+        }
         if (format === 'dd.MM.yyyy') {
           return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`;
         }
@@ -5637,9 +5698,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
     if (sheet === problemSheet) {
       sheet.getRange(2, 2).setValue(999).setNote('partial-before-local-failure');
-      harness.spreadsheet.failWritePredicate = ({ sheet: writtenSheet, kind, values }) =>
-        writtenSheet === problemSheet && kind === 'value'
-        && values.some((row) => row.includes(100));
+      harness.spreadsheet.failSheetsBatchUpdateOnce = true;
       const issue = new Error('typed issue whose local restore fails');
       issue.code = 'CALCULATION_DATA_QUALITY';
       throw issue;
@@ -5659,6 +5718,62 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(problemSheet.getRange(2, 2).getNote(), 'before-failed-local-restore');
 }
 
+// Rollback preserves formula-like literals and typed scalar values without setValues ambiguity.
+{
+  const harness = createHarness(['Точные значения']);
+  const sheet = harness.spreadsheet.getSheetByName('Точные значения');
+  const originalDate = new Date('2026-07-13T09:34:56.789Z');
+  sheet.seed(2, 2, '=literal-text');
+  sheet.getRange(2, 3).setValue('formula display').setFormula('=1+1');
+  sheet.getRange(2, 4).setValue(originalDate).setNumberFormat('dd.MM.yyyy HH:mm:ss.000');
+  sheet.getRange(2, 5).setValue(1234.5);
+  sheet.getRange(2, 6).setValue(true);
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: {
+      unpaidSalary: 1, target: 2, penalty: 3,
+      derivativeUnderpayment: 4, derivativeIndexation: 5,
+    },
+  };
+  const snapshot = harness.context.snapshotCalculationTransaction_(
+    harness.spreadsheet, [descriptor]
+  );
+  sheet.getRange(1, 2, 2, 5).setValues(Array.from(
+    { length: 2 }, () => Array(5).fill('changed')
+  )).setFormulas(Array.from({ length: 2 }, () => Array(5).fill('')));
+  harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0, reads: 0 };
+  harness.context.rollbackCalculationTransaction_(harness.spreadsheet, snapshot);
+  assert.strictEqual(sheet.getRange(1, 2).getFormula(), '');
+  assert.strictEqual(sheet.getRange(1, 2).getValue(), '');
+  assert.strictEqual(sheet.getRange(2, 2).getFormula(), '');
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), '=literal-text');
+  assert.strictEqual(sheet.getRange(2, 3).getFormula(), '=1+1');
+  assert.strictEqual(sheet.getRange(2, 4).getValue().getTime(), originalDate.getTime());
+  assert.strictEqual(sheet.getRange(2, 5).getValue(), 1234.5);
+  assert.strictEqual(sheet.getRange(2, 6).getValue(), true);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsUpdateCellsRequests, 1);
+}
+
+// Missing Advanced Sheets service is fatal before any rollback metadata write.
+{
+  const harness = createHarness(['Нет Advanced Sheets']);
+  const sheet = harness.spreadsheet.getSheetByName('Нет Advanced Sheets');
+  sheet.getRange(2, 2).setValue('before');
+  const snapshot = harness.context.snapshotCalculationTransaction_(harness.spreadsheet, [{
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1 },
+  }]);
+  sheet.getRange(2, 2).setValue('changed');
+  delete harness.context.Sheets;
+  harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0, reads: 0 };
+  assert.throws(
+    () => harness.context.rollbackCalculationTransaction_(harness.spreadsheet, snapshot),
+    /Advanced Sheets service is unavailable/
+  );
+  assert.strictEqual(harness.spreadsheet.serviceCalls.writes, 0);
+}
+
 // Final safety: 1000 rows x 4 contiguous outputs snapshot and restore in O(ranges), not O(cells).
 {
   const harness = createHarness(['Большой расчет']);
@@ -5667,7 +5782,7 @@ function stubBatchSessionStartup(harness) {
   const columnCount = 4;
   const originalValues = Array.from({ length: rowCount }, (_, rowIndex) =>
     Array.from({ length: columnCount }, (_, columnIndex) =>
-      `literal-${rowIndex + 1}-${columnIndex + 2}`
+      `=literal-${rowIndex + 1}-${columnIndex + 2}`
     )
   );
   const originalFormulas = Array.from({ length: rowCount }, (_, rowIndex) =>
@@ -5705,9 +5820,11 @@ function stubBatchSessionStartup(harness) {
   const rollbackWrites = harness.spreadsheet.serviceCalls.writes;
   assert.ok(snapshotReads <= 8, `snapshot reads must be O(ranges), got ${snapshotReads}`);
   assert.ok(rollbackWrites <= 8, `rollback writes must be O(ranges), got ${rollbackWrites}`);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsBatchUpdates, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsUpdateCellsRequests, 1);
   assert.strictEqual(sheet.getRange(2, 3).getFormula(), '=R2C3');
   assert.strictEqual(sheet.getRange(2, 2).getFormula(), '');
-  assert.strictEqual(sheet.getRange(2, 2).getValue(), 'literal-2-2');
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), '=literal-2-2');
   assert.strictEqual(sheet.getRange(2, 2).getNote(), 'formula note');
   assert.strictEqual(sheet.getRange(2, 2).getBackground(), '#111111');
   assert.strictEqual(sheet.getRange(2, 2).getNumberFormat(), 'formula-format');
@@ -5715,7 +5832,7 @@ function stubBatchSessionStartup(harness) {
     type: 'custom', formula: '=A2>0',
   });
   assert.strictEqual(sheet.getRange(1001, 5).getFormula(), '');
-  assert.strictEqual(sheet.getRange(1001, 5).getValue(), 'literal-1001-5');
+  assert.strictEqual(sheet.getRange(1001, 5).getValue(), '=literal-1001-5');
   assert.strictEqual(sheet.getRange(1001, 5).getNote(), 'tail note');
   assert.strictEqual(sheet.getRange(1001, 5).getBackground(), '#222222');
   assert.strictEqual(sheet.getRange(1001, 5).getNumberFormat(), 'tail-format');
