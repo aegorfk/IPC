@@ -77,7 +77,14 @@ const SETTINGS = {
       dataStartRow: 2,
       periodColumn: 'A',
       correctAnnualSalaryColumn: 'B',
+      annualSalaryDivisorColumn: 'C',
+      vacationDaysColumn: 'D',
       averageDailyEarningColumn: 'E',
+      actualDerivativeAmountColumn: 'H',
+      correctDerivativeAmountColumn: 'I',
+      derivativeUnderpaymentColumn: 'J',
+      derivativeIndexationColumn: 'K',
+      derivativeLiabilityColumn: 'L',
       underpaymentColumn: 'J',
       targetColumn: 'K',
       totalUnderpaymentColumn: 'J',
@@ -87,6 +94,10 @@ const SETTINGS = {
       recoveryLiabilityOutput: true,
       recoveryIndexationOutput: true,
       derivativeOutput: true,
+      derivativeOwnedOutputs: [
+        'correctAnnualSalary', 'averageDailyEarning', 'correctDerivativeAmount',
+        'derivativeUnderpayment', 'derivativeIndexation', 'derivativeLiability',
+      ],
       unpaidLabel: 'недоплата по отпускным выплатам',
       totalLabel: 'недоплата по отпускным выплатам',
       updateMonthlyIpc: false,
@@ -148,6 +159,11 @@ const HEADER_ALIASES = {
   correctAmount: ['размер надлежащей к выплате премии', 'размер надлежащей к выплате', 'размер надлежащей выплаты', 'надлежащей к выплате премии'],
   salaryBeforeIndexation: ['оклад до индексации', 'заработная плата до индексации', 'сумма до индексации'],
   correctAnnualSalary: ['сумма корректного годового заработка', 'корректный годовой заработок'],
+  annualSalaryDivisor: ['делитель среднего заработка', 'делитель'],
+  vacationDays: ['количество дней отпуска', 'дни отпуска', 'количество дней'],
+  averageDailyEarning: ['среднедневной заработок', 'средний дневной заработок'],
+  actualDerivativeAmount: ['начислено по расчетным листкам', 'фактически начислено', 'фактически выплачено'],
+  correctDerivativeAmount: ['корректное начисление', 'надлежащее начисление отпускных'],
   vacationStartDate: ['дата начала отпуска', 'начало отпуска', 'дата начала периода отпуска'],
   annualPremiumYear: ['за какой год премия', 'год премии', 'год расчета премии', 'год расчёта премии'],
 };
@@ -220,6 +236,7 @@ const SALARY_PAYMENT_PARTS = [
   { id: 'firstHalf', label: 'Первая половина месяца' },
   { id: 'secondHalf', label: 'Вторая половина месяца' },
 ];
+const RECOVERY_BASELINE_PROPERTY = 'CLAIM_RECOVERY_BASELINES_V1';
 
 function onOpen() {
   if (typeof hydrateClaimConstructorOnOpen_ === 'function') {
@@ -291,6 +308,23 @@ function updateAllSheetsIndexation() {
 }
 
 function runAllSheetsIndexation_(spreadsheet) {
+  const lock = typeof LockService !== 'undefined' && LockService.getDocumentLock
+    ? LockService.getDocumentLock() : null;
+  let acquired = false;
+  try {
+    if (lock) {
+      acquired = lock.tryLock(30000);
+      if (!acquired) {
+        throw new Error('Не удалось получить блокировку для атомарного перерасчета требований.');
+      }
+    }
+    return runAllSheetsIndexationTransaction_(spreadsheet);
+  } finally {
+    if (lock && acquired) lock.releaseLock();
+  }
+}
+
+function runAllSheetsIndexationTransaction_(spreadsheet) {
   if (typeof ensureClaimIntakeSheet_ === 'function') ensureClaimIntakeSheet_(spreadsheet);
   const questionnaireState = typeof captureClaimQuestionnaireState_ === 'function'
     ? captureClaimQuestionnaireState_(spreadsheet)
@@ -334,9 +368,13 @@ function runAllSheetsIndexation_(spreadsheet) {
   }
 
   deleteLegacyGeneratedSheets_(spreadsheet);
+  const preparedRecoveryFacts = prepareRecoveryBaselineFacts_(
+    results.reduce((facts, result) => facts.concat(result.claimFacts || []), []),
+    recoveryState
+  );
   let recoveryRates = [];
   let recoveryRateWarning = null;
-  if (recoveryState.valid.length) {
+  if (recoveryState.valid.length || preparedRecoveryFacts.recomputeTargetKeys.length) {
     try {
       recoveryRates = loadSalaryCompensationRates_();
     } catch (error) {
@@ -347,15 +385,17 @@ function runAllSheetsIndexation_(spreadsheet) {
     }
   }
   const recoveryEffects = applyPartialRecoveries_(
-    results.reduce((facts, result) => facts.concat(result.claimFacts || []), []),
+    preparedRecoveryFacts.claimFacts,
     recoveryState,
-    recoveryRates
+    recoveryRates,
+    { recomputeTargetKeys: preparedRecoveryFacts.recomputeTargetKeys }
   );
   if (recoveryRateWarning) recoveryEffects.warnings.push(recoveryRateWarning);
   const recoveryWriteResult = writeRecoveryAdjustedResultsToSheets_(
     spreadsheet,
     recoveryEffects.writeBacks
   );
+  persistRecoveryBaselineState_(preparedRecoveryFacts, recoveryEffects, recoveryWriteResult);
   recoveryEffects.warnings = recoveryEffects.warnings.concat(recoveryWriteResult.warnings);
   const derivativeDependencies = detectDerivativePaymentDependencies_(
     spreadsheet, results, recoveryEffects
@@ -692,6 +732,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
   const rowCount = lastRow - table.headerRow;
   const range = sheet.getRange(table.headerRow + 1, 1, rowCount, sheet.getLastColumn());
   const values = range.getValues();
+  const vacationDerivativeResult = prepareVacationDerivativeRows_(sheet, table, values);
   const inferredPaymentSchedule = table.layout.id === 'salary'
     ? inferSalaryPaymentScheduleForSheet_(spreadsheet, values, table, productionCalendar)
     : null;
@@ -702,9 +743,6 @@ function updateUnpaidSalaryIndexationCore_(params) {
       : null,
     target: readExistingOutputColumn_(sheet, table.headerRow + 1, table.columns.target, rowCount),
     penalty: readExistingOutputColumn_(sheet, table.headerRow + 1, table.columns.penalty, rowCount),
-    correctAnnualSalary: Number.isInteger(table.columns.correctAnnualSalary)
-      ? readExistingOutputColumn_(sheet, table.headerRow + 1, table.columns.correctAnnualSalary, rowCount)
-      : null,
   };
   const monthlyIpcValues = [];
   const monthlyIpcNotes = [];
@@ -989,60 +1027,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
         penaltyEnd.date
       )} (${penaltyEnd.source}). Источник ставок: calc.consultant.ru/kompensaciya-zarplata.`
     );
-
-  if (table.layout.id === 'vacation' && Number.isInteger(table.columns.correctAnnualSalary)) {
-    const correctAnnualSalaryRange = sheet.getRange(
-      table.headerRow + 1,
-      table.columns.correctAnnualSalary + 1,
-      rowCount,
-      1
-    );
-    const correctAnnualSalaryValues = [];
-    const correctAnnualSalaryNotes = [];
-    const correctAnnualSalaryBackgrounds = [];
-
-    values.forEach((row, rowIndex) => {
-      const vacationEvent = getVacationEventDate_(row, table);
-      const existingValue = preserveFormulaOrBlank_(existingOutput.correctAnnualSalary, rowIndex);
-      const existingNote = preserveFormulaNoteOrBlank_(existingOutput.correctAnnualSalary, rowIndex);
-      const existingBackground = preserveFormulaBackgroundOrDefault_(existingOutput.correctAnnualSalary, rowIndex);
-
-      if (!vacationEvent) {
-        correctAnnualSalaryValues.push([existingValue]);
-        correctAnnualSalaryNotes.push([existingNote]);
-        correctAnnualSalaryBackgrounds.push([existingBackground]);
-        return;
-      }
-
-      const reconstructedSalary = calculateVacationCorrectAnnualSalary_(vacationEvent.date, table.layout);
-      if (reconstructedSalary === null) {
-        correctAnnualSalaryValues.push([existingValue]);
-        correctAnnualSalaryNotes.push([existingNote]);
-        correctAnnualSalaryBackgrounds.push([existingBackground]);
-        return;
-      }
-
-      correctAnnualSalaryValues.push([reconstructedSalary]);
-      correctAnnualSalaryNotes.push([
-        `Реконструированная сумма корректного годового заработка за 12 месяцев до ${formatDate_(vacationEvent.date)}. Дата события: ${vacationEvent.source}. Годовые премии за незавершенный календарный год в отпускную базу не включаются.`,
-      ]);
-      correctAnnualSalaryBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
-    });
-
-    correctAnnualSalaryRange.setValues(correctAnnualSalaryValues);
-    correctAnnualSalaryRange.setNotes(correctAnnualSalaryNotes);
-    correctAnnualSalaryRange.setBackgrounds(correctAnnualSalaryBackgrounds);
-    correctAnnualSalaryRange.setNumberFormat(SETTINGS.MONEY_FORMAT);
-    Array.prototype.push.apply(
-      derivativeDependencies,
-      buildVacationDerivativeDependencies_(
-        sheet, table, existingOutput.correctAnnualSalary.values, correctAnnualSalaryValues
-      )
-    );
-    sheet
-      .getRange(table.headerRow, table.columns.correctAnnualSalary + 1)
-      .setNote('Авторасчет: реконструированная корректная сумма годового заработка по смежным листам.');
-  }
+  markVacationDerivativeOutputs_(sheet, vacationDerivativeResult.markerDestinations);
 
   SpreadsheetApp.flush();
   const totals = summarizeClaimConstructorCalculationTotals_(
@@ -1079,6 +1064,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
     totals,
     claimFacts,
     derivativeDependencies,
+    derivativeWarnings: vacationDerivativeResult.warnings,
   };
 }
 
@@ -1109,8 +1095,10 @@ function buildClaimFactSourceMetadata_(
       : null;
     return {
       source: {
+        sheetId: typeof sheet.getSheetId === 'function' ? sheet.getSheetId() : null,
         sheetName: sheet.getName(),
         row: sheetRow,
+        adapterId: table.layout.id,
         cells: {
           principal: `${indexToColumnLetter_(principalColumn - 1)}${sheetRow}`,
           indexation: `${indexToColumnLetter_(indexationColumn - 1)}${sheetRow}`,
@@ -1158,14 +1146,36 @@ function rescanCalculationResultFromSheet_(spreadsheet, result) {
     .getRange(table.headerRow + 1, table.columns.target + 1, rowCount, 1).getValues();
   const liabilityValues = sheet
     .getRange(table.headerRow + 1, table.columns.penalty + 1, rowCount, 1).getValues();
+  const sourceMetadata = rows.map((row, rowIndex) => ({
+    source: {
+      sheetId: typeof sheet.getSheetId === 'function' ? sheet.getSheetId() : null,
+      sheetName: sheet.getName(),
+      row: table.headerRow + rowIndex + 1,
+      adapterId: table.layout.id,
+    },
+  }));
   const facts = buildClaimFactsFromCalculationRows_({
     sheetName: sheet.getName(), table, rows, underpaymentValues, indexationValues, liabilityValues,
+    sourceMetadata,
   });
-  const previousByKey = new Map((result.claimFacts || []).map((fact) => [
-    buildStableClaimKey_(fact), fact,
-  ]));
+  const previousBySourceKey = new Map();
+  const previousByKey = new Map();
+  (result.claimFacts || []).forEach((fact) => {
+    const key = buildStableClaimKey_(fact);
+    if (!previousByKey.has(key)) previousByKey.set(key, []);
+    previousByKey.get(key).push(fact);
+    previousBySourceKey.set(`${key}::${getRecoverySourceIdentity_(fact)}`, fact);
+  });
   facts.forEach((fact) => {
-    const previous = previousByKey.get(buildStableClaimKey_(fact));
+    const key = buildStableClaimKey_(fact);
+    const candidates = previousByKey.get(key) || [];
+    let previous = previousBySourceKey.get(`${key}::${getRecoverySourceIdentity_(fact)}`);
+    if (previous) {
+      const candidateIndex = candidates.indexOf(previous);
+      if (candidateIndex >= 0) candidates.splice(candidateIndex, 1);
+    } else {
+      previous = candidates.shift();
+    }
     if (!previous) return;
     ['source', 'dueDate', 'liabilitySchedule', 'liabilityTiming', 'calculationEndDate', 'destinations'].forEach((field) => {
       if (previous[field] !== undefined) fact[field] = previous[field];
@@ -1296,14 +1306,16 @@ function appendClaimFactIfPositive_(facts, common, family, calculationItem, amou
   facts.push(fact);
 }
 
-function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
+function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, options) {
   const state = recoveryState || { valid: [], invalid: [], unallocated: [] };
   const rates = compensationRates || [];
   const facts = (claimFacts || []).map((fact) => Object.assign({}, fact));
   const principalByKey = new Map();
-  facts.forEach((fact) => {
+  facts.forEach((fact, inputOrder) => {
     if (fact.family === 'underpayment' && fact.calculationItem === 'principal') {
-      principalByKey.set(buildStableClaimKey_(fact), fact);
+      const key = buildStableClaimKey_(fact);
+      if (!principalByKey.has(key)) principalByKey.set(key, []);
+      principalByKey.get(key).push({ fact, inputOrder });
     }
   });
   const valid = (state.valid || []).map((recovery, inputOrder) => ({ recovery, inputOrder }));
@@ -1315,6 +1327,9 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
   valid.forEach((item) => {
     if (!byTarget.has(item.recovery.allocation)) byTarget.set(item.recovery.allocation, []);
     byTarget.get(item.recovery.allocation).push(item.recovery);
+  });
+  ((options && options.recomputeTargetKeys) || []).forEach((targetKey) => {
+    if (!byTarget.has(targetKey)) byTarget.set(targetKey, []);
   });
 
   const warnings = (state.unallocated || []).map((recovery) => ({
@@ -1343,33 +1358,47 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
   const overpayments = [];
   const liabilitySegments = [];
   const writeBacks = [];
+  const sourceAdjustments = [];
 
   byTarget.forEach((recoveries, targetKey) => {
-    const principal = principalByKey.get(targetKey);
-    if (!principal) {
+    const principalEntries = principalByKey.get(targetKey) || [];
+    if (!principalEntries.length) {
       recoveries.forEach((recovery) => warnings.push({
         code: 'recovery_target_missing', recovery, targetKey,
         reason: 'Целевое требование частичного погашения не найдено; остальные расчеты продолжены.',
       }));
       return;
     }
-    const declaredSchedule = (principal.liabilitySchedule || [])
-      .filter((segment) => segment && segment.dueDate instanceof Date && Number(segment.principal) > 0)
-      .map((segment, scheduleOrder) => ({
-        id: segment.id || `segment_${scheduleOrder + 1}`,
-        dueDate: new Date(segment.dueDate),
-        outstanding: roundMoney_(Number(segment.principal)),
-        scheduleOrder,
-      }))
-      .sort((left, right) => left.dueDate.getTime() - right.dueDate.getTime()
-        || left.scheduleOrder - right.scheduleOrder);
-    const liabilitySchedule = declaredSchedule.length
-      ? declaredSchedule
-      : (principal.liabilityTiming === 'single_due_date' && principal.dueDate instanceof Date ? [{
-          id: 'singleDueDate', dueDate: new Date(principal.dueDate),
-          outstanding: roundMoney_(Number(principal.amount) || 0), scheduleOrder: 0,
-        }] : []);
-    if (!liabilitySchedule.length || !(principal.calculationEndDate instanceof Date)) {
+    const sourceStates = principalEntries.map((entry) => {
+      const principal = entry.fact;
+      const sourceIdentity = getRecoverySourceIdentity_(principal);
+      const declaredSchedule = (principal.liabilitySchedule || [])
+        .filter((segment) => segment && segment.dueDate instanceof Date && Number(segment.principal) > 0)
+        .map((segment, scheduleOrder) => ({
+          id: segment.id || `segment_${scheduleOrder + 1}`,
+          dueDate: new Date(segment.dueDate),
+          outstanding: roundMoney_(Number(segment.principal)),
+          scheduleOrder,
+          sourceIdentity,
+          inputOrder: entry.inputOrder,
+        }));
+      const schedule = declaredSchedule.length
+        ? declaredSchedule
+        : (principal.liabilityTiming === 'single_due_date' && principal.dueDate instanceof Date ? [{
+            id: 'singleDueDate', dueDate: new Date(principal.dueDate),
+            outstanding: roundMoney_(Number(principal.amount) || 0), scheduleOrder: 0,
+            sourceIdentity, inputOrder: entry.inputOrder,
+          }] : []);
+      return {
+        principal,
+        sourceIdentity,
+        inputOrder: entry.inputOrder,
+        initialPrincipal: roundMoney_(Number(principal.amount) || 0),
+        schedule,
+      };
+    });
+    if (sourceStates.some((sourceState) => !sourceState.schedule.length
+      || !(sourceState.principal.calculationEndDate instanceof Date))) {
       warnings.push({
         code: 'recovery_dates_missing', targetKey,
         reason: 'Для требования не заданы адаптером срок выплаты и дата окончания расчета.',
@@ -1383,10 +1412,22 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
       });
       return;
     }
-    const initialPrincipal = Number(principal.amount) || 0;
+    const orderedSegments = sourceStates.reduce(
+      (segments, sourceState) => segments.concat(sourceState.schedule), []
+    ).sort((left, right) => left.dueDate.getTime() - right.dueDate.getTime()
+      || left.scheduleOrder - right.scheduleOrder
+      || left.sourceIdentity.localeCompare(right.sourceIdentity)
+      || left.inputOrder - right.inputOrder);
+    const initialPrincipal = roundMoney_(sourceStates.reduce(
+      (sum, sourceState) => sum + sourceState.initialPrincipal, 0
+    ));
     let outstanding = initialPrincipal;
+    const calculationEndDate = sourceStates.reduce((latest, sourceState) => {
+      const candidate = sourceState.principal.calculationEndDate;
+      return !latest || candidate > latest ? candidate : latest;
+    }, null);
     recoveries.forEach((recovery) => {
-      if (recovery.date > principal.calculationEndDate) {
+      if (recovery.date > calculationEndDate) {
         warnings.push({
           code: 'recovery_after_calculation_end', recovery, targetKey,
           reason: 'Погашение позже даты окончания расчета не изменяет сумму на эту дату.',
@@ -1395,12 +1436,13 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
       }
       const outstandingBeforeRecovery = outstanding;
       let recoveryRemainder = Math.min(outstandingBeforeRecovery, Number(recovery.amount) || 0);
-      liabilitySchedule.forEach((scheduleSegment) => {
+      orderedSegments.forEach((scheduleSegment) => {
         const applied = roundMoney_(Math.min(scheduleSegment.outstanding, recoveryRemainder));
         if (applied <= 0) return;
         const result = calculateSalaryCompensation_(applied, scheduleSegment.dueDate, recovery.date, rates);
         liabilitySegments.push({
           targetKey,
+          sourceIdentity: scheduleSegment.sourceIdentity,
           schedulePart: scheduleSegment.id,
           kind: 'recovered',
           principal: applied,
@@ -1426,65 +1468,87 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
         });
       }
     });
-    liabilitySchedule.forEach((scheduleSegment) => {
+    orderedSegments.forEach((scheduleSegment) => {
       if (scheduleSegment.outstanding <= 0) return;
+      const sourceState = sourceStates.find((candidate) =>
+        candidate.sourceIdentity === scheduleSegment.sourceIdentity
+      );
       const result = calculateSalaryCompensation_(
-        scheduleSegment.outstanding, scheduleSegment.dueDate, principal.calculationEndDate, rates
+        scheduleSegment.outstanding, scheduleSegment.dueDate,
+        sourceState.principal.calculationEndDate, rates
       );
       liabilitySegments.push({
         targetKey,
+        sourceIdentity: scheduleSegment.sourceIdentity,
         schedulePart: scheduleSegment.id,
         kind: 'outstanding',
         principal: scheduleSegment.outstanding,
         dueDate: new Date(scheduleSegment.dueDate),
-        endDate: new Date(principal.calculationEndDate),
+        endDate: new Date(sourceState.principal.calculationEndDate),
         amount: result.amount,
         intervals: result.intervals,
       });
     });
-    principal.amount = outstanding;
-    const relatedLiability = facts.find((fact) => fact.family === 'material_liability'
-      && fact.layoutId === principal.layoutId
-      && fact.baseKind === principal.baseKind
-      && fact.periodKey === principal.periodKey
-      && fact.calculationItem === 'article_236');
-    const relatedIndexation = facts.find((fact) => fact.family === 'underpayment_indexation'
-      && fact.layoutId === principal.layoutId
-      && fact.baseKind === principal.baseKind
-      && fact.periodKey === principal.periodKey
-      && fact.calculationItem === 'inflation_indexation');
-    const indexationDestination = principal.destinations && principal.destinations.indexation
-      || relatedIndexation && relatedIndexation.destinations && relatedIndexation.destinations.indexation;
-    if (relatedIndexation && (!indexationDestination
-      || indexationDestination.recoveryTimingSupported !== true)) {
-      relatedIndexation.disputed = true;
+    const relatedIndexations = [];
+    sourceStates.forEach((sourceState) => {
+      const principal = sourceState.principal;
+      const sourceOutstanding = roundMoney_(sourceState.schedule.reduce(
+        (sum, segment) => sum + segment.outstanding, 0
+      ));
+      principal.amount = sourceOutstanding;
+      sourceAdjustments.push({
+        targetKey,
+        sourceIdentity: sourceState.sourceIdentity,
+        baselinePrincipal: principal._recoveryBaseline
+          ? principal._recoveryBaseline.baselinePrincipal
+          : sourceState.initialPrincipal,
+        adjustedPrincipal: sourceOutstanding,
+        fingerprint: principal._recoveryBaseline
+          ? principal._recoveryBaseline.fingerprint
+          : buildRecoveryFingerprint_(recoveries),
+      });
+      const relatedLiability = findRecoveryRelatedFact_(
+        facts, principal, 'material_liability', 'article_236'
+      );
+      const relatedIndexation = findRecoveryRelatedFact_(
+        facts, principal, 'underpayment_indexation', 'inflation_indexation'
+      );
+      if (relatedIndexation) relatedIndexations.push({ principal, fact: relatedIndexation });
+      const liabilityAmount = roundMoney_(liabilitySegments
+        .filter((segment) => segment.targetKey === targetKey
+          && segment.sourceIdentity === sourceState.sourceIdentity)
+        .reduce((sum, segment) => sum + segment.amount, 0));
+      if (relatedLiability) relatedLiability.amount = liabilityAmount;
+      const explanation = `Частичное погашение учтено хронологически. Исходная сумма источника: ${formatMoneyRu_(sourceState.initialPrincipal, 2)}; остаток: ${formatMoneyRu_(sourceOutstanding, 2)}. Материальная ответственность по ст. 236 ТК РФ пересчитана по графику этого источника.`;
+      if (principal.destinations && principal.destinations.principal) {
+        writeBacks.push({
+          destination: principal.destinations.principal,
+          value: sourceOutstanding,
+          kind: 'principal',
+          note: explanation,
+        });
+      }
+      const liabilityDestination = principal.destinations && principal.destinations.liability
+        || relatedLiability && relatedLiability.destinations && relatedLiability.destinations.liability;
+      if (liabilityDestination) {
+        writeBacks.push({
+          destination: liabilityDestination,
+          value: liabilityAmount,
+          kind: 'liability',
+          note: explanation,
+        });
+      }
+    });
+    if (relatedIndexations.some((item) => {
+      const destination = item.principal.destinations && item.principal.destinations.indexation
+        || item.fact.destinations && item.fact.destinations.indexation;
+      return !destination || destination.recoveryTimingSupported !== true;
+    })) {
+      relatedIndexations.forEach((item) => { item.fact.disputed = true; });
       warnings.push({
         code: 'recovery_indexation_timing_unsupported',
         targetKey,
         reason: 'Индексация не изменена: действующая методология не определяет корректировку индексации по дате частичного погашения; позиция отмечена как спорная.',
-      });
-    }
-    const liabilityAmount = roundMoney_(liabilitySegments
-      .filter((segment) => segment.targetKey === targetKey)
-      .reduce((sum, segment) => sum + segment.amount, 0));
-    if (relatedLiability) relatedLiability.amount = liabilityAmount;
-    const explanation = `Частичное погашение учтено хронологически. Исходная сумма: ${formatMoneyRu_(initialPrincipal, 2)}; остаток: ${formatMoneyRu_(outstanding, 2)}. Материальная ответственность по ст. 236 ТК РФ пересчитана до дат погашений и даты окончания расчета.`;
-    if (principal.destinations && principal.destinations.principal) {
-      writeBacks.push({
-        destination: principal.destinations.principal,
-        value: outstanding,
-        kind: 'principal',
-        note: explanation,
-      });
-    }
-    const liabilityDestination = principal.destinations && principal.destinations.liability
-      || relatedLiability && relatedLiability.destinations && relatedLiability.destinations.liability;
-    if (liabilityDestination) {
-      writeBacks.push({
-        destination: liabilityDestination,
-        value: liabilityAmount,
-        kind: 'liability',
-        note: explanation,
       });
     }
   });
@@ -1494,6 +1558,7 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
     auditFacts,
     liabilitySegments,
     writeBacks,
+    sourceAdjustments,
     warnings,
     overpayments,
     unallocated: state.unallocated || [],
@@ -1501,8 +1566,18 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates) {
   };
 }
 
+function findRecoveryRelatedFact_(facts, principal, family, calculationItem) {
+  const sourceIdentity = getRecoverySourceIdentity_(principal);
+  return (facts || []).find((fact) => fact.family === family
+    && fact.layoutId === principal.layoutId
+    && fact.baseKind === principal.baseKind
+    && fact.periodKey === principal.periodKey
+    && fact.calculationItem === calculationItem
+    && getRecoverySourceIdentity_(fact) === sourceIdentity);
+}
+
 function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks) {
-  const result = { written: 0, warnings: [] };
+  const result = { written: 0, writtenBacks: [], warnings: [] };
   (writeBacks || []).forEach((writeBack) => {
     const destination = writeBack.destination || {};
     const sheet = spreadsheet.getSheetByName(destination.sheetName);
@@ -1525,8 +1600,258 @@ function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks) {
         `Частичное погашение. ${writeBack.note || ''}`));
     }
     result.written++;
+    result.writtenBacks.push(writeBack);
   });
   return result;
+}
+
+function prepareRecoveryBaselineFacts_(claimFacts, recoveryState) {
+  const facts = (claimFacts || []).map((fact) => Object.assign({}, fact));
+  const registry = readRecoveryBaselineRegistry_();
+  const recoveriesByTarget = new Map();
+  ((recoveryState && recoveryState.valid) || []).forEach((recovery) => {
+    if (!recoveriesByTarget.has(recovery.allocation)) recoveriesByTarget.set(recovery.allocation, []);
+    recoveriesByTarget.get(recovery.allocation).push(recovery);
+  });
+  const recomputeTargetKeys = new Set();
+  facts.forEach((fact) => {
+    if (fact.family !== 'underpayment' || fact.calculationItem !== 'principal') return;
+    const targetKey = buildStableClaimKey_(fact);
+    const sourceIdentity = getRecoverySourceIdentity_(fact);
+    const registryKey = buildRecoveryRegistryKey_(targetKey, sourceIdentity);
+    const previous = registry[registryKey];
+    const currentPrincipal = roundMoney_(Number(fact.amount) || 0);
+    const recoveries = recoveriesByTarget.get(targetKey) || [];
+    if (!recoveries.length && !previous) return;
+    const baselinePrincipal = previous
+      && roundMoney_(Number(previous.lastAdjusted)) === currentPrincipal
+      ? roundMoney_(Number(previous.baselinePrincipal))
+      : currentPrincipal;
+    fact.amount = baselinePrincipal;
+    fact.liabilitySchedule = rescaleRecoveryLiabilitySchedule_(
+      fact.liabilitySchedule, currentPrincipal, baselinePrincipal
+    );
+    fact._recoveryBaseline = {
+      registryKey,
+      targetKey,
+      sourceIdentity,
+      baselinePrincipal,
+      lastAdjusted: previous ? previous.lastAdjusted : null,
+      fingerprint: buildRecoveryFingerprint_(recoveries),
+    };
+    recomputeTargetKeys.add(targetKey);
+  });
+  return { claimFacts: facts, registry, recomputeTargetKeys: Array.from(recomputeTargetKeys) };
+}
+
+function persistRecoveryBaselineState_(prepared, recoveryEffects, writeResult) {
+  const writtenPrincipalKeys = new Set(((writeResult && writeResult.writtenBacks) || [])
+    .filter((writeBack) => writeBack.kind === 'principal')
+    .map((writeBack) => [writeBack.destination.sheetName, writeBack.destination.row,
+      writeBack.destination.column].join('|')));
+  const nextRegistry = {};
+  ((prepared && prepared.claimFacts) || []).forEach((fact) => {
+    const baseline = fact && fact._recoveryBaseline;
+    if (!baseline) return;
+    const previous = prepared.registry && prepared.registry[baseline.registryKey];
+    if (previous) nextRegistry[baseline.registryKey] = Object.assign({}, previous);
+  });
+  ((recoveryEffects && recoveryEffects.sourceAdjustments) || []).forEach((adjustment) => {
+    const fact = (prepared.claimFacts || []).find((candidate) =>
+      candidate._recoveryBaseline
+      && candidate._recoveryBaseline.sourceIdentity === adjustment.sourceIdentity
+      && candidate._recoveryBaseline.targetKey === adjustment.targetKey
+    );
+    const registryKey = buildRecoveryRegistryKey_(adjustment.targetKey, adjustment.sourceIdentity);
+    const destination = fact && fact.destinations && fact.destinations.principal;
+    const destinationKey = destination
+      ? [destination.sheetName, destination.row, destination.column].join('|') : '';
+    if (!destination || !writtenPrincipalKeys.has(destinationKey)) return;
+    if (!adjustment.fingerprint) {
+      delete nextRegistry[registryKey];
+      return;
+    }
+    nextRegistry[registryKey] = {
+      baselinePrincipal: roundMoney_(adjustment.baselinePrincipal),
+      lastAdjusted: roundMoney_(adjustment.adjustedPrincipal),
+      fingerprint: adjustment.fingerprint,
+    };
+  });
+  writeRecoveryBaselineRegistry_(nextRegistry);
+}
+
+function readRecoveryBaselineRegistry_() {
+  if (typeof PropertiesService === 'undefined') return {};
+  const raw = PropertiesService.getDocumentProperties().getProperty(RECOVERY_BASELINE_PROPERTY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeRecoveryBaselineRegistry_(registry) {
+  if (typeof PropertiesService === 'undefined') return;
+  const properties = PropertiesService.getDocumentProperties();
+  if (!registry || !Object.keys(registry).length) {
+    properties.deleteProperty(RECOVERY_BASELINE_PROPERTY);
+    return;
+  }
+  properties.setProperty(RECOVERY_BASELINE_PROPERTY, JSON.stringify(registry));
+}
+
+function buildRecoveryFingerprint_(recoveries) {
+  const parts = (recoveries || []).map((recovery) => [
+    recovery.date instanceof Date ? recovery.date.getTime() : '',
+    roundMoney_(Number(recovery.amount) || 0),
+    String(recovery.allocation || ''),
+  ].join(':')).sort();
+  return parts.length ? parts.join('|') : '';
+}
+
+function getRecoverySourceIdentity_(fact) {
+  const source = fact && fact.source || {};
+  const destination = fact && fact.destinations && fact.destinations.principal || {};
+  return [
+    source.sheetId !== null && source.sheetId !== undefined ? source.sheetId : source.sheetName || destination.sheetName || 'unknown_sheet',
+    source.row || destination.row || 'unknown_row',
+    source.adapterId || fact.layoutId || 'unknown_adapter',
+  ].join('|');
+}
+
+function buildRecoveryRegistryKey_(targetKey, sourceIdentity) {
+  return `${targetKey}::${sourceIdentity}`;
+}
+
+function rescaleRecoveryLiabilitySchedule_(schedule, currentPrincipal, baselinePrincipal) {
+  if (!Array.isArray(schedule) || !schedule.length || currentPrincipal <= 0
+    || currentPrincipal === baselinePrincipal) return schedule;
+  const scaled = schedule.map((segment) => Object.assign({}, segment, {
+    principal: roundMoney_(Number(segment.principal) * baselinePrincipal / currentPrincipal),
+  }));
+  const difference = roundMoney_(baselinePrincipal - scaled.reduce(
+    (sum, segment) => sum + Number(segment.principal || 0), 0
+  ));
+  if (scaled.length && difference) {
+    scaled[scaled.length - 1].principal = roundMoney_(scaled[scaled.length - 1].principal + difference);
+  }
+  return scaled;
+}
+
+function prepareVacationDerivativeRows_(sheet, table, rows) {
+  const result = { written: 0, warnings: [], markerDestinations: [] };
+  if (!sheet || !table || !table.layout || table.layout.id !== 'vacation'
+    || table.layout.derivativeOutput !== true) return result;
+  const columns = table.columns || {};
+  const required = [
+    'correctAnnualSalary', 'annualSalaryDivisor', 'vacationDays',
+    'averageDailyEarning', 'actualDerivativeAmount', 'correctDerivativeAmount',
+    'derivativeUnderpayment', 'derivativeIndexation', 'derivativeLiability',
+  ];
+  const missing = required.filter((semantic) => !Number.isInteger(columns[semantic]));
+  if (missing.length) {
+    result.warnings.push({
+      code: 'vacation_derivative_contract_incomplete',
+      missing,
+      reason: 'Адаптер отпускных не объявил все семантические колонки производного расчета.',
+    });
+    return result;
+  }
+
+  (rows || []).forEach((row, rowIndex) => {
+    const vacationEvent = getVacationEventDate_(row, table);
+    if (!vacationEvent) return;
+    const annualSalary = calculateVacationCorrectAnnualSalary_(vacationEvent.date, table.layout);
+    const divisor = parseMoney_(row[columns.annualSalaryDivisor]);
+    const vacationDays = parseMoney_(row[columns.vacationDays]);
+    const actualPaid = parseMoney_(row[columns.actualDerivativeAmount]);
+    if (annualSalary === null || divisor === null || divisor <= 0
+      || vacationDays === null || vacationDays < 0 || actualPaid === null) {
+      result.warnings.push({
+        code: 'vacation_derivative_inputs_invalid',
+        row: table.headerRow + rowIndex + 1,
+        reason: 'Производный расчет отпускных пропущен: требуются годовая база, положительный делитель, дни и фактически начисленная сумма.',
+      });
+      return;
+    }
+
+    const averageDaily = roundMoney_(annualSalary / divisor);
+    const correctAmount = roundMoney_(averageDaily * vacationDays);
+    const underpayment = roundMoney_(correctAmount - actualPaid);
+    const sheetRow = table.headerRow + rowIndex + 1;
+    const baseNote = `Реконструированная сумма корректного годового заработка за 12 месяцев до ${formatDate_(vacationEvent.date)}. Дата события: ${vacationEvent.source}. Годовые премии за незавершенный календарный год в отпускную базу не включаются.`;
+    const effectNote = `Производная выплата пересчитана из-за изменения расчетной базы: средний дневной заработок = ${formatMoneyRu_(annualSalary, 2)} / ${formatMoneyRu_(divisor, 6)} = ${formatMoneyRu_(averageDaily, 2)}; корректное начисление = ${formatMoneyRu_(averageDaily, 2)} x ${formatMoneyRu_(vacationDays, 6)} = ${formatMoneyRu_(correctAmount, 2)}; недоплата = ${formatMoneyRu_(correctAmount, 2)} - ${formatMoneyRu_(actualPaid, 2)} = ${formatMoneyRu_(underpayment, 2)}.`;
+    const writes = [
+      { semantic: 'correctAnnualSalary', value: annualSalary, note: baseNote, marker: false },
+      { semantic: 'averageDailyEarning', value: averageDaily, note: effectNote, marker: true },
+      { semantic: 'correctDerivativeAmount', value: correctAmount, note: effectNote, marker: true },
+      { semantic: 'derivativeUnderpayment', value: underpayment, note: effectNote, marker: true },
+    ];
+    let complete = true;
+    writes.forEach((write) => {
+      const column = columns[write.semantic];
+      const destination = { sheetName: sheet.getName(), row: sheetRow, column: column + 1 };
+      const written = writeVacationDerivativeCell_(
+        sheet, destination, write.value, write.note, write.marker,
+        isVacationDerivativeColumnOwned_(table.layout, write.semantic), result.warnings
+      );
+      if (!written) complete = false;
+      if (written) {
+        row[column] = write.value;
+        result.written++;
+      }
+      if (write.marker) result.markerDestinations.push(destination);
+    });
+    if (!complete) return;
+    ['derivativeIndexation', 'derivativeLiability'].forEach((semantic) => {
+      result.markerDestinations.push({
+        sheetName: sheet.getName(), row: sheetRow, column: columns[semantic] + 1,
+        note: effectNote,
+      });
+    });
+  });
+  if (Number.isInteger(columns.correctAnnualSalary)) {
+    sheet.getRange(table.headerRow, columns.correctAnnualSalary + 1)
+      .setNote('Авторасчет: реконструированная корректная сумма годового заработка по смежным листам.');
+  }
+  return result;
+}
+
+function isVacationDerivativeColumnOwned_(layout, semantic) {
+  return !!(layout && Array.isArray(layout.derivativeOwnedOutputs)
+    && layout.derivativeOwnedOutputs.indexOf(semantic) >= 0);
+}
+
+function writeVacationDerivativeCell_(sheet, destination, value, note, marker, adapterOwned, warnings) {
+  const range = sheet.getRange(destination.row, destination.column);
+  const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
+  if (formula && adapterOwned !== true) {
+    warnings.push({
+      code: 'formula_writeback_blocked', destination,
+      reason: 'Формула сохранена: семантическая колонка не объявлена выходом адаптера отпускных.',
+    });
+    return false;
+  }
+  range.setValue(value).setNumberFormat(SETTINGS.MONEY_FORMAT);
+  if (marker) range.setBackground('#D9EAD3');
+  else range.setBackground(SETTINGS.BACKGROUND_DEFAULT);
+  if (typeof range.setNote === 'function') {
+    range.setNote(mergeCalculationEffectNote_(range.getNote(), note));
+  }
+  return true;
+}
+
+function markVacationDerivativeOutputs_(sheet, destinations) {
+  (destinations || []).forEach((destination) => {
+    const range = sheet.getRange(destination.row, destination.column);
+    range.setBackground('#D9EAD3');
+    if (typeof range.setNote === 'function') {
+      range.setNote(mergeCalculationEffectNote_(range.getNote(), destination.note
+        || 'Производная выплата пересчитана из-за изменения расчетной базы.'));
+    }
+  });
 }
 
 function getDerivativePaymentDependencyRegistry_() {
@@ -1698,6 +2023,14 @@ function findTable_(sheet) {
         correctAmount: layout.correctAmountColumn ? columnLetterToIndex_(layout.correctAmountColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAmount),
         salaryBeforeIndexation: layout.salaryBeforeIndexationColumn ? columnLetterToIndex_(layout.salaryBeforeIndexationColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.salaryBeforeIndexation),
         correctAnnualSalary: layout.correctAnnualSalaryColumn ? columnLetterToIndex_(layout.correctAnnualSalaryColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAnnualSalary),
+        annualSalaryDivisor: layout.annualSalaryDivisorColumn ? columnLetterToIndex_(layout.annualSalaryDivisorColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.annualSalaryDivisor),
+        vacationDays: layout.vacationDaysColumn ? columnLetterToIndex_(layout.vacationDaysColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationDays),
+        averageDailyEarning: layout.averageDailyEarningColumn ? columnLetterToIndex_(layout.averageDailyEarningColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.averageDailyEarning),
+        actualDerivativeAmount: layout.actualDerivativeAmountColumn ? columnLetterToIndex_(layout.actualDerivativeAmountColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.actualDerivativeAmount),
+        correctDerivativeAmount: layout.correctDerivativeAmountColumn ? columnLetterToIndex_(layout.correctDerivativeAmountColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctDerivativeAmount),
+        derivativeUnderpayment: layout.derivativeUnderpaymentColumn ? columnLetterToIndex_(layout.derivativeUnderpaymentColumn) : null,
+        derivativeIndexation: layout.derivativeIndexationColumn ? columnLetterToIndex_(layout.derivativeIndexationColumn) : null,
+        derivativeLiability: layout.derivativeLiabilityColumn ? columnLetterToIndex_(layout.derivativeLiabilityColumn) : null,
         vacationStartDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationStartDate),
         paymentDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentDate),
         paymentStatement: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentStatement),
@@ -3519,45 +3852,35 @@ function reconstructCorrectAnnualEarnings_(startDate, endDate, eventDate) {
   );
 
   relevantLayouts.forEach((layout) => {
-    const sheet = spreadsheet
-      .getSheets()
-      .find((candidate) => getSheetLayout_(candidate.getName()).id === layout.id);
-    if (!sheet) {
-      return;
-    }
-
-    const table = findTable_(sheet);
-    if (!Number.isInteger(table.columns.correctAmount)) {
-      return;
-    }
-
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= table.headerRow) {
-      return;
-    }
-
-    const rows = sheet.getRange(table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn()).getValues();
-    rows.forEach((row) => {
-      const period = parseRowPeriod_(row, table.columns);
-      if (!period) {
-        return;
-      }
-
-      const periodDate = new Date(period.year, period.month - 1, 1);
-      if (periodDate >= startDate && periodDate < endDate) {
-        if (
-          layout.id === 'annualPremiums' &&
-          !isAnnualPremiumCompletedForVacation_(row, table, eventDate)
-        ) {
-          return;
-        }
-
-        const amount = parseMoney_(row[table.columns.correctAmount]);
-        if (amount !== null) {
-          total += amount;
-        }
-      }
-    });
+    spreadsheet.getSheets()
+      .filter((candidate) => {
+        if (isGeneratedSheetName_(candidate.getName())
+          || candidate.getName() === 'Анкета и требования'
+          || candidate.getName() === 'Конструктор') return false;
+        const resolved = resolveSheetLayout_(candidate);
+        return resolved && resolved.id === layout.id;
+      })
+      .forEach((sheet) => {
+        const table = findTable_(sheet);
+        if (!Number.isInteger(table.columns.correctAmount)) return;
+        const lastRow = sheet.getLastRow();
+        if (lastRow <= table.headerRow) return;
+        const rows = sheet.getRange(
+          table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn()
+        ).getValues();
+        rows.forEach((row) => {
+          const period = parseRowPeriod_(row, table.columns);
+          if (!period) return;
+          const periodDate = new Date(period.year, period.month - 1, 1);
+          if (periodDate < startDate || periodDate >= endDate) return;
+          if (layout.id === 'annualPremiums'
+            && !isAnnualPremiumCompletedForVacation_(row, table, eventDate)) {
+            return;
+          }
+          const amount = parseMoney_(row[table.columns.correctAmount]);
+          if (amount !== null) total += amount;
+        });
+      });
   });
 
   return roundMoney_(total);
