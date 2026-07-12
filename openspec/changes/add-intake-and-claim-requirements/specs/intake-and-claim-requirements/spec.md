@@ -281,3 +281,9 @@ The system SHALL provide the final action `Расписать выбранные
 - **WHEN** the system cannot determine the Drive folder for the current or previous calculation document
 - **THEN** the write-out fails with a specific corrective message
 - **AND** does not create a document in an arbitrary fallback folder
+
+#### Scenario: Docs history authority is missing or malformed
+- **WHEN** the generated-Docs-history named range is missing, malformed, or points to the wrong sheet
+- **THEN** the system initializes history ownership only at the configured G:I first row without scanning other rows
+- **AND** never migrates or clears legacy A:C cells
+- **AND** fails without overwriting when the configured or next append row contains unrelated data

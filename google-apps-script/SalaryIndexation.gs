@@ -305,6 +305,7 @@ function onOpen() {
     .addItem('Открыть конструктор', 'openClaimConstructor')
     .addItem('Собрать расчет', 'buildClaimCalculation')
     .addItem('Повторить последний запуск', 'retryClaimCalculation')
+    .addItem('Расписать выбранные требования', 'writeSelectedClaimDocumentAction')
     .addSeparator()
     .addItem('Показать детализацию', 'showClaimConstructorDetailMode')
     .addItem('Обычный режим', 'showClaimConstructorNormalMode')

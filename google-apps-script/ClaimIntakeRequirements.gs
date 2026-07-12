@@ -1095,16 +1095,7 @@ function getClaimDocsHistoryExtent_(sheet, history, namedRange) {
     && namedRange.getNumRows() > 0) {
     return namedRange.getNumRows();
   }
-  const lastRow = Math.max(sheet.getLastRow(), history.firstRow);
-  const rows = sheet.getRange(
-    history.firstRow, history.firstColumn,
-    lastRow - history.firstRow + 1, history.columnCount
-  ).getValues();
-  let extent = 0;
-  rows.forEach((row, index) => {
-    if (row.some((cell) => cell !== '' && cell !== null)) extent = index + 1;
-  });
-  return Math.max(extent, 1);
+  return 1;
 }
 
 function getClaimDocsHistoryRange_(spreadsheet, sheet, history) {
@@ -1121,12 +1112,19 @@ function appendClaimDocsHistory_(spreadsheet, entry) {
   const sheet = spreadsheet.getSheetByName(layout.sheetName) || ensureClaimIntakeSheet_(spreadsheet);
   const range = getClaimDocsHistoryRange_(spreadsheet, sheet, history);
   const rows = range.getValues();
+  validateClaimDocsHistoryRows_(rows);
   const hasOnlyBlankPlaceholder = rows.length === 1
     && rows[0].every((cell) => cell === '' || cell === null);
   const row = hasOnlyBlankPlaceholder ? history.firstRow : history.firstRow + rows.length;
   ensureClaimAuditRows_(sheet, row);
+  const targetRange = sheet.getRange(row, history.firstColumn, 1, history.columnCount);
+  const previousTargetValues = targetRange.getValues();
+  if (!hasOnlyBlankPlaceholder && previousTargetValues[0].some((cell) =>
+    cell !== '' && cell !== null)) {
+    throw new Error('Следующая ячейка истории занята посторонними данными; запись отменена.');
+  }
   const documentCell = `${entry.title || 'Расчет требований'} — ${entry.url}`;
-  sheet.getRange(row, history.firstColumn, 1, history.columnCount).setValues([[
+  targetRange.setValues([[
     entry.timestamp || new Date(), documentCell, entry.source || 'payroll_slips',
   ]]);
   const extent = row - history.firstRow + 1;
@@ -1134,7 +1132,38 @@ function appendClaimDocsHistory_(spreadsheet, entry) {
     history.namedRange,
     sheet.getRange(history.firstRow, history.firstColumn, extent, history.columnCount)
   );
-  return { row, extent };
+  return { row, extent, targetRange, previousTargetValues };
+}
+
+function validateClaimDocsHistoryRows_(rows) {
+  (rows || []).forEach((row) => {
+    const blank = row.every((cell) => cell === '' || cell === null);
+    if (blank) return;
+    if (!extractGoogleDocId_(row[1])) {
+      throw new Error('Ячейка истории занята посторонними данными; запись отменена.');
+    }
+  });
+}
+
+function validateClaimDocsHistoryAuthority_(spreadsheet) {
+  const layout = getClaimIntakeLayout_();
+  const sheet = spreadsheet.getSheetByName(layout.sheetName);
+  if (!sheet) throw new Error('Не найден лист истории сформированных Docs.');
+  const range = getClaimDocsHistoryRange_(spreadsheet, sheet, layout.docsHistory);
+  const rows = range.getValues();
+  validateClaimDocsHistoryRows_(rows);
+  const blankPlaceholder = rows.length === 1
+    && rows[0].every((cell) => cell === '' || cell === null);
+  if (!blankPlaceholder) {
+    const nextRow = layout.docsHistory.firstRow + rows.length;
+    const next = sheet.getRange(
+      nextRow, layout.docsHistory.firstColumn, 1, layout.docsHistory.columnCount
+    ).getValues()[0];
+    if (next.some((cell) => cell !== '' && cell !== null)) {
+      throw new Error('Следующая ячейка истории занята посторонними данными; запись отменена.');
+    }
+  }
+  return range;
 }
 
 function buildSelectedClaimPayload_(spreadsheet) {
@@ -1165,11 +1194,13 @@ function buildSelectedClaimPayload_(spreadsheet) {
       groups.push(currentGroup);
       return;
     }
-    if (row[0] !== true) return;
     if (!currentGroup) {
-      currentGroup = { family: '', label: 'Выбранные требования', items: [], total: 0 };
-      groups.push(currentGroup);
+      throw new Error(
+        'Нарушен порядок групп аудита: позиция находится до заголовка группы. '
+        + 'Повторите расчет в Google Sheets.'
+      );
     }
+    if (row[0] !== true) return;
     const amount = Number(row[3]);
     const family = decodeClaimKeyPart_(key.split('|')[0]);
     if (!currentGroup.family) currentGroup.family = family;
@@ -1212,7 +1243,7 @@ function buildSelectedClaimPayload_(spreadsheet) {
     groups: selectedGroups,
     total: roundClaimAuditMoney_(selectedGroups.reduce((sum, group) => sum + group.total, 0)),
     recoveries: {
-      valid: recoveries.valid,
+      valid: recoveries.valid.filter((recovery) => selectedClaimKeys.has(recovery.allocation)),
       invalid: recoveries.invalid,
       unallocated: recoveries.unallocated,
     },
@@ -1370,15 +1401,32 @@ function resolveSelectedClaimDocumentFolder_(spreadsheet) {
 function writeSelectedClaimDocument(options) {
   const settings = options || {};
   const spreadsheet = settings.spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const lock = LockService.getDocumentLock() || LockService.getScriptLock();
+  if (!lock || !lock.tryLock(30000)) {
+    throw new Error('Формирование документа уже выполняется; повторите попытку позже.');
+  }
+  try {
+    return writeSelectedClaimDocumentLocked_(spreadsheet, settings);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
+  ensureClaimConstructorWorkspace_(spreadsheet);
   const resolvedFolder = resolveSelectedClaimDocumentFolder_(spreadsheet);
   const payload = buildSelectedClaimPayload_(spreadsheet);
+  validateSelectedClaimDocumentPayload_(payload);
+  validateClaimDocsHistoryAuthority_(spreadsheet);
   const now = settings.now || new Date();
   const title = buildSelectedClaimDocumentTitle_(payload, now);
   let document = null;
   let file = null;
+  let documentId = '';
   try {
     document = DocumentApp.create(title);
-    file = DriveApp.getFileById(document.getId());
+    documentId = document.getId();
+    file = DriveApp.getFileById(documentId);
     file.moveTo(resolvedFolder.folder);
     populateSelectedClaimDocument_(document, payload, now);
     document.saveAndClose();
@@ -1392,7 +1440,7 @@ function writeSelectedClaimDocument(options) {
       source: payload.sourceKind,
     });
     return {
-      documentId: document.getId(),
+      documentId,
       url,
       title,
       folder: resolvedFolder.folder,
@@ -1400,14 +1448,67 @@ function writeSelectedClaimDocument(options) {
       payload,
     };
   } catch (error) {
-    if (file && typeof file.setTrashed === 'function') {
+    if (documentId) {
       try {
-        file.setTrashed(true);
+        trashGeneratedClaimDocument_(documentId, file);
       } catch (trashError) {
-        // Preserve the original failure; the old registry is still untouched or restored.
+        throw new Error(
+          `${error && error.message ? error.message : error}. `
+          + `Не удалось удалить созданный документ; orphan ${documentId}: `
+          + `${trashError && trashError.message ? trashError.message : trashError}`
+        );
       }
     }
     throw error;
+  }
+}
+
+function trashGeneratedClaimDocument_(documentId, knownFile) {
+  const errors = [];
+  let file = knownFile;
+  if (!file) {
+    try {
+      file = DriveApp.getFileById(documentId);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (file && typeof file.setTrashed === 'function') {
+    try {
+      file.setTrashed(true);
+      return true;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (typeof Drive !== 'undefined' && Drive.Files
+    && typeof Drive.Files.trash === 'function') {
+    try {
+      Drive.Files.trash(documentId);
+      return true;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  throw new Error(errors.map((error) => error && error.message ? error.message : String(error))
+    .join('; ') || 'Сервисы удаления Google Drive недоступны.');
+}
+
+function validateSelectedClaimDocumentPayload_(payload) {
+  const value = payload || {};
+  const selectedAverage = value.averageEarnings && value.averageEarnings.selected;
+  if (!selectedAverage || selectedAverage.valid === false
+    || !Number.isFinite(Number(selectedAverage.amount))
+    || Number(selectedAverage.amount) <= 0) {
+    throw new Error(
+      'Выберите сценарий и укажите положительный средний заработок перед формированием документа.'
+    );
+  }
+  const itemCount = (value.groups || []).reduce(
+    (count, group) => count + (group.items || []).length, 0
+  );
+  if (!itemCount) {
+    throw new Error('Выберите хотя бы одно требование в разделе «Аудит и требования».');
   }
 }
 
@@ -1425,7 +1526,7 @@ function buildSelectedClaimDocumentTitle_(payload, now) {
   const selected = payload.averageEarnings && payload.averageEarnings.selected || {};
   const scenario = selected.source === 'user' ? 'ручной средний' : 'рассчитанный средний';
   const timestamp = Utilities.formatDate(
-    now, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm'
+    now, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss'
   );
   return `Расчет выбранных требований — ${timestamp} — ${scenario}`;
 }
@@ -1504,26 +1605,113 @@ function updateSelectedClaimDocumentRegistry_(spreadsheet, entry) {
   if (!currentRange) throw new Error('Не найдена ячейка текущего расчетного документа.');
   const intake = spreadsheet.getSheetByName(intakeLayout.sheetName);
   if (!intake) throw new Error('Не найден лист истории сформированных Docs.');
-  const previousUrl = currentRange.getValue();
-  const previousHistoryRange = getClaimDocsHistoryRange_(spreadsheet, intake, intakeLayout.docsHistory);
-  const previousHistoryValues = previousHistoryRange.getValues();
-  const previousExtent = previousHistoryRange.getNumRows();
+  const historyName = intakeLayout.docsHistory.namedRange;
+  const namedHistory = spreadsheet.getRangeByName(historyName);
+  const historySnapshot = namedHistory ? {
+    exists: true,
+    sheet: namedHistory.getSheet(),
+    row: namedHistory.getRow(),
+    column: namedHistory.getColumn(),
+    rowCount: namedHistory.getNumRows(),
+    columnCount: namedHistory.getNumColumns(),
+    values: namedHistory.getValues(),
+  } : { exists: false };
+  const currentValues = currentRange.getValues();
+  const authority = getClaimDocsHistoryRange_(spreadsheet, intake, intakeLayout.docsHistory);
+  const authorityRows = authority.getValues();
+  const placeholder = authorityRows.length === 1
+    && authorityRows[0].every((cell) => cell === '' || cell === null);
+  const targetRow = placeholder
+    ? intakeLayout.docsHistory.firstRow
+    : intakeLayout.docsHistory.firstRow + authorityRows.length;
+  const targetRange = intake.getRange(
+    targetRow, intakeLayout.docsHistory.firstColumn, 1, intakeLayout.docsHistory.columnCount
+  );
+  const targetValues = targetRange.getValues();
   try {
     appendClaimDocsHistory_(spreadsheet, entry);
     currentRange.setValue(entry.url);
     SpreadsheetApp.flush();
   } catch (error) {
-    try {
-      currentRange.setValue(previousUrl);
-      const currentHistory = getClaimDocsHistoryRange_(spreadsheet, intake, intakeLayout.docsHistory);
-      currentHistory.clearContent();
-      previousHistoryRange.setValues(previousHistoryValues);
-      spreadsheet.setNamedRange(intakeLayout.docsHistory.namedRange, previousHistoryRange);
-      SpreadsheetApp.flush();
-    } catch (rollbackError) {
-      // The generated file is still trashed by the caller; preserve the primary failure.
+    const rollbackErrors = [];
+    const attempt = (label, callback) => {
+      try {
+        callback();
+      } catch (rollbackError) {
+        rollbackErrors.push(`${label}: ${rollbackError && rollbackError.message
+          ? rollbackError.message : rollbackError}`);
+      }
+    };
+    attempt('целевая строка истории', () => targetRange.setValues(targetValues));
+    if (historySnapshot.exists) {
+      const restoredHistory = historySnapshot.sheet.getRange(
+        historySnapshot.row, historySnapshot.column,
+        historySnapshot.rowCount, historySnapshot.columnCount
+      );
+      attempt('содержимое истории', () => restoredHistory.setValues(historySnapshot.values));
+      attempt('именованный диапазон истории', () =>
+        spreadsheet.setNamedRange(historyName, restoredHistory));
+    } else {
+      attempt('удаление созданного именованного диапазона', () =>
+        removeClaimNamedRangeIfPresent_(spreadsheet, historyName));
+    }
+    attempt('текущая ссылка', () => currentRange.setValues(currentValues));
+    attempt('flush отката', () => SpreadsheetApp.flush());
+    attempt('проверка отката', () => verifySelectedClaimRegistryRollback_(
+      spreadsheet, currentRange, currentValues, historyName, historySnapshot,
+      targetRange, targetValues
+    ));
+    if (rollbackErrors.length) {
+      throw new Error(
+        `${error && error.message ? error.message : error}. `
+        + `Откат реестра не удался: ${rollbackErrors.join('; ')}`
+      );
     }
     throw error;
   }
-  return { previousExtent };
+  return { previousExtent: authority.getNumRows(), targetRange };
+}
+
+function removeClaimNamedRangeIfPresent_(spreadsheet, name) {
+  const named = spreadsheet.getNamedRanges().find((item) => item.getName() === name);
+  if (named) named.remove();
+}
+
+function verifySelectedClaimRegistryRollback_(
+  spreadsheet, currentRange, currentValues, historyName, historySnapshot,
+  targetRange, targetValues
+) {
+  if (!claimRegistryValuesEqual_(currentRange.getValues(), currentValues)) {
+    throw new Error('текущая ссылка не восстановлена');
+  }
+  if (!claimRegistryValuesEqual_(targetRange.getValues(), targetValues)) {
+    throw new Error('целевая строка истории не восстановлена');
+  }
+  const restoredNamed = spreadsheet.getRangeByName(historyName);
+  if (!historySnapshot.exists) {
+    if (restoredNamed) throw new Error('лишний именованный диапазон истории не удален');
+    return;
+  }
+  if (!restoredNamed
+    || restoredNamed.getSheet().getSheetId() !== historySnapshot.sheet.getSheetId()
+    || restoredNamed.getRow() !== historySnapshot.row
+    || restoredNamed.getColumn() !== historySnapshot.column
+    || restoredNamed.getNumRows() !== historySnapshot.rowCount
+    || restoredNamed.getNumColumns() !== historySnapshot.columnCount
+    || !claimRegistryValuesEqual_(restoredNamed.getValues(), historySnapshot.values)) {
+    throw new Error('именованный диапазон истории восстановлен не полностью');
+  }
+}
+
+function claimRegistryValuesEqual_(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  return left.every((row, rowIndex) => Array.isArray(row)
+    && Array.isArray(right[rowIndex]) && row.length === right[rowIndex].length
+    && row.every((value, columnIndex) => {
+      const expected = right[rowIndex][columnIndex];
+      if (value instanceof Date && expected instanceof Date) {
+        return value.getTime() === expected.getTime();
+      }
+      return value === expected;
+    }));
 }
