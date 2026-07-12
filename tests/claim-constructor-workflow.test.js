@@ -2768,6 +2768,25 @@ function stubBatchSessionStartup(harness) {
       error: 'Неизвестный источник среднего заработка',
     }
   );
+
+  const averageCells = [
+    layout.calculatedAverage.valueCell,
+    layout.calculatedAverageContext.valueCell,
+    layout.manualAverage.valueCell,
+    layout.manualAverageContext.valueCell,
+    layout.finalAverageScenario.valueCell,
+  ];
+  const beforeInvalidWrite = averageCells.map((cell) => sheet.getRange(cell).getValue());
+  assert.throws(() => harness.context.writeAverageEarningsState_({
+    calculated: { amount: 9999, context: 'измененный расчетный контекст' },
+    user: { amount: 8888, context: 'измененный ручной контекст' },
+    selectedSource: 'bogus',
+  }, harness.spreadsheet), /Неизвестный источник среднего заработка/);
+  assert.deepStrictEqual(
+    averageCells.map((cell) => sheet.getRange(cell).getValue()),
+    beforeInvalidWrite,
+    'Ошибочный selector не должен частично записывать сценарии'
+  );
 }
 
 {
@@ -2822,6 +2841,16 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(normalized.unallocated[0].amount, 300);
   assert.strictEqual(normalized.unallocated[0].disputed, true);
   assert.deepStrictEqual(Array.from(normalized.invalid).map((item) => item.rowIndex), [2, 3, 4, 5]);
+
+  const unchecked = harness.context.normalizePartialRecoveries_([
+    [false, '31.02.2026', -100, 'claim:unchecked'],
+    [false, '10.01.2026', 100, 'claim:unchecked-valid'],
+  ]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(unchecked)), {
+    valid: [],
+    invalid: [],
+    unallocated: [],
+  });
 }
 
 {
@@ -2913,6 +2942,39 @@ function stubBatchSessionStartup(harness) {
   });
   assert.strictEqual(sheet.getRange(firstRow + 2, 1).getBackground(), untouchedBackground);
   assert.strictEqual(sheet.getRange(firstRow + 2, 4).getNote(), untouchedNote);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const row = layout.partialRecoveries.firstRow;
+  sheet.getRange(row, 1, 1, 4).setValues([[true, '31.02.2026', 100, 'claim:a']]);
+  sheet.getRange(row, 1).setBackground('#D9EAD3').setNote('Пользовательская заметка');
+  harness.context.onEdit({ range: sheet.getRange(row, 2), value: '31.02.2026' });
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#F4CCCC');
+
+  sheet.getRange(row, 1).setValue(false);
+  const uncheckedResult = harness.context.onEdit({
+    range: sheet.getRange(row, 1),
+    value: 'FALSE',
+  });
+
+  assert.strictEqual(uncheckedResult.handled, true);
+  assert.strictEqual(uncheckedResult.result.invalid.length, 0);
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#D9EAD3');
+  assert.strictEqual(sheet.getRange(row, 1).getNote(), 'Пользовательская заметка');
+  assert.strictEqual(sheet.getRange(row, 4).getNote(), '');
+
+  sheet.getRange(row, 1).setValue(true);
+  const checkedResult = harness.context.onEdit({
+    range: sheet.getRange(row, 1),
+    value: 'TRUE',
+  });
+
+  assert.strictEqual(checkedResult.result.invalid.length, 1);
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#F4CCCC');
+  assert.ok(sheet.getRange(row, 4).getNote().includes('Некорректная дата'));
 }
 
 {

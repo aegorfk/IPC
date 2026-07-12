@@ -247,23 +247,29 @@ function writeAverageEarningsState_(state, spreadsheet) {
   const value = state || {};
   const calculated = value.calculated || {};
   const user = value.user || {};
-  target.getRangeByName(layout.calculatedAverage.namedRange)
-    .setValue(calculated.amount === undefined ? '' : calculated.amount);
-  target.getRangeByName(layout.calculatedAverageContext.namedRange)
-    .setValue(calculated.context || '');
-  target.getRangeByName(layout.manualAverage.namedRange)
-    .setValue(user.amount === undefined ? '' : user.amount);
-  target.getRangeByName(layout.manualAverageContext.namedRange)
-    .setValue(user.context || '');
   const selected = normalizeAverageEarningsSource_(value.selectedSource);
   if (selected !== 'calculated' && selected !== 'user') {
     throw new Error('Неизвестный источник среднего заработка');
   }
-  target.getRangeByName(layout.finalAverageScenario.namedRange).setValue(
-    selected === 'user'
+  const normalized = {
+    calculatedAmount: calculated.amount === undefined ? '' : calculated.amount,
+    calculatedContext: calculated.context || '',
+    userAmount: user.amount === undefined ? '' : user.amount,
+    userContext: user.context || '',
+    selectedScenario: selected === 'user'
       ? CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[1]
-      : CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0]
-  );
+      : CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES[0],
+  };
+  target.getRangeByName(layout.calculatedAverage.namedRange)
+    .setValue(normalized.calculatedAmount);
+  target.getRangeByName(layout.calculatedAverageContext.namedRange)
+    .setValue(normalized.calculatedContext);
+  target.getRangeByName(layout.manualAverage.namedRange)
+    .setValue(normalized.userAmount);
+  target.getRangeByName(layout.manualAverageContext.namedRange)
+    .setValue(normalized.userContext);
+  target.getRangeByName(layout.finalAverageScenario.namedRange)
+    .setValue(normalized.selectedScenario);
 }
 
 function normalizeAverageEarningsSource_(value) {
@@ -392,7 +398,7 @@ function onEdit(e) {
   const touchesRecoveryInputs = row <= recoveriesLastRow
     && editedLastRow >= recoveriesFirstRow
     && column <= 4
-    && editedLastColumn >= 2;
+    && editedLastColumn >= 1;
   if (!touchesRecoveryInputs) return { handled: false };
   return {
     handled: true,
@@ -411,7 +417,7 @@ function normalizePartialRecoveries_(rows) {
     const values = Array.isArray(row)
       ? row
       : [row && row.active, row && row.date, row && row.amount, row && row.allocation];
-    if (!values[0] && values.slice(1).every(isClaimIntakeEmpty_)) return;
+    if (values[0] !== true) return;
     const date = parseClaimRecoveryDate_(values[1]);
     const amount = parseClaimPositiveAmount_(values[2]);
     const allocation = String(values[3] || '').trim();
