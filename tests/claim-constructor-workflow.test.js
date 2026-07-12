@@ -555,6 +555,14 @@ function createHarness(sheetNames = ['Оклад']) {
     Session: { getScriptTimeZone: () => 'Europe/Moscow' },
     Sheets: {
       Spreadsheets: {
+        get(spreadsheetId, options) {
+          assert.strictEqual(spreadsheetId, spreadsheet.getId());
+          assert.strictEqual(options && options.fields, 'spreadsheetId');
+          spreadsheet.serviceCalls.sheetsGets =
+            (spreadsheet.serviceCalls.sheetsGets || 0) + 1;
+          if (spreadsheet.failSheetsGetError) throw spreadsheet.failSheetsGetError;
+          return { spreadsheetId };
+        },
         batchUpdate(resource, spreadsheetId) {
           assert.strictEqual(spreadsheetId, spreadsheet.getId());
           spreadsheet.serviceCalls.sheetsBatchUpdates =
@@ -5634,6 +5642,97 @@ function stubBatchSessionStartup(harness) {
   assert.ok(harness.spreadsheet.getRangeByName(
     harness.context.getClaimIntakeLayout_().claimSelections.namedRange
   ), 'setup named ranges remain valid');
+}
+
+function assertRollbackPreflightFailurePreservesRunState(configureFailure, expectedError) {
+  const harness = createHarness(['Источник', 'Анкета и требования']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const audit = harness.context.getClaimIntakeLayout_().claimSelections;
+  source.getRange(2, 2).setValue(100).setNote('financial-before');
+  intake.getRange(audit.firstRow, 1, 1, 5)
+    .setValues([['audit-before', 'keep', '', 17, 'stable|audit|key|before|run']]);
+  harness.spreadsheet.setNamedRange(
+    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 5)
+  );
+  harness.documentProperties.setProperty('PREFLIGHT_SENTINEL', 'unchanged');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet: source, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1 },
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  let coreCalls = 0;
+  let baselineRestoreCalls = 0;
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    coreCalls++;
+    source.getRange(2, 2).setValue(999);
+    return {
+      sheetName: source.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeWarnings: [], derivativeDependencies: [],
+    };
+  };
+  harness.context.restoreRegisteredRecoveryBaselines_ = () => {
+    baselineRestoreCalls++;
+    source.getRange(2, 2).setValue(888);
+  };
+  const beforeSource = JSON.stringify(source.getDataRange().getValues());
+  const beforeIntake = JSON.stringify(intake.getDataRange().getValues());
+  const beforeProperties = harness.documentProperties.getProperties();
+  const beforeWriteAttempts = harness.spreadsheet.writeAttempts;
+  const beforeNamedRange = harness.spreadsheet.getRangeByName(audit.namedRange);
+  configureFailure(harness);
+
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    expectedError
+  );
+  assert.strictEqual(coreCalls, 0);
+  assert.strictEqual(baselineRestoreCalls, 0);
+  assert.strictEqual(JSON.stringify(source.getDataRange().getValues()), beforeSource);
+  assert.strictEqual(JSON.stringify(intake.getDataRange().getValues()), beforeIntake);
+  assert.deepStrictEqual(harness.documentProperties.getProperties(), beforeProperties);
+  assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), beforeNamedRange);
+  assert.strictEqual(harness.spreadsheet.writeAttempts, beforeWriteAttempts);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+}
+
+// Full-run preflight rejects a missing Advanced Sheets symbol before any mutation.
+assertRollbackPreflightFailurePreservesRunState(
+  (harness) => { delete harness.context.Sheets; },
+  /Advanced Sheets service v4 is required for safe calculation rollback/
+);
+
+// Full-run preflight exposes authorization/configuration failures before any mutation.
+assertRollbackPreflightFailurePreservesRunState(
+  (harness) => {
+    harness.spreadsheet.failSheetsGetError = new Error('authorization denied');
+  },
+  /Advanced Sheets service v4 preflight failed: authorization denied/
+);
+
+// A successful run authenticates rollback support exactly once, not once per range.
+{
+  const harness = createHarness(['Источник']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  source.getRange(2, 2).setValue(100);
+  harness.context.discoverCalculationSheetDescriptors_ = () => [{
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet: source, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1, target: 3, penalty: 5 },
+  }];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  let coreCalls = 0;
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    coreCalls++;
+    return {
+      sheetName: source.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeWarnings: [], derivativeDependencies: [],
+    };
+  };
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(coreCalls, 1);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.sheetsGets, 1);
 }
 
 // Final safety: only an explicitly structured data-quality issue may continue the run.

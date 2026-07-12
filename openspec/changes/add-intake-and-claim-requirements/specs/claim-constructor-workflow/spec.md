@@ -71,6 +71,13 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 - **AND** this completed structure remains valid after a later financial rollback
 - **AND** the financial workflow never automatically deletes legacy generated sheets
 
+#### Scenario: Rollback service is preflighted before mutation
+- **WHEN** the all-sheets financial workflow acquires its transaction lock
+- **THEN** it validates Advanced Sheets v4 metadata-read and batch-update methods and performs one authenticated spreadsheet metadata read for the run
+- **AND** preflight completes before workspace setup, baseline restoration, calculation cores, or any financial, audit, named-range, or document-property mutation
+- **AND** a missing service or authentication/configuration failure produces a clear corrective fatal error and releases the lock with workbook state unchanged
+- **AND** the rollback path retains its own availability guard
+
 #### Scenario: Large owned surfaces are snapshotted in batches
 - **WHEN** an adapter owns many rows across one or more contiguous output-column ranges
 - **THEN** values, formulas, notes, backgrounds, number formats, and validations are snapshotted and restored with a bounded number of bulk range calls proportional to ranges, not cells

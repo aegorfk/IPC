@@ -346,6 +346,7 @@ function runAllSheetsIndexation_(spreadsheet) {
         throw new Error('Не удалось получить блокировку для атомарного перерасчета требований.');
       }
     }
+    preflightCalculationRollbackService_(spreadsheet);
     if (typeof ensureClaimConstructorWorkspace_ === 'function') {
       ensureClaimConstructorWorkspace_(spreadsheet);
     } else if (typeof ensureClaimIntakeSheet_ === 'function') {
@@ -354,6 +355,28 @@ function runAllSheetsIndexation_(spreadsheet) {
     return runAllSheetsIndexationTransaction_(spreadsheet, { lockHeld: acquired });
   } finally {
     if (lock && acquired) lock.releaseLock();
+  }
+}
+
+function preflightCalculationRollbackService_(spreadsheet) {
+  if (typeof Sheets === 'undefined' || !Sheets.Spreadsheets
+    || typeof Sheets.Spreadsheets.get !== 'function'
+    || typeof Sheets.Spreadsheets.batchUpdate !== 'function') {
+    throw new Error('Advanced Sheets service v4 is required for safe calculation rollback. '
+      + 'Enable it in Apps Script services and authorize spreadsheet access.');
+  }
+  const spreadsheetId = spreadsheet.getId();
+  try {
+    const metadata = Sheets.Spreadsheets.get(
+      spreadsheetId, { fields: 'spreadsheetId' }
+    );
+    if (!metadata || metadata.spreadsheetId !== spreadsheetId) {
+      throw new Error('spreadsheet metadata could not be verified');
+    }
+  } catch (error) {
+    const reason = error && error.message ? error.message : String(error);
+    throw new Error(`Advanced Sheets service v4 preflight failed: ${reason}. `
+      + 'Check service configuration and authorize spreadsheet access.');
   }
 }
 
