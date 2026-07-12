@@ -346,6 +346,11 @@ function runAllSheetsIndexation_(spreadsheet) {
         throw new Error('Не удалось получить блокировку для атомарного перерасчета требований.');
       }
     }
+    if (typeof ensureClaimConstructorWorkspace_ === 'function') {
+      ensureClaimConstructorWorkspace_(spreadsheet);
+    } else if (typeof ensureClaimIntakeSheet_ === 'function') {
+      ensureClaimIntakeSheet_(spreadsheet);
+    }
     return runAllSheetsIndexationTransaction_(spreadsheet, { lockHeld: acquired });
   } finally {
     if (lock && acquired) lock.releaseLock();
@@ -362,8 +367,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const compensationRates = loadSalaryCompensationRates_();
     const registry = readRecoveryBaselineRegistry_();
     restoreRegisteredRecoveryBaselines_(spreadsheet, registry);
-    const intakeSheet = typeof ensureClaimIntakeSheet_ === 'function'
-      ? ensureClaimIntakeSheet_(spreadsheet) : null;
+    const intakeSheet = spreadsheet.getSheetByName('Анкета и требования');
     const questionnaireState = typeof captureClaimQuestionnaireState_ === 'function'
       ? captureClaimQuestionnaireState_(spreadsheet)
       : { partialRecoveries: [] };
@@ -434,7 +438,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
           );
         }
       } catch (error) {
-        if (isFatalCalculationMutationError_(error)) throw error;
+        if (!isCalculationDataQualityIssue_(error)) throw error;
         const reason = error && error.message ? error.message : String(error);
         Logger.log(`Не удалось пересчитать лист "${sheet.getName()}": ${reason}`);
         if (layoutId !== 'vacation') runContext.failedSourceLayouts.add(layoutId);
@@ -513,7 +517,6 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       writeDurableUncheckedClaimKeys_(new Set(auditModel.durableUncheckedClaimKeys));
     }
     writeRecoveryBaselineRegistry_(nextRegistry);
-    deleteLegacyGeneratedSheets_(spreadsheet);
     return results;
   } catch (error) {
     rollbackCalculationTransaction_(spreadsheet, transactionSnapshot);
@@ -522,24 +525,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
 }
 
 function snapshotCalculationTransaction_(spreadsheet, descriptors) {
-  const cells = new Map();
-  const snapshotCell = (sheet, row, column) => {
-    if (!sheet || !row || !column) return;
-    const key = `${sheet.getSheetId ? sheet.getSheetId() : sheet.getName()}|${row}|${column}`;
-    if (cells.has(key)) return;
-    const range = sheet.getRange(row, column);
-    cells.set(key, {
-      key,
-      range,
-      value: range.getValue(),
-      formula: typeof range.getFormula === 'function' ? range.getFormula() : '',
-      note: typeof range.getNote === 'function' ? range.getNote() : '',
-      background: typeof range.getBackground === 'function' ? range.getBackground() : '',
-      numberFormat: typeof range.getNumberFormat === 'function' ? range.getNumberFormat() : '',
-      dataValidation: typeof range.getDataValidation === 'function'
-        ? range.getDataValidation() : null,
-    });
-  };
+  const snapshot = { batches: [], batchKeys: new Set() };
   const ownedSemantics = new Set([
     'monthlyIpc', 'unpaidSalary', 'totalUnderpayment', 'target', 'penalty',
     'correctAnnualSalary', 'averageDailyEarning', 'correctDerivativeAmount',
@@ -548,10 +534,14 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
   (descriptors || []).forEach((descriptor) => {
     const sheet = descriptor.sheet;
     const lastRow = sheet.getLastRow();
-    Object.keys(descriptor.semanticColumns || {}).forEach((semantic) => {
-      if (!ownedSemantics.has(semantic)) return;
-      const column = descriptor.semanticColumns[semantic] + 1;
-      for (let row = descriptor.headerRow; row <= lastRow; row++) snapshotCell(sheet, row, column);
+    if (lastRow < descriptor.headerRow) return;
+    const columns = Array.from(new Set(Object.keys(descriptor.semanticColumns || {})
+      .filter((semantic) => ownedSemantics.has(semantic)
+        && Number.isInteger(descriptor.semanticColumns[semantic]))
+      .map((semantic) => descriptor.semanticColumns[semantic] + 1))).sort((a, b) => a - b);
+    groupContiguousCalculationColumns_(columns).forEach((group) => {
+      addCalculationRangeSnapshot_(snapshot, sheet, descriptor.headerRow, group.start,
+        lastRow - descriptor.headerRow + 1, group.end - group.start + 1);
     });
   });
   let auditNamedRange = null;
@@ -563,19 +553,16 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     const extent = sheet
       ? getClaimAuditRenderedExtent_(sheet, audit, auditNamedRange) : 1;
     if (sheet) {
-      auditSnapshot = { sheet, audit, extent };
-      for (let row = audit.firstRow; row < audit.firstRow + extent; row++) {
-        for (let column = 1; column <= audit.columnCount; column++) snapshotCell(sheet, row, column);
-      }
+      auditSnapshot = { sheet, audit, extent, snapshottedExtent: extent };
+      addCalculationRangeSnapshot_(snapshot, sheet, audit.firstRow, 1,
+        extent, audit.columnCount);
       const title = sheet.getRange(audit.titleCell);
-      snapshotCell(sheet, title.getRow(), title.getColumn());
+      addCalculationRangeSnapshot_(snapshot, sheet, title.getRow(), title.getColumn(), 1, 1);
     }
   }
   const properties = typeof PropertiesService !== 'undefined'
     ? PropertiesService.getDocumentProperties() : null;
-  return {
-    cells: Array.from(cells.values()),
-    cellKeys: new Set(cells.keys()),
+  return Object.assign(snapshot, {
     auditSpreadsheet: spreadsheet,
     auditNamedRangeName: typeof getClaimIntakeLayout_ === 'function'
       ? getClaimIntakeLayout_().claimSelections.namedRange : '',
@@ -585,7 +572,34 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     properties,
     propertyValues: properties && typeof properties.getProperties === 'function'
       ? properties.getProperties() : {},
-  };
+  });
+}
+
+function groupContiguousCalculationColumns_(columns) {
+  return (columns || []).reduce((groups, column) => {
+    const last = groups[groups.length - 1];
+    if (last && column === last.end + 1) last.end = column;
+    else groups.push({ start: column, end: column });
+    return groups;
+  }, []);
+}
+
+function addCalculationRangeSnapshot_(snapshot, sheet, row, column, rowCount, columnCount) {
+  if (!snapshot || !sheet || rowCount <= 0 || columnCount <= 0) return;
+  const key = [sheet.getSheetId ? sheet.getSheetId() : sheet.getName(),
+    row, column, rowCount, columnCount].join('|');
+  if (snapshot.batchKeys.has(key)) return;
+  const range = sheet.getRange(row, column, rowCount, columnCount);
+  snapshot.batchKeys.add(key);
+  snapshot.batches.push({
+    key, sheet, row, column, rowCount, columnCount,
+    values: range.getValues(),
+    formulas: range.getFormulas(),
+    notes: range.getNotes(),
+    backgrounds: range.getBackgrounds(),
+    numberFormats: range.getNumberFormats(),
+    dataValidations: range.getDataValidations(),
+  });
 }
 
 function extendCalculationTransactionAuditSnapshot_(snapshot, spreadsheet, sheet, claimFacts) {
@@ -599,42 +613,30 @@ function extendCalculationTransactionAuditSnapshot_(snapshot, spreadsheet, sheet
   const previousExtent = getClaimAuditRenderedExtent_(sheet, audit, namedRange);
   const unionExtent = Math.max(previousExtent, plannedExtent);
   if (!snapshot.auditSnapshot) {
-    snapshot.auditSnapshot = { sheet, audit, extent: previousExtent, unionExtent };
+    snapshot.auditSnapshot = {
+      sheet, audit, extent: previousExtent, unionExtent, snapshottedExtent: 0,
+    };
   } else {
     snapshot.auditSnapshot.unionExtent = Math.max(
       snapshot.auditSnapshot.unionExtent || snapshot.auditSnapshot.extent,
       unionExtent
     );
   }
-  if (!snapshot.cellKeys) snapshot.cellKeys = new Set();
-  for (let row = audit.firstRow; row < audit.firstRow + unionExtent; row++) {
-    for (let column = 1; column <= audit.columnCount; column++) {
-      const key = `${sheet.getSheetId ? sheet.getSheetId() : sheet.getName()}|${row}|${column}`;
-      if (snapshot.cellKeys.has(key)) continue;
-      const range = sheet.getRange(row, column);
-      snapshot.cellKeys.add(key);
-      snapshot.cells.push({
-        key,
-        range,
-        value: range.getValue(),
-        formula: typeof range.getFormula === 'function' ? range.getFormula() : '',
-        note: typeof range.getNote === 'function' ? range.getNote() : '',
-        background: typeof range.getBackground === 'function' ? range.getBackground() : '',
-        numberFormat: typeof range.getNumberFormat === 'function' ? range.getNumberFormat() : '',
-        dataValidation: typeof range.getDataValidation === 'function'
-          ? range.getDataValidation() : null,
-      });
-    }
+  const snapshottedExtent = snapshot.auditSnapshot.snapshottedExtent || 0;
+  if (unionExtent > snapshottedExtent) {
+    addCalculationRangeSnapshot_(snapshot, sheet, audit.firstRow + snapshottedExtent, 1,
+      unionExtent - snapshottedExtent, audit.columnCount);
+    snapshot.auditSnapshot.snapshottedExtent = unionExtent;
   }
 }
 
 function rollbackCalculationTransaction_(spreadsheet, snapshot) {
   const errors = [];
-  (snapshot.cells || []).forEach((cell) => {
+  (snapshot.batches || []).forEach((batch) => {
     let restored = false;
     for (let attempt = 0; attempt < 2 && !restored; attempt++) {
       try {
-        restoreRecoveryWriteSnapshot_(cell);
+        restoreCalculationRangeSnapshot_(batch);
         restored = true;
       } catch (error) {
         if (attempt === 1) errors.push(error);
@@ -670,16 +672,24 @@ function rollbackCalculationTransaction_(spreadsheet, snapshot) {
 }
 
 function verifyCalculationTransactionRollback_(snapshot, errors) {
-  (snapshot.cells || []).forEach((cell) => {
-    const range = cell.range;
-    if ((typeof range.getFormula === 'function' ? range.getFormula() : '') !== cell.formula
-      || (!cell.formula && range.getValue() !== cell.value)
-      || (typeof range.getNote === 'function' && range.getNote() !== cell.note)
-      || (typeof range.getBackground === 'function' && range.getBackground() !== cell.background)
-      || (typeof range.getNumberFormat === 'function'
-        && range.getNumberFormat() !== cell.numberFormat)
-      || (typeof range.getDataValidation === 'function'
-        && !calculationDataValidationsEqual_(range.getDataValidation(), cell.dataValidation))) {
+  (snapshot.batches || []).forEach((batch) => {
+    const range = batch.sheet.getRange(
+      batch.row, batch.column, batch.rowCount, batch.columnCount
+    );
+    const formulas = range.getFormulas();
+    const values = range.getValues();
+    const valuesRestored = batch.values.every((row, rowIndex) => row.every((value, columnIndex) =>
+      batch.formulas[rowIndex][columnIndex]
+        ? formulas[rowIndex][columnIndex] === batch.formulas[rowIndex][columnIndex]
+        : values[rowIndex][columnIndex] === value
+    ));
+    if (!valuesRestored
+      || JSON.stringify(range.getNotes()) !== JSON.stringify(batch.notes)
+      || JSON.stringify(range.getBackgrounds()) !== JSON.stringify(batch.backgrounds)
+      || JSON.stringify(range.getNumberFormats()) !== JSON.stringify(batch.numberFormats)
+      || !calculationValidationMatricesEqual_(
+        range.getDataValidations(), batch.dataValidations
+      )) {
       errors.push(new Error('Транзакционный rollback не восстановил расчетную ячейку.'));
     }
   });
@@ -711,6 +721,69 @@ function verifyCalculationTransactionRollback_(snapshot, errors) {
     error.message || error).join('; ')}`);
 }
 
+function restoreCalculationRangeSnapshot_(batch) {
+  const range = batch.sheet.getRange(
+    batch.row, batch.column, batch.rowCount, batch.columnCount
+  );
+  range.setValues(batch.values);
+  buildCalculationFormulaRuns_(batch.formulas).forEach((run) => {
+    batch.sheet.getRange(
+      batch.row + run.rowStart, batch.column + run.columnStart,
+      run.rowCount, run.columnCount
+    ).setFormulas(run.formulas);
+  });
+  range.setNotes(batch.notes);
+  range.setBackgrounds(batch.backgrounds);
+  range.setNumberFormats(batch.numberFormats);
+  range.setDataValidations(batch.dataValidations);
+}
+
+function buildCalculationFormulaRuns_(formulas) {
+  const active = new Map();
+  const completed = [];
+  (formulas || []).forEach((row, rowIndex) => {
+    const runs = [];
+    let start = null;
+    row.forEach((formula, columnIndex) => {
+      if (formula && start === null) start = columnIndex;
+      if ((!formula || columnIndex === row.length - 1) && start !== null) {
+        const end = formula && columnIndex === row.length - 1 ? columnIndex : columnIndex - 1;
+        runs.push({ start, end });
+        start = null;
+      }
+    });
+    const currentKeys = new Set(runs.map((run) => `${run.start}|${run.end}`));
+    Array.from(active.keys()).forEach((key) => {
+      if (!currentKeys.has(key)) {
+        completed.push(active.get(key));
+        active.delete(key);
+      }
+    });
+    runs.forEach((run) => {
+      const key = `${run.start}|${run.end}`;
+      if (!active.has(key)) {
+        active.set(key, {
+          rowStart: rowIndex, rowCount: 0,
+          columnStart: run.start, columnCount: run.end - run.start + 1, formulas: [],
+        });
+      }
+      const group = active.get(key);
+      group.rowCount++;
+      group.formulas.push(row.slice(run.start, run.end + 1));
+    });
+  });
+  active.forEach((run) => completed.push(run));
+  return completed;
+}
+
+function calculationValidationMatricesEqual_(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((row, rowIndex) => row.length === right[rowIndex].length
+    && row.every((validation, columnIndex) => calculationDataValidationsEqual_(
+      validation, right[rowIndex][columnIndex]
+    )));
+}
+
 function removeCalculationNamedRange_(spreadsheet, name) {
   if (!spreadsheet || !name) return;
   if (typeof spreadsheet.removeNamedRange === 'function') {
@@ -738,13 +811,9 @@ function calculationDataValidationsEqual_(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function isFatalCalculationMutationError_(error) {
-  if (error && (error.fatal === true || error.code === 'CALCULATION_DATA_QUALITY')) {
-    return error.fatal === true;
-  }
-  return /(injected|service|write|flush|property|quota|timeout|exception)/i.test(
-    error && error.message ? error.message : String(error)
-  );
+function isCalculationDataQualityIssue_(error) {
+  return !!(error && (error.code === 'CALCULATION_DATA_QUALITY'
+    || error.isDataQualityIssue === true));
 }
 
 function readCalculationTotalsFromDescriptor_(descriptor) {
@@ -771,7 +840,7 @@ function buildCurrentRunSourceSnapshot_(descriptor) {
   if (!Number.isInteger(columns.correctAmount) || sheet.getLastRow() <= descriptor.headerRow) return [];
   return sheet.getRange(descriptor.headerRow + 1, 1,
     sheet.getLastRow() - descriptor.headerRow, sheet.getLastColumn()).getValues().reduce(
-    (items, row) => {
+    (items, row, rowIndex) => {
       const period = parseRowPeriod_(row, columns);
       const amount = parseMoney_(row[columns.correctAmount]);
       if (period && amount !== null) items.push({
@@ -780,7 +849,7 @@ function buildCurrentRunSourceSnapshot_(descriptor) {
         periodMonth: period.month,
         annualPremiumYear: getAnnualPremiumYear_(row, columns),
         amount: roundMoney_(amount),
-        source: { sheetName: sheet.getName(), row: descriptor.headerRow + items.length + 1 },
+        source: { sheetName: sheet.getName(), row: descriptor.headerRow + rowIndex + 1 },
       });
       return items;
     }, []
@@ -1770,6 +1839,9 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
         .map((segment, scheduleOrder) => ({
           id: segment.id || `segment_${scheduleOrder + 1}`,
           dueDate: new Date(segment.dueDate),
+          calculationEndDate: segment.calculationEndDate instanceof Date
+            ? new Date(segment.calculationEndDate)
+            : new Date(principal.calculationEndDate),
           outstanding: roundMoney_(Number(segment.principal)),
           scheduleOrder,
           sourceIdentity,
@@ -1779,6 +1851,7 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
         ? declaredSchedule
         : (principal.liabilityTiming === 'single_due_date' && principal.dueDate instanceof Date ? [{
             id: 'singleDueDate', dueDate: new Date(principal.dueDate),
+            calculationEndDate: new Date(principal.calculationEndDate),
             outstanding: roundMoney_(Number(principal.amount) || 0), scheduleOrder: 0,
             sourceIdentity, inputOrder: entry.inputOrder,
           }] : []);
@@ -1811,25 +1884,19 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
       || left.scheduleOrder - right.scheduleOrder
       || left.sourceIdentity.localeCompare(right.sourceIdentity)
       || left.inputOrder - right.inputOrder);
-    const initialPrincipal = roundMoney_(sourceStates.reduce(
-      (sum, sourceState) => sum + sourceState.initialPrincipal, 0
-    ));
-    let outstanding = initialPrincipal;
-    const calculationEndDate = sourceStates.reduce((latest, sourceState) => {
-      const candidate = sourceState.principal.calculationEndDate;
-      return !latest || candidate > latest ? candidate : latest;
-    }, null);
     recoveries.forEach((recovery) => {
-      if (recovery.date > calculationEndDate) {
-        warnings.push({
-          code: 'recovery_after_calculation_end', recovery, targetKey,
-          reason: 'Погашение позже даты окончания расчета не изменяет сумму на эту дату.',
-        });
-        return;
-      }
-      const outstandingBeforeRecovery = outstanding;
-      let recoveryRemainder = Math.min(outstandingBeforeRecovery, Number(recovery.amount) || 0);
-      orderedSegments.forEach((scheduleSegment) => {
+      const eligibleSegments = orderedSegments.filter((segment) =>
+        segment.outstanding > 0
+        && segment.dueDate <= recovery.date
+        && recovery.date <= segment.calculationEndDate
+      );
+      const eligibleOutstanding = roundMoney_(eligibleSegments.reduce(
+        (sum, segment) => sum + segment.outstanding, 0
+      ));
+      let recoveryRemainder = Math.min(
+        eligibleOutstanding, Number(recovery.amount) || 0
+      );
+      eligibleSegments.forEach((scheduleSegment) => {
         const applied = roundMoney_(Math.min(scheduleSegment.outstanding, recoveryRemainder));
         if (applied <= 0) return;
         const result = calculateSalaryCompensation_(applied, scheduleSegment.dueDate, recovery.date, rates);
@@ -1841,18 +1908,37 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
           principal: applied,
           dueDate: new Date(scheduleSegment.dueDate),
           endDate: new Date(recovery.date),
+          calculationEndDate: new Date(scheduleSegment.calculationEndDate),
           amount: result.amount,
           intervals: result.intervals,
         });
         scheduleSegment.outstanding = roundMoney_(scheduleSegment.outstanding - applied);
         recoveryRemainder = roundMoney_(recoveryRemainder - applied);
-        outstanding = roundMoney_(outstanding - applied);
       });
-      const applied = roundMoney_(Math.min(outstandingBeforeRecovery, Number(recovery.amount) || 0)
-        - recoveryRemainder);
-      const remainder = roundMoney_((Number(recovery.amount) || 0) - applied);
+      const applied = roundMoney_(Math.min(
+        eligibleOutstanding, Number(recovery.amount) || 0
+      ) - recoveryRemainder);
+      const unapplied = roundMoney_((Number(recovery.amount) || 0) - applied);
+      const outsideSegments = orderedSegments.filter((segment) =>
+        segment.outstanding > 0 && eligibleSegments.indexOf(segment) < 0
+      );
+      const outsideOutstanding = roundMoney_(outsideSegments.reduce(
+        (sum, segment) => sum + segment.outstanding, 0
+      ));
+      const deferredAmount = roundMoney_(Math.min(unapplied, outsideOutstanding));
+      if (deferredAmount > 0) {
+        const sourceIdentities = Array.from(new Set(outsideSegments.map((segment) =>
+          segment.sourceIdentity
+        )));
+        warnings.push({
+          code: 'recovery_out_of_period_deferred', recovery, targetKey,
+          amount: deferredAmount, sourceIdentities,
+          reason: `Сумма ${formatMoneyRu_(deferredAmount, 2)} не применена: по конкретным источникам долг существует вне временных границ этого погашения.`,
+        });
+      }
+      const remainder = roundMoney_(unapplied - deferredAmount);
       if (remainder > 0) {
-        const overpayment = { recovery, targetKey, applied: roundMoney_(applied), remainder };
+        const overpayment = { recovery, targetKey, applied, remainder };
         overpayments.push(overpayment);
         warnings.push({
           code: 'recovery_overpayment',
@@ -1863,12 +1949,9 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
     });
     orderedSegments.forEach((scheduleSegment) => {
       if (scheduleSegment.outstanding <= 0) return;
-      const sourceState = sourceStates.find((candidate) =>
-        candidate.sourceIdentity === scheduleSegment.sourceIdentity
-      );
       const result = calculateSalaryCompensation_(
         scheduleSegment.outstanding, scheduleSegment.dueDate,
-        sourceState.principal.calculationEndDate, rates
+        scheduleSegment.calculationEndDate, rates
       );
       liabilitySegments.push({
         targetKey,
@@ -1877,7 +1960,8 @@ function applyPartialRecoveries_(claimFacts, recoveryState, compensationRates, o
         kind: 'outstanding',
         principal: scheduleSegment.outstanding,
         dueDate: new Date(scheduleSegment.dueDate),
-        endDate: new Date(sourceState.principal.calculationEndDate),
+        endDate: new Date(scheduleSegment.calculationEndDate),
+        calculationEndDate: new Date(scheduleSegment.calculationEndDate),
         amount: result.amount,
         intervals: result.intervals,
       });

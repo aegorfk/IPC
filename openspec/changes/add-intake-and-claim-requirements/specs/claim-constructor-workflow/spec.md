@@ -52,9 +52,27 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 
 #### Scenario: Fatal transaction failure
 - **WHEN** an owned calculation write, derivative write, audit render, flush, or relevant property write fails
+- **OR WHEN** an unexpected exception escapes a mutating calculation core
 - **THEN** the audit snapshot covers the union of the prior named-range extent and the planned target extent before render mutation
 - **AND** all snapshotted values or formulas, notes, backgrounds, number formats, data validations, audit cells and prior named-range extent, and relevant properties are restored exactly
 - **AND** the lock is released and the fatal error is rethrown
+
+#### Scenario: Explicit data-quality issue is nonfatal
+- **WHEN** a calculation core returns or throws an explicitly typed or flagged data-quality issue before financial mutation
+- **THEN** that sheet is surfaced as a source-aware review warning
+- **AND** unrelated sheets continue
+- **AND** no message-text, locale, or exception-class heuristic makes an unexpected exception nonfatal
+
+#### Scenario: Stable setup precedes financial transaction
+- **WHEN** the all-sheets financial workflow starts
+- **THEN** idempotent constructor/intake setup completes before financial discovery and snapshot
+- **AND** this completed structure remains valid after a later financial rollback
+- **AND** the financial workflow never automatically deletes legacy generated sheets
+
+#### Scenario: Large owned surfaces are snapshotted in batches
+- **WHEN** an adapter owns many rows across one or more contiguous output-column ranges
+- **THEN** values, formulas, notes, backgrounds, number formats, and validations are snapshotted and restored with a bounded number of bulk range calls proportional to ranges, not cells
+- **AND** formula runs are restored only where formulas originally existed without clobbering neighboring nonformula values
 
 #### Scenario: Protected formula is nonfatal
 - **WHEN** recovery targets a formula cell that the semantic adapter does not declare as its owned output
@@ -66,6 +84,13 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 - **WHEN** recovery or derivative writes require a final rescan
 - **THEN** the rescan uses the descriptor and table mapping cached during initial discovery
 - **AND** semantic resolution and table discovery occur exactly once per sheet for the run
+
+#### Scenario: Recovery respects each source calculation end
+- **WHEN** multiple concrete sources share a claim key but have different calculation-end dates
+- **AND** a recovery date falls after one source end and within another source window
+- **THEN** only temporally eligible source segments are reduced and accrued through the recovery date
+- **AND** the earlier-ended source remains unchanged and accrues only through its own end date
+- **AND** an unapplied amount backed by out-of-period debt is a contextual deferred warning rather than an overpayment
 
 #### Scenario: Vacation uses successful current-run sources
 - **WHEN** non-vacation calculation sources succeed

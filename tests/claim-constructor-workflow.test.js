@@ -36,6 +36,24 @@ class FakeRange {
     return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'note');
   }
 
+  getNumberFormats() {
+    return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'numberFormat');
+  }
+
+  setNumberFormats(values) {
+    this.sheet.writeGrid(this.row, this.column, values, 'numberFormat');
+    return this;
+  }
+
+  getDataValidations() {
+    return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'validation');
+  }
+
+  setDataValidations(values) {
+    this.sheet.writeGrid(this.row, this.column, values, 'validation');
+    return this;
+  }
+
   getSheet() { return this.sheet; }
   getRow() { return this.row; }
   getColumn() { return this.column; }
@@ -81,6 +99,11 @@ class FakeRange {
 
   getFormulas() {
     return this.sheet.readGrid(this.row, this.column, this.rowCount, this.columnCount, 'formula');
+  }
+
+  setFormulas(values) {
+    this.sheet.writeGrid(this.row, this.column, values, 'formula');
+    return this;
   }
 
   setFormula(value) {
@@ -205,6 +228,9 @@ class FakeSheet {
   }
 
   readGrid(row, column, rowCount, columnCount, kind) {
+    this.spreadsheet.serviceCalls.reads = (this.spreadsheet.serviceCalls.reads || 0) + 1;
+    this.spreadsheet.serviceCalls[`${kind || 'value'}Reads`] =
+      (this.spreadsheet.serviceCalls[`${kind || 'value'}Reads`] || 0) + 1;
     const store = this.getStateStore(kind);
     return Array.from({ length: rowCount }, (_, rowOffset) =>
       Array.from({ length: columnCount }, (_, columnOffset) =>
@@ -1797,7 +1823,7 @@ function stubAllSheetsCalculation(harness) {
   assert.strictEqual(legacyResult, undefined);
   assert.strictEqual(displayed.length, 1);
   assert.strictEqual(displayed[0].length, 2);
-  assert.deepStrictEqual(deleted, ['deleted']);
+  assert.deepStrictEqual(deleted, [], 'financial run never performs legacy sheet deletion');
 }
 
 {
@@ -1810,14 +1836,18 @@ function stubAllSheetsCalculation(harness) {
 
   assert.deepStrictEqual(Array.from(results).map((item) => item.layoutId), ['salary', 'monthlyPremiums']);
   assert.deepStrictEqual(displayed, []);
-  assert.deepStrictEqual(deleted, ['deleted']);
+  assert.deepStrictEqual(deleted, [], 'financial run never performs legacy sheet deletion');
 }
 
 {
   const harness = createHarness(['Оклад', 'Ежемесячные']);
   stubAllSheetsCalculation(harness);
   harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
-    if (sheet.getName() === 'Ежемесячные') throw new Error('Ошибка листа премий');
+    if (sheet.getName() === 'Ежемесячные') {
+      const issue = new Error('Ошибка листа премий');
+      issue.code = 'CALCULATION_DATA_QUALITY';
+      throw issue;
+    }
     return { sheetName: sheet.getName(), layoutId: 'salary', calculated: 1, skipped: 0 };
   };
 
@@ -5485,7 +5515,9 @@ function stubBatchSessionStartup(harness) {
     throw new Error('injected absent-range post-render failure');
   };
   assert.throws(
-    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    () => harness.context.runAllSheetsIndexationTransaction_(
+      harness.spreadsheet, { lockHeld: true }
+    ),
     /injected absent-range post-render failure/
   );
   assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), null);
@@ -5500,6 +5532,200 @@ function stubBatchSessionStartup(harness) {
   assert.deepStrictEqual(harness.documentProperties.getProperties(), {
     KEEP_PROPERTY: 'keep-value',
   });
+}
+
+// Final safety: an unexpected core exception is fatal after any partial financial mutation.
+{
+  const harness = createHarness(['Расчет']);
+  const sheet = harness.spreadsheet.getSheetByName('Расчет');
+  sheet.getRange(2, 2).setValue(100).setNote('before')
+    .setBackground('#ABCDEF').setNumberFormat('before-format');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    sheet.getRange(2, 2).setValue(999).setNote('partial write')
+      .setBackground('#000000').setNumberFormat('changed-format');
+    throw new TypeError('unexpected core type failure');
+  };
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /unexpected core type failure/
+  );
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), 100);
+  assert.strictEqual(sheet.getRange(2, 2).getNote(), 'before');
+  assert.strictEqual(sheet.getRange(2, 2).getBackground(), '#ABCDEF');
+  assert.strictEqual(sheet.getRange(2, 2).getNumberFormat(), 'before-format');
+  assert.ok(harness.spreadsheet.getSheetByName('Конструктор'), 'completed setup remains');
+  assert.ok(harness.spreadsheet.getSheetByName('Анкета и требования'), 'intake setup remains');
+  assert.ok(harness.spreadsheet.getRangeByName(
+    harness.context.getClaimIntakeLayout_().claimSelections.namedRange
+  ), 'setup named ranges remain valid');
+}
+
+// Final safety: only an explicitly structured data-quality issue may continue the run.
+{
+  const harness = createHarness(['Проблемный', 'Независимый']);
+  const descriptors = harness.spreadsheet.getSheets().map((sheet) => ({
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: {},
+  }));
+  harness.context.discoverCalculationSheetDescriptors_ = () => descriptors;
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  let independentCalculated = false;
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
+    if (sheet.getName() === 'Проблемный') {
+      const issue = new Error('неполные исходные данные');
+      issue.code = 'CALCULATION_DATA_QUALITY';
+      issue.details = { row: 2, field: 'period' };
+      throw issue;
+    }
+    independentCalculated = true;
+    return {
+      sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeWarnings: [], derivativeDependencies: [],
+    };
+  };
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(independentCalculated, true);
+  assert.strictEqual(results.find((result) => result.sheetName === 'Проблемный').error,
+    'неполные исходные данные');
+  assert.ok(results.find((result) => result.sheetName === 'Независимый'));
+}
+
+// Final safety: 1000 rows x 4 contiguous outputs snapshot and restore in O(ranges), not O(cells).
+{
+  const harness = createHarness(['Большой расчет']);
+  const sheet = harness.spreadsheet.getSheetByName('Большой расчет');
+  sheet.getRange(1001, 5).setValue(1);
+  sheet.getRange(2, 2).setValue('formula display').setFormula('=A2')
+    .setNote('formula note').setBackground('#111111').setNumberFormat('formula-format')
+    .setDataValidation({ type: 'custom', formula: '=A2>0' });
+  sheet.getRange(1001, 5).setValue(500).setNote('tail note')
+    .setBackground('#222222').setNumberFormat('tail-format')
+    .setDataValidation({ type: 'list', values: ['x', 'y'] });
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1, target: 2, penalty: 3, derivativeUnderpayment: 4 },
+  };
+  harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0, reads: 0 };
+  const snapshot = harness.context.snapshotCalculationTransaction_(
+    harness.spreadsheet, [descriptor]
+  );
+  const snapshotReads = harness.spreadsheet.serviceCalls.reads;
+  sheet.getRange(2, 2).setValue('changed').setFormula('=CHANGED()')
+    .setNote('changed').setBackground('#000000').setNumberFormat('changed')
+    .setDataValidation(null);
+  sheet.getRange(1001, 5).setValue(999).setNote('changed')
+    .setBackground('#000000').setNumberFormat('changed').setDataValidation(null);
+  harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0, reads: 0 };
+  harness.context.rollbackCalculationTransaction_(harness.spreadsheet, snapshot);
+  const rollbackWrites = harness.spreadsheet.serviceCalls.writes;
+  assert.ok(snapshotReads <= 12, `snapshot reads must be O(ranges), got ${snapshotReads}`);
+  assert.ok(rollbackWrites <= 12, `rollback writes must be O(ranges), got ${rollbackWrites}`);
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), 'formula display');
+  assert.strictEqual(sheet.getRange(2, 2).getFormula(), '=A2');
+  assert.strictEqual(sheet.getRange(2, 2).getNote(), 'formula note');
+  assert.strictEqual(sheet.getRange(2, 2).getBackground(), '#111111');
+  assert.strictEqual(sheet.getRange(2, 2).getNumberFormat(), 'formula-format');
+  assert.deepStrictEqual(sheet.getRange(2, 2).getDataValidation(), {
+    type: 'custom', formula: '=A2>0',
+  });
+  assert.strictEqual(sheet.getRange(1001, 5).getValue(), 500);
+  assert.strictEqual(sheet.getRange(1001, 5).getNote(), 'tail note');
+  assert.strictEqual(sheet.getRange(1001, 5).getBackground(), '#222222');
+  assert.strictEqual(sheet.getRange(1001, 5).getNumberFormat(), 'tail-format');
+  assert.deepStrictEqual(sheet.getRange(1001, 5).getDataValidation(), {
+    type: 'list', values: ['x', 'y'],
+  });
+}
+
+// Final safety: recovery allocates only to concrete sources whose calculation window includes it.
+{
+  const harness = createHarness(['A', 'B']);
+  const makePrincipal = (name, amount, dueDate, calculationEndDate) => {
+    const sheet = harness.spreadsheet.getSheetByName(name);
+    return {
+      family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+      baseLabel: 'Ежемесячная премия', periodKey: '2026-01', periodLabel: '01.2026',
+      calculationItem: 'principal', amount, dueDate, calculationEndDate,
+      liabilityTiming: 'single_due_date',
+      source: { sheetId: sheet.getSheetId(), sheetName: name, row: 2, adapterId: 'monthlyPremiums' },
+      destinations: {
+        principal: { sheetName: name, row: 2, column: 2, adapterOwned: true },
+        liability: { sheetName: name, row: 2, column: 3, adapterOwned: true },
+      },
+    };
+  };
+  const a = makePrincipal('A', 100, new Date(2026, 0, 1), new Date(2026, 0, 31));
+  const b = makePrincipal('B', 100, new Date(2026, 0, 2), new Date(2026, 2, 31));
+  const liabilities = [a, b].map((principal) => Object.assign({}, principal, {
+    family: 'material_liability', calculationItem: 'article_236', amount: 1,
+  }));
+  const recoveryDate = new Date(2026, 1, 15);
+  const rates = [{ date: new Date(2020, 0, 1), rate: 15 }];
+  const effects = harness.context.applyPartialRecoveries_([a, b].concat(liabilities), {
+    valid: [{ date: recoveryDate, amount: 150, allocation: harness.context.buildStableClaimKey_(a) }],
+    invalid: [], unallocated: [],
+  }, rates);
+  assert.deepStrictEqual(Array.from(effects.writeBacks
+    .filter((writeBack) => writeBack.kind === 'principal')
+    .map((writeBack) => [writeBack.destination.sheetName, writeBack.value])), [
+    ['A', 100], ['B', 0],
+  ]);
+  assert.strictEqual(effects.overpayments.length, 0,
+    'debt outside the recovery date scope is not a false overpayment');
+  const deferred = effects.warnings.find((warning) =>
+    warning.code === 'recovery_out_of_period_deferred'
+  );
+  assert.strictEqual(deferred.amount, 50);
+  assert.ok(deferred.sourceIdentities.includes(
+    harness.context.getRecoverySourceIdentity_(a)
+  ));
+  const aOutstanding = effects.liabilitySegments.find((segment) =>
+    segment.sourceIdentity === harness.context.getRecoverySourceIdentity_(a)
+      && segment.kind === 'outstanding'
+  );
+  const bRecovered = effects.liabilitySegments.find((segment) =>
+    segment.sourceIdentity === harness.context.getRecoverySourceIdentity_(b)
+      && segment.kind === 'recovered'
+  );
+  assert.strictEqual(aOutstanding.endDate.getTime(), a.calculationEndDate.getTime());
+  assert.strictEqual(bRecovered.endDate.getTime(), recoveryDate.getTime());
+  assert.strictEqual(aOutstanding.calculationEndDate.getTime(), a.calculationEndDate.getTime());
+  assert.strictEqual(bRecovered.calculationEndDate.getTime(), b.calculationEndDate.getTime());
+  const expectedA = harness.context.calculateSalaryCompensation_(
+    100, a.dueDate, a.calculationEndDate, rates
+  ).amount;
+  const expectedB = harness.context.calculateSalaryCompensation_(
+    100, b.dueDate, recoveryDate, rates
+  ).amount;
+  assert.strictEqual(effects.claimFacts.find((fact) =>
+    fact.family === 'material_liability'
+      && fact.source.sheetName === 'A').amount, expectedA);
+  assert.strictEqual(effects.claimFacts.find((fact) =>
+    fact.family === 'material_liability'
+      && fact.source.sheetName === 'B').amount, expectedB);
+}
+
+// Final safety: current-run source trace uses the actual input row after skipped rows.
+{
+  const harness = createHarness(['Источник']);
+  const sheet = harness.spreadsheet.getSheetByName('Источник');
+  sheet.getRange(1, 1, 3, 3).setValues([
+    ['Период', 'Надлежащая сумма', 'Иное'],
+    ['', 999, 'skip'],
+    ['02.2026', 200, 'keep'],
+  ]);
+  const snapshot = harness.context.buildCurrentRunSourceSnapshot_({
+    sheet, headerRow: 1, layout: { id: 'monthlyPremiums' },
+    semanticColumns: { period: 0, correctAmount: 1 },
+  });
+  assert.strictEqual(snapshot.length, 1);
+  assert.strictEqual(snapshot[0].source.row, 3);
 }
 
 console.log('claim constructor characterization ok');
