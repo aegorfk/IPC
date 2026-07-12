@@ -2291,9 +2291,20 @@ function stubBatchSessionStartup(harness) {
   };
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
-  harness.context.runClaimCalculationDocsHandoff_ = () => {
+  let legacyCalls = 0;
+  harness.context.runClaimCalculationDocsHandoff_ = () => { legacyCalls++; };
+  harness.context.writeSelectedClaimDocument = (options) => {
     order.push('writing_doc');
-    return { writtenSections: ['claim_calculation'], skippedSections: [], issues: [], result: {} };
+    assert.strictEqual(options.spreadsheet, harness.spreadsheet);
+    assert.strictEqual(options.idempotencyKey, run.id);
+    assert.strictEqual(options.source, 'constructor_run');
+    return {
+      documentId: 'new-doc',
+      url: 'https://docs.google.com/document/d/new-doc/edit',
+      title: 'Новая версия',
+      source: 'constructor_run',
+      idempotencyKey: run.id,
+    };
   };
 
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
@@ -2308,7 +2319,9 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(completed.phases.writing_doc, 'done');
   assert.strictEqual(completed.results.reconstruction.fillResults[0].rows, 1);
   assert.strictEqual(completed.results.calculations[0].sheetName, 'Оклад');
-  assert.deepStrictEqual(Array.from(completed.results.docs.writtenSections), ['claim_calculation']);
+  assert.strictEqual(completed.results.docs.documentId, 'new-doc');
+  assert.strictEqual(completed.results.dashboard.output.docUrl, completed.results.docs.url);
+  assert.strictEqual(legacyCalls, 0);
 }
 
 {
@@ -2326,12 +2339,12 @@ function stubBatchSessionStartup(harness) {
   harness.context.runAllSheetsIndexation_ = () => [{ sheetName: 'Оклад', calculated: 1, skipped: 0 }];
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
-  harness.context.runClaimCalculationDocsHandoff_ = () => ({
-    writtenSections: [],
-    skippedSections: ['claim_calculation'],
-    issues: [{ code: 'claim_parameters_missing', reason: 'Не хватает даты' }],
-    result: null,
-  });
+  harness.context.writeSelectedClaimDocument = () => {
+    throw harness.context.createSelectedClaimDocumentCorrectiveError_(
+      'selected_claims_missing',
+      'Выберите хотя бы одно требование в разделе «Аудит и требования».'
+    );
+  };
 
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
@@ -2339,7 +2352,9 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(completed.phase, 'complete_with_warnings');
   assert.strictEqual(completed.issues.length, 2);
   assert.strictEqual(completed.results.calculations[0].calculated, 1);
-  assert.strictEqual(completed.results.docs.skippedSections[0], 'claim_calculation');
+  assert.strictEqual(completed.results.docs.code, 'selected_claims_missing');
+  assert.ok(completed.issues.some((issue) =>
+    issue.suggestedAction.includes('Расписать выбранные требования')));
 }
 
 {
@@ -2360,10 +2375,10 @@ function stubBatchSessionStartup(harness) {
     return { ready: true, written: 3, result: claimResult, params: {}, issues: [] };
   };
   harness.context.readClaimCalculationParams_ = () => ({});
-  harness.context.runClaimCalculationDocsHandoff_ = (spreadsheet, options) => {
+  harness.context.writeSelectedClaimDocument = (options) => {
     order.push('docs');
-    assert.strictEqual(options.calculatedResult, claimResult);
-    return { writtenSections: ['claim_calculation'], skippedSections: [], issues: [], result: claimResult };
+    assert.strictEqual(options.spreadsheet, harness.spreadsheet);
+    return { documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit' };
   };
 
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
@@ -2384,12 +2399,9 @@ function stubBatchSessionStartup(harness) {
   run.results.claimCalculation = { ready: true, written: 3, result: {}, params: {}, issues: [] };
   run.results.calculations = [{ durable: true }];
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
-  harness.context.runClaimCalculationDocsHandoff_ = () => ({
-    writtenSections: [],
-    skippedSections: ['claim_calculation'],
-    issues: [{ code: 'doc_write_failed', reason: 'Нет доступа к обязательному Google Doc' }],
-    result: null,
-  });
+  harness.context.writeSelectedClaimDocument = () => {
+    throw new Error('Нет доступа к созданию Google Doc');
+  };
 
   const failed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
@@ -2416,8 +2428,8 @@ function stubBatchSessionStartup(harness) {
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   harness.context.runAllSheetsIndexation_ = () => [{ sheetName: 'Оклад', calculated: 1, skipped: 2 }];
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
-  harness.context.runClaimCalculationDocsHandoff_ = () => ({
-    writtenSections: [], skippedSections: [], issues: [], result: {},
+  harness.context.writeSelectedClaimDocument = () => ({
+    documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit',
   });
 
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
@@ -2437,7 +2449,7 @@ function stubBatchSessionStartup(harness) {
   const downstreamCalls = [];
   harness.context.runZupReconstruction_ = () => downstreamCalls.push('reconstructing');
   harness.context.runAllSheetsIndexation_ = () => downstreamCalls.push('calculating');
-  harness.context.runClaimCalculationDocsHandoff_ = () => downstreamCalls.push('writing_doc');
+  harness.context.writeSelectedClaimDocument = () => downstreamCalls.push('writing_doc');
 
   const failed = harness.context.continueClaimConstructorAfterImport_(run.id, 'reconstructing', {
     complete: true,
@@ -2631,9 +2643,9 @@ function stubBatchSessionStartup(harness) {
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
-  harness.context.runClaimCalculationDocsHandoff_ = () => {
+  harness.context.writeSelectedClaimDocument = () => {
     calls.push('writing_doc');
-    return { writtenSections: [], skippedSections: [], issues: [], result: null };
+    return { documentId: `doc-${calls.length}`, url: `https://docs.google.com/document/d/doc-${calls.length}/edit` };
   };
 
   const completed = harness.context.retryClaimCalculation();
@@ -2698,9 +2710,9 @@ function stubBatchSessionStartup(harness) {
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
-  harness.context.runClaimCalculationDocsHandoff_ = () => {
+  harness.context.writeSelectedClaimDocument = () => {
     calls.push('writing_doc');
-    return { writtenSections: [], skippedSections: [], issues: [], result: null };
+    return { documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit' };
   };
 
   harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
@@ -2725,8 +2737,8 @@ function stubBatchSessionStartup(harness) {
   };
   harness.context.runAllSheetsIndexation_ = () => [];
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
-  harness.context.runClaimCalculationDocsHandoff_ = () => ({
-    writtenSections: [], skippedSections: [], issues: [], result: {},
+  harness.context.writeSelectedClaimDocument = () => ({
+    documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit',
   });
 
   harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
@@ -2743,7 +2755,7 @@ function stubBatchSessionStartup(harness) {
   const downstream = [];
   harness.context.runZupReconstruction_ = () => { throw new Error('Сбой реконструкции'); };
   harness.context.runAllSheetsIndexation_ = () => downstream.push('calculating');
-  harness.context.runClaimCalculationDocsHandoff_ = () => downstream.push('writing_doc');
+  harness.context.writeSelectedClaimDocument = () => downstream.push('writing_doc');
 
   const failed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
@@ -6225,6 +6237,217 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   }
   return workspace;
 }
+
+// Constructor writing_doc uses the versioned writer, persisted selections, and never opens the old Doc.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const parentFolder = { id: 'pipeline-folder' };
+  const workspace = seedSelectedDocsWorkspace(harness, 'pipeline-old-doc', parentFolder);
+  const docs = installVersionedDocsFakes(harness);
+  const intakeLayout = harness.context.getClaimIntakeLayout_();
+  const firstRow = intakeLayout.claimSelections.firstRow;
+  workspace.questionnaire.getRange(firstRow, 1, 3, 5).setValues([
+    ['', 'Взыскать недоплату — 1 500,00', '', '', ''],
+    [true, 'Выбранный оклад — 01.2026', '', 1000, 'underpayment|salary|salary|2026-01|principal'],
+    [false, 'Снятая премия — 01.2026', '', 500, 'underpayment|monthly_bonus|bonus|2026-01|principal'],
+  ]);
+  harness.spreadsheet.setNamedRange(
+    intakeLayout.claimSelections.namedRange,
+    workspace.questionnaire.getRange(firstRow, 1, 3, 5)
+  );
+  const oldBody = harness.documents.get('pipeline-old-doc').body.content.slice();
+  const run = harness.context.createClaimConstructorRun_({
+    docUrl: 'https://docs.google.com/document/d/pipeline-old-doc/edit',
+  });
+  run.phases = {
+    validating: 'done', importing: 'done', reconstructing: 'done',
+    calculating: 'done', writing_doc: 'running',
+  };
+  run.phase = 'writing_doc';
+  run.results.dashboard = { totals: { total: 1500 }, output: { docUrl: run.inputs.docUrl } };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.context.runClaimCalculationDocsHandoff_ = () => {
+    throw new Error('legacy handoff must not run');
+  };
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+
+  assert.strictEqual(completed.status, 'complete');
+  assert.strictEqual(docs.created.length, 1);
+  assert.strictEqual(completed.results.docs.idempotencyKey, run.id);
+  assert.strictEqual(completed.results.docs.source, 'constructor_run');
+  assert.strictEqual(completed.results.dashboard.output.docUrl, completed.results.docs.url);
+  assert.strictEqual(
+    workspace.constructor.getRange(harness.context.getClaimConstructorLayout_().outputDoc.valueCell).getValue(),
+    completed.results.docs.url
+  );
+  assert.deepStrictEqual(harness.documents.get('pipeline-old-doc').body.content, oldBody);
+  assert.match(docs.created[0].doc.body.content.join('\n'), /Выбранный оклад/);
+  assert.doesNotMatch(docs.created[0].doc.body.content.join('\n'), /Снятая премия/);
+}
+
+// A successful history commit is the idempotency authority for a constructor run.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
+  const docs = installVersionedDocsFakes(harness);
+  const first = harness.context.writeSelectedClaimDocument({
+    spreadsheet: harness.spreadsheet,
+    source: 'constructor_run',
+    idempotencyKey: 'run-1',
+  });
+  harness.spreadsheet
+    .getRangeByName(harness.context.getClaimConstructorLayout_().outputDoc.namedRange)
+    .setValue('https://docs.google.com/document/d/current-doc/edit');
+  const repeated = harness.context.writeSelectedClaimDocument({
+    spreadsheet: harness.spreadsheet,
+    source: 'constructor_run',
+    idempotencyKey: 'run-1',
+  });
+  assert.strictEqual(
+    harness.spreadsheet
+      .getRangeByName(harness.context.getClaimConstructorLayout_().outputDoc.namedRange)
+      .getValue(),
+    first.url
+  );
+  const successor = harness.context.writeSelectedClaimDocument({
+    spreadsheet: harness.spreadsheet,
+    source: 'constructor_run',
+    idempotencyKey: 'run-2',
+  });
+
+  assert.strictEqual(repeated.documentId, first.documentId);
+  assert.strictEqual(repeated.reused, true);
+  assert.notStrictEqual(successor.documentId, first.documentId);
+  assert.strictEqual(docs.created.length, 2);
+  const metadata = harness.spreadsheet
+    .getRangeByName(harness.context.getClaimIntakeLayout_().docsHistory.namedRange)
+    .getValues().map((row) => harness.context.parseClaimDocsHistoryMetadata_(row[2]));
+  assert.deepStrictEqual(Array.from(metadata, (item) => item.idempotencyKey), ['run-1', 'run-2']);
+  assert.deepStrictEqual(Array.from(metadata, (item) => item.source), ['constructor_run', 'constructor_run']);
+}
+
+// A transient run-state save failure after Docs commit finalizes from history without a duplicate.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
+  const docs = installVersionedDocsFakes(harness);
+  const run = harness.context.createClaimConstructorRun_({
+    docUrl: 'https://docs.google.com/document/d/current-doc/edit',
+  });
+  run.phases = {
+    validating: 'done', importing: 'done', reconstructing: 'done',
+    calculating: 'done', writing_doc: 'running',
+  };
+  run.phase = 'writing_doc';
+  run.results.dashboard = { totals: {}, output: { docUrl: run.inputs.docUrl } };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  const originalSave = harness.context.saveClaimConstructorRun_;
+  let saves = 0;
+  harness.context.saveClaimConstructorRun_ = (value, properties) => {
+    saves++;
+    if (saves === 2) throw new Error('injected run-state save failure after Docs commit');
+    return originalSave(value, properties);
+  };
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+
+  assert.strictEqual(completed.status, 'complete');
+  assert.strictEqual(completed.results.docs.idempotencyKey, run.id);
+  assert.strictEqual(docs.created.length, 1);
+}
+
+// Explicit retry is a successor run and therefore creates a new version with its new run id.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
+  const docs = installVersionedDocsFakes(harness);
+  const previous = harness.context.createClaimConstructorRun_({
+    docUrl: 'https://docs.google.com/document/d/current-doc/edit',
+  });
+  harness.context.writeSelectedClaimDocument({
+    spreadsheet: harness.spreadsheet,
+    source: 'constructor_run',
+    idempotencyKey: previous.id,
+  });
+  previous.status = 'failed';
+  previous.phase = 'failed';
+  previous.failedPhase = 'writing_doc';
+  previous.phases = {
+    validating: 'done', importing: 'done', reconstructing: 'done',
+    calculating: 'done', writing_doc: 'running',
+  };
+  previous.results.dashboard = { totals: {}, output: { docUrl: previous.inputs.docUrl } };
+  harness.context.saveClaimConstructorRun_(previous, harness.scriptProperties);
+
+  const successor = harness.context.retryClaimCalculation();
+
+  assert.strictEqual(successor.parentRunId, previous.id);
+  assert.notStrictEqual(successor.id, previous.id);
+  assert.strictEqual(successor.status, 'complete');
+  assert.strictEqual(successor.results.docs.idempotencyKey, successor.id);
+  assert.strictEqual(docs.created.length, 2);
+}
+
+// User-correctable Docs preconditions preserve completed Sheets and finish with warnings.
+[
+  {
+    code: 'average_earnings_invalid',
+    mutate(harness, workspace) {
+      workspace.questionnaire
+        .getRange(harness.context.getClaimIntakeLayout_().calculatedAverage.valueCell)
+        .setValue('');
+    },
+  },
+  {
+    code: 'selected_claims_missing',
+    mutate(harness, workspace) {
+      const layout = harness.context.getClaimIntakeLayout_();
+      workspace.questionnaire.getRange(layout.claimSelections.firstRow + 1, 1).setValue(false);
+    },
+  },
+  {
+    code: 'document_parent_unresolvable',
+    mutate(harness) {
+      harness.driveFiles.set('current-doc', {
+        getParents: () => ({ hasNext: () => false, next: () => null }),
+      });
+    },
+  },
+].forEach((scenario) => {
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const workspace = seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
+  const docs = installVersionedDocsFakes(harness);
+  scenario.mutate(harness, workspace);
+  const oldBody = harness.documents.get('current-doc').body.content.slice();
+  const run = harness.context.createClaimConstructorRun_({
+    docUrl: 'https://docs.google.com/document/d/current-doc/edit',
+  });
+  run.phases = {
+    validating: 'done', importing: 'done', reconstructing: 'done',
+    calculating: 'done', writing_doc: 'running',
+  };
+  run.phase = 'writing_doc';
+  run.results.calculations = [{ durable: true }];
+  run.results.dashboard = { totals: { total: 1000 }, output: { docUrl: run.inputs.docUrl } };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+
+  assert.strictEqual(completed.status, 'complete_with_warnings', scenario.code);
+  assert.strictEqual(completed.results.calculations[0].durable, true, scenario.code);
+  assert.strictEqual(completed.results.docs.code, scenario.code, scenario.code);
+  assert.ok(completed.issues.some((issue) =>
+    issue.suggestedAction.includes('Расписать выбранные требования')), scenario.code);
+  assert.deepStrictEqual(harness.documents.get('current-doc').body.content, oldBody, scenario.code);
+  assert.strictEqual(docs.created.length, 0, scenario.code);
+});
 
 // Preconditions reject invalid selected state and malformed audit ordering before create.
 [

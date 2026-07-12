@@ -1125,7 +1125,7 @@ function appendClaimDocsHistory_(spreadsheet, entry) {
   }
   const documentCell = `${entry.title || 'Расчет требований'} — ${entry.url}`;
   targetRange.setValues([[
-    entry.timestamp || new Date(), documentCell, entry.source || 'payroll_slips',
+    entry.timestamp || new Date(), documentCell, formatClaimDocsHistoryMetadata_(entry),
   ]]);
   const extent = row - history.firstRow + 1;
   spreadsheet.setNamedRange(
@@ -1133,6 +1133,60 @@ function appendClaimDocsHistory_(spreadsheet, entry) {
     sheet.getRange(history.firstRow, history.firstColumn, extent, history.columnCount)
   );
   return { row, extent, targetRange, previousTargetValues };
+}
+
+function formatClaimDocsHistoryMetadata_(entry) {
+  const value = entry || {};
+  const source = value.source || 'payroll_slips';
+  const idempotencyKey = String(value.idempotencyKey || '').trim();
+  if (!idempotencyKey) return source;
+  return JSON.stringify({ source, idempotencyKey });
+}
+
+function parseClaimDocsHistoryMetadata_(value) {
+  const text = String(value || '').trim();
+  if (!text) return { source: '', idempotencyKey: '' };
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        source: String(parsed.source || ''),
+        idempotencyKey: String(parsed.idempotencyKey || ''),
+      };
+    }
+  } catch (error) {
+    // Legacy history stores the source marker as plain text.
+  }
+  return { source: text, idempotencyKey: '' };
+}
+
+function findSuccessfulSelectedClaimDocumentByIdempotency_(spreadsheet, idempotencyKey) {
+  const key = String(idempotencyKey || '').trim();
+  if (!key) return null;
+  const layout = getClaimIntakeLayout_();
+  const sheet = spreadsheet.getSheetByName(layout.sheetName);
+  if (!sheet) return null;
+  const rows = getClaimDocsHistoryRange_(spreadsheet, sheet, layout.docsHistory).getValues();
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const metadata = parseClaimDocsHistoryMetadata_(rows[index][2]);
+    if (metadata.idempotencyKey !== key) continue;
+    const documentId = extractGoogleDocId_(rows[index][1]);
+    if (!documentId) continue;
+    const text = String(rows[index][1] || '');
+    const urlMatch = text.match(/https:\/\/docs\.google\.com\/document\/d\/[^\s]+/i);
+    const url = urlMatch ? urlMatch[0] : `https://docs.google.com/document/d/${documentId}/edit`;
+    const title = urlMatch ? text.slice(0, urlMatch.index).replace(/\s+—\s*$/, '') : 'Расчет требований';
+    return {
+      documentId,
+      url,
+      title,
+      source: metadata.source,
+      idempotencyKey: key,
+      reused: true,
+      historyRow: layout.docsHistory.firstRow + index,
+    };
+  }
+  return null;
 }
 
 function validateClaimDocsHistoryRows_(rows) {
@@ -1391,7 +1445,8 @@ function resolveSelectedClaimDocumentFolder_(spreadsheet) {
       lastProblem = `Документ недоступен: ${error && error.message ? error.message : error}`;
     }
   }
-  throw new Error(
+  throw createSelectedClaimDocumentCorrectiveError_(
+    'document_parent_unresolvable',
     'Не удалось определить ровно одну доступную папку для нового Google Doc. '
     + 'Укажите в Конструкторе ссылку на доступный расчетный документ в нужной папке'
     + (lastProblem ? `. ${lastProblem}` : '.')
@@ -1414,6 +1469,18 @@ function writeSelectedClaimDocument(options) {
 
 function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
   ensureClaimConstructorWorkspace_(spreadsheet);
+  const existing = findSuccessfulSelectedClaimDocumentByIdempotency_(
+    spreadsheet, settings.idempotencyKey
+  );
+  if (existing) {
+    const currentRange = spreadsheet.getRangeByName(
+      getClaimConstructorLayout_().outputDoc.namedRange
+    );
+    if (!currentRange) throw new Error('Не найдена ячейка текущего расчетного документа.');
+    currentRange.setValue(existing.url);
+    SpreadsheetApp.flush();
+    return existing;
+  }
   const resolvedFolder = resolveSelectedClaimDocumentFolder_(spreadsheet);
   const payload = buildSelectedClaimPayload_(spreadsheet);
   validateSelectedClaimDocumentPayload_(payload);
@@ -1437,7 +1504,8 @@ function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
       timestamp: now,
       title,
       url,
-      source: payload.sourceKind,
+      source: settings.source || payload.sourceKind,
+      idempotencyKey: settings.idempotencyKey || '',
     });
     return {
       documentId,
@@ -1445,6 +1513,8 @@ function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
       title,
       folder: resolvedFolder.folder,
       sourceDocumentId: resolvedFolder.sourceDocumentId,
+      source: settings.source || payload.sourceKind,
+      idempotencyKey: String(settings.idempotencyKey || ''),
       payload,
     };
   } catch (error) {
@@ -1500,7 +1570,8 @@ function validateSelectedClaimDocumentPayload_(payload) {
   if (!selectedAverage || selectedAverage.valid === false
     || !Number.isFinite(Number(selectedAverage.amount))
     || Number(selectedAverage.amount) <= 0) {
-    throw new Error(
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'average_earnings_invalid',
       'Выберите сценарий и укажите положительный средний заработок перед формированием документа.'
     );
   }
@@ -1508,8 +1579,27 @@ function validateSelectedClaimDocumentPayload_(payload) {
     (count, group) => count + (group.items || []).length, 0
   );
   if (!itemCount) {
-    throw new Error('Выберите хотя бы одно требование в разделе «Аудит и требования».');
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'selected_claims_missing',
+      'Выберите хотя бы одно требование в разделе «Аудит и требования».'
+    );
   }
+}
+
+function createSelectedClaimDocumentCorrectiveError_(code, message) {
+  const error = new Error(message);
+  error.name = 'SelectedClaimDocumentCorrectiveError';
+  error.code = code;
+  error.corrective = true;
+  return error;
+}
+
+function isSelectedClaimDocumentCorrectiveError_(error) {
+  return Boolean(error && error.corrective === true && [
+    'average_earnings_invalid',
+    'selected_claims_missing',
+    'document_parent_unresolvable',
+  ].indexOf(error.code) >= 0);
 }
 
 function writeSelectedClaimDocumentAction() {

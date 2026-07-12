@@ -28,7 +28,7 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
     importing: 'Распознавание расчетных листков',
     reconstructing: 'Импорт завершен. Реконструкция начислений и выплат',
     calculating: 'Расчет недоплат, индексации и пеней',
-    writing_doc: 'Формирование расшифровки в Google Docs',
+    writing_doc: 'Создание новой версии расчета в Google Docs',
     complete: 'Готово',
     completeWithWarnings: 'Готово с замечаниями',
     failed: 'Ошибка',
@@ -1073,47 +1073,54 @@ function continueClaimConstructorPipeline_(runId, options) {
         'writing_doc',
         'calculations',
         calculations,
-        'Расчет в Google Sheets завершен. Формируем расшифровку.',
+        'Расчет в Google Sheets завершен. Создаем новую версию расчета в Google Docs.',
         { dashboard, claimCalculation },
         workflowIssues.concat(claimIssues),
         executionToken
       );
     }
     if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
-      const executionToken = claimClaimConstructorPhaseExecution_(runId, 'writing_doc');
+      let docs = findSuccessfulSelectedClaimDocumentByIdempotency_(spreadsheet, runId);
+      const persistedExecution = run.phaseExecutions && run.phaseExecutions.writing_doc;
+      const executionToken = docs && persistedExecution
+        ? persistedExecution.token
+        : claimClaimConstructorPhaseExecution_(runId, 'writing_doc');
       if (!executionToken) {
         return loadClaimConstructorRun_();
       }
-      const claimCalculation = run.results.claimCalculation;
-      let docs;
-      if (claimCalculation && claimCalculation.ready && claimCalculation.written > 0) {
-        const params = Object.assign({}, claimCalculation.params || {});
-        params.docUrl = run.inputs.docUrl || params.docUrl;
-        docs = runClaimCalculationDocsHandoff_(spreadsheet, {
-          params,
-          calculatedResult: claimCalculation.result,
-        });
-      } else {
-        docs = buildSkippedClaimDocsHandoff_(
-          'claim_sheet_not_written',
-          'Раздел Docs не обновлен: соответствующий расчет сначала должен быть записан в Google Sheets.'
+      const docIssues = [];
+      if (!docs) {
+        try {
+          docs = writeSelectedClaimDocument({
+            spreadsheet,
+            source: 'constructor_run',
+            idempotencyKey: run.id,
+          });
+        } catch (error) {
+          if (!isSelectedClaimDocumentCorrectiveError_(error)) throw error;
+          docs = {
+            created: false,
+            code: error.code,
+            reason: error.message,
+            source: 'constructor_run',
+            idempotencyKey: run.id,
+          };
+          docIssues.push(buildClaimConstructorCorrectiveDocsIssue_(error, run));
+        }
+      }
+      const serializedDocs = normalizeClaimConstructorDocsResult_(docs);
+      try {
+        run = finishClaimConstructorRun_(
+          runId, 'writing_doc', 'docs', serializedDocs, docIssues, executionToken
+        );
+      } catch (saveError) {
+        const committed = findSuccessfulSelectedClaimDocumentByIdempotency_(spreadsheet, runId);
+        if (!committed) throw saveError;
+        run = finishClaimConstructorRun_(
+          runId, 'writing_doc', 'docs', normalizeClaimConstructorDocsResult_(committed),
+          docIssues, executionToken
         );
       }
-      const fatalDocIssue = (docs.issues || []).find((issue) =>
-        issue.code === 'doc_write_failed' || issue.code === 'output_doc_missing'
-      );
-      if (fatalDocIssue) {
-        throw new Error(fatalDocIssue.reason || 'Не удалось обновить обязательный Google Doc.');
-      }
-      const docIssues = (docs.issues || []).map((issue) => ({
-        phase: 'writing_doc',
-        sourceKind: 'calculation_doc',
-        source: run.inputs.docUrl || '',
-        reason: issue.reason || issue.code,
-        reviewStatus: 'раздел пропущен',
-        suggestedAction: 'Уточнить недостающие данные и повторить формирование Docs.',
-      }));
-      run = finishClaimConstructorRun_(runId, 'writing_doc', 'docs', docs, docIssues, executionToken);
     }
   } catch (error) {
     const failedPhase = run && getClaimConstructorPhaseOrder_().indexOf(run.phase) >= 0
@@ -1129,6 +1136,39 @@ function continueClaimConstructorPipeline_(runId, options) {
     refreshClaimConstructorDashboard_(spreadsheet, run);
   }
   return run;
+}
+
+function normalizeClaimConstructorDocsResult_(result) {
+  const value = result || {};
+  return {
+    created: value.created !== false,
+    documentId: value.documentId || '',
+    url: value.url || '',
+    title: value.title || '',
+    sourceDocumentId: value.sourceDocumentId || '',
+    source: value.source || 'constructor_run',
+    idempotencyKey: value.idempotencyKey || '',
+    reused: value.reused === true,
+    code: value.code || '',
+    reason: value.reason || '',
+  };
+}
+
+function buildClaimConstructorCorrectiveDocsIssue_(error, run) {
+  const actions = {
+    average_earnings_invalid: 'Указать положительный средний заработок и выбрать сценарий, затем использовать «Расписать выбранные требования».',
+    selected_claims_missing: 'Выбрать хотя бы одно требование в разделе «Аудит и требования», затем использовать «Расписать выбранные требования».',
+    document_parent_unresolvable: 'Указать доступный расчетный Google Doc ровно в одной нужной папке, затем использовать «Расписать выбранные требования».',
+  };
+  return {
+    phase: 'writing_doc',
+    sourceKind: 'calculation_doc',
+    source: run && run.inputs ? run.inputs.docUrl || '' : '',
+    reason: error.message,
+    reviewStatus: 'требуется исправление пользователем',
+    knownImpact: 'Google Doc не создан; расчет в Google Sheets завершен',
+    suggestedAction: actions[error.code],
+  };
 }
 
 function failClaimConstructorRuntime_(runId, failedPhase, error) {
@@ -1204,6 +1244,12 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
       return null;
     }
     run.results[resultKey] = result;
+    if (resultKey === 'docs' && result && result.url) {
+      run.results.dashboard = run.results.dashboard || {};
+      run.results.dashboard.output = run.results.dashboard.output || {};
+      run.results.dashboard.output.docUrl = result.url;
+      run.inputs.docUrl = result.url;
+    }
     (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
     delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
