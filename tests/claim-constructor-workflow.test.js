@@ -79,6 +79,16 @@ class FakeRange {
 
   setValues(values) {
     this.sheet.writeGrid(this.row, this.column, values, 'value');
+    values.forEach((rowValues, rowOffset) => {
+      rowValues.forEach((value, columnOffset) => {
+        const key = this.sheet.key(this.row + rowOffset, this.column + columnOffset);
+        if (typeof value === 'string' && value.startsWith('=')) {
+          this.sheet.formulas.set(key, value);
+        } else {
+          this.sheet.formulas.delete(key);
+        }
+      });
+    });
     return this;
   }
 
@@ -5469,7 +5479,6 @@ function stubBatchSessionStartup(harness) {
   );
   assert.strictEqual(intake.getRange(futureRow, 1).getValue(), 'future value');
   assert.deepStrictEqual(intake.getRange(futureRow, 1).getDataValidation(), customValidation);
-  assert.strictEqual(intake.getRange(futureRow, 2).getValue(), 'formula display');
   assert.strictEqual(intake.getRange(futureRow, 2).getFormula(), '=A1');
   assert.strictEqual(intake.getRange(futureRow, 3).getNote(), 'future note');
   assert.strictEqual(intake.getRange(futureRow, 3).getBackground(), '#123456');
@@ -5569,20 +5578,30 @@ function stubBatchSessionStartup(harness) {
 // Final safety: only an explicitly structured data-quality issue may continue the run.
 {
   const harness = createHarness(['Проблемный', 'Независимый']);
+  const problemSheet = harness.spreadsheet.getSheetByName('Проблемный');
+  problemSheet.getRange(2, 2).setValue(100).setNote('quality-before')
+    .setBackground('#ABCDEF').setNumberFormat('quality-format')
+    .setDataValidation({ type: 'custom', formula: '=A2>0' });
   const descriptors = harness.spreadsheet.getSheets().map((sheet) => ({
     id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
-    semanticColumns: {},
+    semanticColumns: { unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
   }));
   harness.context.discoverCalculationSheetDescriptors_ = () => descriptors;
   harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
   let independentCalculated = false;
   harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
     if (sheet.getName() === 'Проблемный') {
+      sheet.getRange(2, 2).setValue(999).setNote('quality-partial')
+        .setBackground('#000000').setNumberFormat('changed-format')
+        .setDataValidation(null);
       const issue = new Error('неполные исходные данные');
       issue.code = 'CALCULATION_DATA_QUALITY';
       issue.details = { row: 2, field: 'period' };
       throw issue;
     }
+    assert.ok(harness.documentLock.flushes >= 1,
+      'typed issue descriptor is restored and flushed before unrelated calculation');
+    assert.strictEqual(harness.documentLock.released, 0, 'local restore flush occurs under lock');
     independentCalculated = true;
     return {
       sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
@@ -5594,17 +5613,74 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(results.find((result) => result.sheetName === 'Проблемный').error,
     'неполные исходные данные');
   assert.ok(results.find((result) => result.sheetName === 'Независимый'));
+  assert.strictEqual(problemSheet.getRange(2, 2).getValue(), 100);
+  assert.strictEqual(problemSheet.getRange(2, 2).getNote(), 'quality-before');
+  assert.strictEqual(problemSheet.getRange(2, 2).getBackground(), '#ABCDEF');
+  assert.strictEqual(problemSheet.getRange(2, 2).getNumberFormat(), 'quality-format');
+  assert.deepStrictEqual(problemSheet.getRange(2, 2).getDataValidation(), {
+    type: 'custom', formula: '=A2>0',
+  });
+}
+
+// A failed local data-quality restore is fatal and the outer transaction restores everything.
+{
+  const harness = createHarness(['Проблемный', 'Не должен запускаться']);
+  const problemSheet = harness.spreadsheet.getSheetByName('Проблемный');
+  problemSheet.getRange(2, 2).setValue(100).setNote('before-failed-local-restore');
+  const descriptors = harness.spreadsheet.getSheets().map((sheet) => ({
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: { unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
+  }));
+  harness.context.discoverCalculationSheetDescriptors_ = () => descriptors;
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  let unrelatedCalculated = false;
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => {
+    if (sheet === problemSheet) {
+      sheet.getRange(2, 2).setValue(999).setNote('partial-before-local-failure');
+      harness.spreadsheet.failWritePredicate = ({ sheet: writtenSheet, kind, values }) =>
+        writtenSheet === problemSheet && kind === 'value'
+        && values.some((row) => row.includes(100));
+      const issue = new Error('typed issue whose local restore fails');
+      issue.code = 'CALCULATION_DATA_QUALITY';
+      throw issue;
+    }
+    unrelatedCalculated = true;
+    return {
+      sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeWarnings: [], derivativeDependencies: [],
+    };
+  };
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /Data-quality rollback failed/
+  );
+  assert.strictEqual(unrelatedCalculated, false);
+  assert.strictEqual(problemSheet.getRange(2, 2).getValue(), 100);
+  assert.strictEqual(problemSheet.getRange(2, 2).getNote(), 'before-failed-local-restore');
 }
 
 // Final safety: 1000 rows x 4 contiguous outputs snapshot and restore in O(ranges), not O(cells).
 {
   const harness = createHarness(['Большой расчет']);
   const sheet = harness.spreadsheet.getSheetByName('Большой расчет');
-  sheet.getRange(1001, 5).setValue(1);
-  sheet.getRange(2, 2).setValue('formula display').setFormula('=A2')
+  const rowCount = 1001;
+  const columnCount = 4;
+  const originalValues = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) =>
+      `literal-${rowIndex + 1}-${columnIndex + 2}`
+    )
+  );
+  const originalFormulas = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) =>
+      (rowIndex + columnIndex) % 2 === 0 ? `=R${rowIndex + 1}C${columnIndex + 2}` : ''
+    )
+  );
+  sheet.getRange(1, 2, rowCount, columnCount).setValues(originalValues)
+    .setFormulas(originalFormulas);
+  sheet.getRange(2, 2)
     .setNote('formula note').setBackground('#111111').setNumberFormat('formula-format')
     .setDataValidation({ type: 'custom', formula: '=A2>0' });
-  sheet.getRange(1001, 5).setValue(500).setNote('tail note')
+  sheet.getRange(1001, 5).setNote('tail note')
     .setBackground('#222222').setNumberFormat('tail-format')
     .setDataValidation({ type: 'list', values: ['x', 'y'] });
   const descriptor = {
@@ -5616,25 +5692,30 @@ function stubBatchSessionStartup(harness) {
     harness.spreadsheet, [descriptor]
   );
   const snapshotReads = harness.spreadsheet.serviceCalls.reads;
-  sheet.getRange(2, 2).setValue('changed').setFormula('=CHANGED()')
-    .setNote('changed').setBackground('#000000').setNumberFormat('changed')
-    .setDataValidation(null);
-  sheet.getRange(1001, 5).setValue(999).setNote('changed')
-    .setBackground('#000000').setNumberFormat('changed').setDataValidation(null);
+  const changedValues = Array.from({ length: rowCount }, () => Array(columnCount).fill('changed'));
+  const blankFormulas = Array.from({ length: rowCount }, () => Array(columnCount).fill(''));
+  sheet.getRange(1, 2, rowCount, columnCount).setValues(changedValues)
+    .setFormulas(blankFormulas).setNotes(changedValues)
+    .setBackgrounds(Array.from({ length: rowCount }, () => Array(columnCount).fill('#000000')))
+    .setNumberFormats(changedValues).setDataValidations(
+      Array.from({ length: rowCount }, () => Array(columnCount).fill(null))
+    );
   harness.spreadsheet.serviceCalls = { writes: 0, namedRangeSets: 0, reads: 0 };
   harness.context.rollbackCalculationTransaction_(harness.spreadsheet, snapshot);
   const rollbackWrites = harness.spreadsheet.serviceCalls.writes;
-  assert.ok(snapshotReads <= 12, `snapshot reads must be O(ranges), got ${snapshotReads}`);
-  assert.ok(rollbackWrites <= 12, `rollback writes must be O(ranges), got ${rollbackWrites}`);
-  assert.strictEqual(sheet.getRange(2, 2).getValue(), 'formula display');
-  assert.strictEqual(sheet.getRange(2, 2).getFormula(), '=A2');
+  assert.ok(snapshotReads <= 8, `snapshot reads must be O(ranges), got ${snapshotReads}`);
+  assert.ok(rollbackWrites <= 8, `rollback writes must be O(ranges), got ${rollbackWrites}`);
+  assert.strictEqual(sheet.getRange(2, 3).getFormula(), '=R2C3');
+  assert.strictEqual(sheet.getRange(2, 2).getFormula(), '');
+  assert.strictEqual(sheet.getRange(2, 2).getValue(), 'literal-2-2');
   assert.strictEqual(sheet.getRange(2, 2).getNote(), 'formula note');
   assert.strictEqual(sheet.getRange(2, 2).getBackground(), '#111111');
   assert.strictEqual(sheet.getRange(2, 2).getNumberFormat(), 'formula-format');
   assert.deepStrictEqual(sheet.getRange(2, 2).getDataValidation(), {
     type: 'custom', formula: '=A2>0',
   });
-  assert.strictEqual(sheet.getRange(1001, 5).getValue(), 500);
+  assert.strictEqual(sheet.getRange(1001, 5).getFormula(), '');
+  assert.strictEqual(sheet.getRange(1001, 5).getValue(), 'literal-1001-5');
   assert.strictEqual(sheet.getRange(1001, 5).getNote(), 'tail note');
   assert.strictEqual(sheet.getRange(1001, 5).getBackground(), '#222222');
   assert.strictEqual(sheet.getRange(1001, 5).getNumberFormat(), 'tail-format');

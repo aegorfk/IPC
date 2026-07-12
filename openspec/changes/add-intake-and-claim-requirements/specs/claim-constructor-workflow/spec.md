@@ -58,9 +58,11 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 - **AND** the lock is released and the fatal error is rethrown
 
 #### Scenario: Explicit data-quality issue is nonfatal
-- **WHEN** a calculation core returns or throws an explicitly typed or flagged data-quality issue before financial mutation
-- **THEN** that sheet is surfaced as a source-aware review warning
+- **WHEN** a calculation core returns or throws an explicitly typed or flagged data-quality issue, including after a partial owned-output mutation
+- **THEN** that descriptor's snapshotted financial ranges are restored, flushed under the held transaction lock, and verified before processing continues
+- **AND** that sheet is surfaced as a source-aware review warning
 - **AND** unrelated sheets continue
+- **AND** a restore, flush, or verification failure is fatal and triggers the full transaction rollback
 - **AND** no message-text, locale, or exception-class heuristic makes an unexpected exception nonfatal
 
 #### Scenario: Stable setup precedes financial transaction
@@ -72,7 +74,8 @@ The system SHALL perform the all-sheets claim refresh from one semantic discover
 #### Scenario: Large owned surfaces are snapshotted in batches
 - **WHEN** an adapter owns many rows across one or more contiguous output-column ranges
 - **THEN** values, formulas, notes, backgrounds, number formats, and validations are snapshotted and restored with a bounded number of bulk range calls proportional to ranges, not cells
-- **AND** formula runs are restored only where formulas originally existed without clobbering neighboring nonformula values
+- **AND** each rectangular snapshot is restored with one mixed formula-or-literal matrix and one `setValues` call
+- **AND** formulas and neighboring nonformula values are restored exactly without per-formula range writes
 
 #### Scenario: Protected formula is nonfatal
 - **WHEN** recovery targets a formula cell that the semantic adapter does not declare as its owned output
