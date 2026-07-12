@@ -220,6 +220,21 @@ class FakeSheet {
     this.spreadsheet.serviceCalls[`${kind || 'value'}Writes`] =
       (this.spreadsheet.serviceCalls[`${kind || 'value'}Writes`] || 0) + 1;
     this.spreadsheet.writeAttempts++;
+    const writeInfo = {
+      sheet: this, row, column, values, kind: kind || 'value',
+      attempt: this.spreadsheet.writeAttempts,
+    };
+    if (Array.isArray(this.spreadsheet.failWritePredicates)
+      && this.spreadsheet.failWritePredicates.length
+      && this.spreadsheet.failWritePredicates[0](writeInfo)) {
+      this.spreadsheet.failWritePredicates.shift();
+      throw new Error('injected queued sheet write failure');
+    }
+    if (typeof this.spreadsheet.failWritePredicate === 'function'
+      && this.spreadsheet.failWritePredicate(writeInfo)) {
+      this.spreadsheet.failWritePredicate = null;
+      throw new Error('injected targeted sheet write failure');
+    }
     if (this.spreadsheet.failWriteAt === this.spreadsheet.writeAttempts) {
       this.spreadsheet.failWriteAt = null;
       throw new Error('injected sheet write failure');
@@ -1743,6 +1758,10 @@ function stubAllSheetsCalculation(harness) {
   harness.context.getTargetSpreadsheet_ = () => harness.spreadsheet;
   harness.context.isGeneratedSheetName_ = () => false;
   harness.context.getSheetLayout_ = (name) => ({ id: layoutByName[name] || 'unknown' });
+  harness.context.resolveSheetLayout_ = (sheet) => {
+    const id = layoutByName[sheet.getName()];
+    return id ? { id } : null;
+  };
   harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => ({
     sheetName: sheet.getName(),
     layoutId: layoutByName[sheet.getName()],
@@ -4109,6 +4128,7 @@ function stubBatchSessionStartup(harness) {
   };
   harness.context.isGeneratedSheetName_ = () => false;
   harness.context.getSheetLayout_ = () => ({ id: 'salary' });
+  harness.context.resolveSheetLayout_ = () => ({ id: 'salary' });
   harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
     sheetName: 'Оклад', layoutId: 'salary', calculated: 1, skipped: 0,
     totals: { underpayment: 1000, indexation: 0, liability: 0 },
@@ -4216,6 +4236,50 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(protectedResult.warnings[0].code, 'formula_writeback_blocked');
 }
 
+// Recovery writeback is one transaction and restores formulas/metadata on any later write failure.
+{
+  const harness = createHarness(['Транзакция']);
+  const sheet = harness.spreadsheet.getSheetByName('Транзакция');
+  sheet.getRange(2, 4).setValue(1000).setFormula('=A1')
+    .setNote('principal note').setBackground('#ABCDEF').setNumberFormat('principal fmt');
+  sheet.getRange(2, 9).setValue(30)
+    .setNote('liability note').setBackground('#FEDCBA').setNumberFormat('liability fmt');
+  harness.spreadsheet.failWritePredicate = ({ row, column, kind }) =>
+    row === 2 && column === 9 && kind === 'value';
+  assert.throws(() => harness.context.writeRecoveryAdjustedResultsToSheets_(
+    harness.spreadsheet,
+    [
+      { destination: { sheetName: 'Транзакция', row: 2, column: 4, adapterOwned: true }, value: 600, kind: 'principal' },
+      { destination: { sheetName: 'Транзакция', row: 2, column: 9, adapterOwned: true }, value: 22, kind: 'liability' },
+    ]
+  ), /injected targeted sheet write failure/);
+  assert.strictEqual(sheet.getRange(2, 4).getValue(), 1000);
+  assert.strictEqual(sheet.getRange(2, 4).getFormula(), '=A1');
+  assert.strictEqual(sheet.getRange(2, 4).getNote(), 'principal note');
+  assert.strictEqual(sheet.getRange(2, 4).getBackground(), '#ABCDEF');
+  assert.strictEqual(sheet.getRange(2, 4).getNumberFormat(), 'principal fmt');
+  assert.strictEqual(sheet.getRange(2, 9).getValue(), 30);
+  assert.strictEqual(sheet.getRange(2, 9).getNote(), 'liability note');
+  assert.strictEqual(sheet.getRange(2, 9).getBackground(), '#FEDCBA');
+  assert.strictEqual(sheet.getRange(2, 9).getNumberFormat(), 'liability fmt');
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+
+  harness.spreadsheet.failWritePredicates = [
+    ({ row, column, kind }) => row === 2 && column === 9 && kind === 'value',
+    ({ row, column, kind }) => row === 2 && column === 4 && kind === 'value',
+  ];
+  assert.throws(() => harness.context.writeRecoveryAdjustedResultsToSheets_(
+    harness.spreadsheet,
+    [
+      { destination: { sheetName: 'Транзакция', row: 2, column: 4, adapterOwned: true }, value: 600, kind: 'principal' },
+      { destination: { sheetName: 'Транзакция', row: 2, column: 9, adapterOwned: true }, value: 22, kind: 'liability' },
+    ]
+  ), /injected queued sheet write failure/);
+  assert.strictEqual(sheet.getRange(2, 4).getValue(), 1000, 'rollback retries a transient restore failure');
+  assert.strictEqual(sheet.getRange(2, 4).getFormula(), '=A1');
+}
+
 {
   const harness = createHarness(['Производные выплаты']);
   harness.spreadsheet.getSheetByName('Производные выплаты').getRange(3, 5).setValue(77);
@@ -4277,6 +4341,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.loadSalaryCompensationRates_ = () => [{ date: new Date(2020, 0, 1), rate: 15 }];
   harness.context.isGeneratedSheetName_ = () => false;
   harness.context.getSheetLayout_ = () => ({ id: 'salary' });
+  harness.context.resolveSheetLayout_ = () => ({ id: 'salary' });
   harness.context.updateUnpaidSalaryIndexationCore_ = () => {
     assert.strictEqual(questionnaireCaptured, true, 'questionnaire must be captured before base calculation');
     return {
@@ -4296,6 +4361,16 @@ function stubBatchSessionStartup(harness) {
     });
   };
   harness.context.deleteLegacyGeneratedSheets_ = () => {};
+
+  harness.spreadsheet.failWritePredicate = ({ sheet: target, row, column, kind }) =>
+    target === sheet && row === 7 && column === 9 && kind === 'value';
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /injected targeted sheet write failure/
+  );
+  assert.strictEqual(sheet.getRange(7, 4).getValue(), 1000);
+  assert.strictEqual(sheet.getRange(7, 9).getValue(), 30);
+  assert.strictEqual(harness.documentProperties.getProperty('CLAIM_RECOVERY_BASELINES_V1'), null);
 
   const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
   assert.strictEqual(rescannedAfterWrite, true);
@@ -4481,6 +4556,37 @@ function stubBatchSessionStartup(harness) {
 
 // Real discovery is semantic, vendor-neutral, and processes every matching sheet.
 {
+  const falseNames = [
+    'Ежемесячные встречи', 'Ежеквартальные встречи', 'Ежегодные встречи',
+    'Отпуска команды', 'Оклад кадровый',
+  ];
+  const harness = createHarness(falseNames);
+  falseNames.forEach((name) => harness.spreadsheet.getSheetByName(name)
+    .getRange(1, 1, 1, 3).setValues([['Проект', 'Владелец', 'Статус']]));
+  assert.deepStrictEqual(Array.from(harness.spreadsheet.getSheets(), (sheet) =>
+    harness.context.resolveSheetLayout_(sheet)), [null, null, null, null, null]);
+}
+
+{
+  const harness = createHarness([
+    'Бонусы M', 'Бонусы Q', 'Бонусы Y', 'Средний заработок', 'Основная выплата',
+  ]);
+  const headers = {
+    'Бонусы M': ['', 'Размер надлежащей к выплате ежемесячной премии', 'Период', '', '', '', 'Недоплата по ежемесячным премиям', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    'Бонусы Q': ['', 'Размер надлежащей к выплате ежеквартальной премии', 'Период', '', '', '', 'Недоплата по ежеквартальным премиям', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    'Бонусы Y': ['', 'Размер надлежащей к выплате ежегодной премии', 'Период', '', '', '', 'Недоплата по ежегодным премиям', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    'Средний заработок': ['Дата выплаты отпуска', 'Сумма корректного годового заработка', 'Делитель', 'Количество дней отпуска', 'Среднедневной заработок', '', 'Дата выплаты', 'Начислено по расчетным листкам', 'Корректное начисление отпускных', 'Недоплата по отпускным выплатам', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    'Основная выплата': ['', '', '', 'Год', 'Месяц', 'ИПЦ', 'Оклад до индексации', 'Проиндексированный оклад', '', 'Невыплаченный оклад', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+  };
+  Object.keys(headers).forEach((name) => harness.spreadsheet.getSheetByName(name)
+    .getRange(1, 1, 1, headers[name].length).setValues([headers[name]]));
+  assert.deepStrictEqual(Array.from(harness.spreadsheet.getSheets(), (sheet) => {
+    const layout = harness.context.resolveSheetLayout_(sheet);
+    return layout && layout.id;
+  }), ['monthlyPremiums', 'quarterlyPremiums', 'annualPremiums', 'vacation', 'salary']);
+}
+
+{
   const harness = createHarness(['Выплаты A', 'Выплаты B', 'Оклад кадровый']);
   ['Выплаты A', 'Выплаты B'].forEach((name) => {
     harness.spreadsheet.getSheetByName(name).getRange(1, 1, 1, 9).setValues([[
@@ -4543,6 +4649,7 @@ function stubBatchSessionStartup(harness) {
   const harness = createHarness(['Отпуска']);
   const sheet = harness.spreadsheet.getSheetByName('Отпуска');
   sheet.getRange(2, 2).setValue(100);
+  harness.context.resolveSheetLayout_ = () => ({ id: 'vacation' });
   harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
   harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
     sheetName: 'Отпуска', layoutId: 'vacation', calculated: 1, skipped: 0,
@@ -4565,6 +4672,7 @@ function stubBatchSessionStartup(harness) {
   const harness = createHarness(['Ежемесячные']);
   const sheet = harness.spreadsheet.getSheetByName('Ежемесячные');
   sheet.getRange(2, 5).setValue(77);
+  harness.context.resolveSheetLayout_ = () => ({ id: 'monthlyPremiums' });
   harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
   harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
     sheetName: 'Ежемесячные', layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
@@ -4608,6 +4716,8 @@ function stubBatchSessionStartup(harness) {
 {
   const harness = createHarness(['Ежемесячные']);
   const sheet = harness.spreadsheet.getSheetByName('Ежемесячные');
+  harness.context.resolveSheetLayout_ = () => ({ id: 'monthlyPremiums' });
+  harness.context.LockService.getDocumentLock = () => null;
   sheet.getRange(2, 5).setValue(1000);
   sheet.getRange(2, 6).setValue(0);
   let recoveryAmount = 300;
@@ -4827,6 +4937,8 @@ function stubBatchSessionStartup(harness) {
   ]), [2, 3, 7, 4, 8, 9, 10, 11]);
 
   const first = harness.context.updateUnpaidSalaryIndexationCore_({ sheet: vacation });
+  assert.deepStrictEqual(Array.from(first.derivativeDependencies, (dependency) =>
+    dependency.destination.column), [5, 9, 10, 11, 12]);
   assert.deepStrictEqual(Array.from(vacation.getRange(2, 2, 1, 10).getValues()[0].slice(0, 10)), [
     1200, 10, 2, 120, '', new Date(2026, 0, 15), 50, 240, 190, 0,
   ]);
@@ -4851,6 +4963,17 @@ function stubBatchSessionStartup(harness) {
     assert.strictEqual(vacation.getRange(2, column).getBackground(), '#D9EAD3');
     assert.ok(vacation.getRange(2, column).getNote().includes('изменения расчетной базы'));
   });
+
+  const pipelineResults = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  const vacationResult = pipelineResults.find((result) => result.layoutId === 'vacation');
+  assert.strictEqual(vacationResult.derivativeDependencies.length, 5);
+  assert.strictEqual(pipelineResults.calculationEffects.derivativeEffects.writeBacks.length, 5);
+  const pipelineAuditRows = harness.spreadsheet
+    .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange).getValues();
+  assert.strictEqual(
+    pipelineAuditRows.find((row) => row[4] === harness.context.buildStableClaimKey_(principal))[3],
+    190
+  );
 }
 
 console.log('claim constructor characterization ok');

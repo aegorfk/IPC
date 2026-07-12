@@ -168,6 +168,32 @@ const HEADER_ALIASES = {
   annualPremiumYear: ['за какой год премия', 'год премии', 'год расчета премии', 'год расчёта премии'],
 };
 
+const SHEET_LAYOUT_SEMANTIC_CONTRACTS = {
+  salary: {
+    requiredFields: ['year', 'month'],
+    requiredPatterns: [/(оклад|заработн.*плат)/],
+  },
+  monthlyPremiums: {
+    requiredFields: [],
+    requiredPatterns: [/(ежемесяч[^|]*прем|месячн[^|]*прем)/, /(период|месяц|дата выплаты)/],
+  },
+  quarterlyPremiums: {
+    requiredFields: [],
+    requiredPatterns: [/(ежекварт[^|]*прем|квартальн[^|]*прем)/, /(период|квартал|дата выплаты)/],
+  },
+  annualPremiums: {
+    requiredFields: [],
+    requiredPatterns: [/(ежегод[^|]*прем|годов[^|]*прем)/, /(период|год|дата выплаты)/],
+  },
+  vacation: {
+    requiredFields: [
+      'correctAnnualSalary', 'annualSalaryDivisor', 'vacationDays',
+      'averageDailyEarning', 'actualDerivativeAmount', 'correctDerivativeAmount',
+    ],
+    requiredPatterns: [/отпуск/],
+  },
+};
+
 const MONTHS = {
   '1': 1,
   '01': 1,
@@ -308,8 +334,7 @@ function updateAllSheetsIndexation() {
 }
 
 function runAllSheetsIndexation_(spreadsheet) {
-  const lock = typeof LockService !== 'undefined' && LockService.getDocumentLock
-    ? LockService.getDocumentLock() : null;
+  const lock = getRecoveryWriteLock_();
   let acquired = false;
   try {
     if (lock) {
@@ -318,13 +343,14 @@ function runAllSheetsIndexation_(spreadsheet) {
         throw new Error('Не удалось получить блокировку для атомарного перерасчета требований.');
       }
     }
-    return runAllSheetsIndexationTransaction_(spreadsheet);
+    return runAllSheetsIndexationTransaction_(spreadsheet, { lockHeld: acquired });
   } finally {
     if (lock && acquired) lock.releaseLock();
   }
 }
 
-function runAllSheetsIndexationTransaction_(spreadsheet) {
+function runAllSheetsIndexationTransaction_(spreadsheet, options) {
+  const transactionOptions = options || {};
   if (typeof ensureClaimIntakeSheet_ === 'function') ensureClaimIntakeSheet_(spreadsheet);
   const questionnaireState = typeof captureClaimQuestionnaireState_ === 'function'
     ? captureClaimQuestionnaireState_(spreadsheet)
@@ -393,9 +419,12 @@ function runAllSheetsIndexationTransaction_(spreadsheet) {
   if (recoveryRateWarning) recoveryEffects.warnings.push(recoveryRateWarning);
   const recoveryWriteResult = writeRecoveryAdjustedResultsToSheets_(
     spreadsheet,
-    recoveryEffects.writeBacks
+    recoveryEffects.writeBacks,
+    { lockHeld: transactionOptions.lockHeld === true }
   );
-  persistRecoveryBaselineState_(preparedRecoveryFacts, recoveryEffects, recoveryWriteResult);
+  if (recoveryWriteResult.success) {
+    persistRecoveryBaselineState_(preparedRecoveryFacts, recoveryEffects, recoveryWriteResult);
+  }
   recoveryEffects.warnings = recoveryEffects.warnings.concat(recoveryWriteResult.warnings);
   const derivativeDependencies = detectDerivativePaymentDependencies_(
     spreadsheet, results, recoveryEffects
@@ -1028,6 +1057,10 @@ function updateUnpaidSalaryIndexationCore_(params) {
       )} (${penaltyEnd.source}). Источник ставок: calc.consultant.ru/kompensaciya-zarplata.`
     );
   markVacationDerivativeOutputs_(sheet, vacationDerivativeResult.markerDestinations);
+  Array.prototype.push.apply(
+    derivativeDependencies,
+    buildVacationOutputDependencies_(sheet, table, vacationDerivativeResult.markerDestinations)
+  );
 
   SpreadsheetApp.flush();
   const totals = summarizeClaimConstructorCalculationTotals_(
@@ -1576,33 +1609,142 @@ function findRecoveryRelatedFact_(facts, principal, family, calculationItem) {
     && getRecoverySourceIdentity_(fact) === sourceIdentity);
 }
 
-function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks) {
-  const result = { written: 0, writtenBacks: [], warnings: [] };
-  (writeBacks || []).forEach((writeBack) => {
-    const destination = writeBack.destination || {};
-    const sheet = spreadsheet.getSheetByName(destination.sheetName);
-    if (!sheet || !destination.row || !destination.column) {
-      result.warnings.push({ code: 'writeback_destination_missing', writeBack });
-      return;
+function writeRecoveryAdjustedResultsToSheets_(spreadsheet, writeBacks, options) {
+  const settings = options || {};
+  const result = { success: false, written: 0, writtenBacks: [], warnings: [] };
+  const lock = settings.lockHeld ? null : getRecoveryWriteLock_();
+  let acquired = settings.lockHeld === true;
+  try {
+    if (lock) {
+      acquired = lock.tryLock(30000);
+      if (!acquired) {
+        result.warnings.push({
+          code: 'recovery_write_lock_unavailable',
+          reason: 'Не удалось получить блокировку для записи результатов частичных погашений.',
+        });
+        return result;
+      }
     }
-    const range = sheet.getRange(destination.row, destination.column);
-    const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
-    if (formula && destination.adapterOwned !== true) {
-      result.warnings.push({
-        code: 'formula_writeback_blocked', writeBack,
-        reason: 'Формула сохранена: адаптер не объявил ячейку собственным расчетным выходом.',
+    const preparedWrites = [];
+    const snapshotsByCell = new Map();
+    (writeBacks || []).forEach((writeBack) => {
+      const destination = writeBack.destination || {};
+      const sheet = spreadsheet.getSheetByName(destination.sheetName);
+      if (!sheet || !destination.row || !destination.column) {
+        result.warnings.push({ code: 'writeback_destination_missing', writeBack });
+        return;
+      }
+      const range = sheet.getRange(destination.row, destination.column);
+      const formula = typeof range.getFormula === 'function' ? range.getFormula() : '';
+      if (formula && destination.adapterOwned !== true) {
+        result.warnings.push({
+          code: 'formula_writeback_blocked', writeBack,
+          reason: 'Формула сохранена: адаптер не объявил ячейку собственным расчетным выходом.',
+        });
+        return;
+      }
+      const cellKey = [destination.sheetName, destination.row, destination.column].join('|');
+      if (!snapshotsByCell.has(cellKey)) {
+        snapshotsByCell.set(cellKey, {
+          range,
+          value: range.getValue(),
+          formula,
+          note: typeof range.getNote === 'function' ? range.getNote() : '',
+          background: typeof range.getBackground === 'function' ? range.getBackground() : '',
+          numberFormat: typeof range.getNumberFormat === 'function' ? range.getNumberFormat() : '',
+        });
+      }
+      preparedWrites.push({ writeBack, range });
+    });
+    if (result.warnings.length) return result;
+    try {
+      preparedWrites.forEach((prepared) => {
+        const writeBack = prepared.writeBack;
+        const range = prepared.range;
+        range.setValue(writeBack.value).setNumberFormat(SETTINGS.MONEY_FORMAT);
+        if (typeof range.setNote === 'function') {
+          range.setNote(mergeCalculationEffectNote_(range.getNote(),
+            `Частичное погашение. ${writeBack.note || ''}`));
+        }
+        result.written++;
+        result.writtenBacks.push(writeBack);
       });
-      return;
+      if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) SpreadsheetApp.flush();
+      result.success = true;
+      return result;
+    } catch (error) {
+      const rollbackErrors = [];
+      snapshotsByCell.forEach((snapshot) => {
+        let restored = false;
+        let lastRollbackError = null;
+        for (let attempt = 0; attempt < 2 && !restored; attempt++) {
+          try {
+            restoreRecoveryWriteSnapshot_(snapshot);
+            restored = true;
+          } catch (rollbackError) {
+            lastRollbackError = rollbackError;
+          }
+        }
+        if (!restored) {
+          rollbackErrors.push(lastRollbackError || new Error('Не удалось восстановить ячейку'));
+        }
+      });
+      if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
+        let flushed = false;
+        let lastFlushError = null;
+        for (let attempt = 0; attempt < 2 && !flushed; attempt++) {
+          try {
+            SpreadsheetApp.flush();
+            flushed = true;
+          } catch (rollbackFlushError) {
+            lastFlushError = rollbackFlushError;
+          }
+        }
+        if (!flushed) rollbackErrors.push(lastFlushError || new Error('Не удалось flush rollback'));
+      }
+      if (rollbackErrors.length) {
+        throw new Error(`${error.message || error}; rollback failed: ${rollbackErrors
+          .map((rollbackError) => rollbackError.message || rollbackError).join('; ')}`);
+      }
+      throw error;
     }
-    range.setValue(writeBack.value).setNumberFormat(SETTINGS.MONEY_FORMAT);
-    if (typeof range.setNote === 'function') {
-      range.setNote(mergeCalculationEffectNote_(range.getNote(),
-        `Частичное погашение. ${writeBack.note || ''}`));
-    }
-    result.written++;
-    result.writtenBacks.push(writeBack);
-  });
-  return result;
+  } finally {
+    if (lock && acquired) lock.releaseLock();
+  }
+}
+
+function getRecoveryWriteLock_() {
+  if (typeof LockService === 'undefined') return null;
+  return LockService.getDocumentLock && LockService.getDocumentLock()
+    || LockService.getScriptLock && LockService.getScriptLock()
+    || null;
+}
+
+function restoreRecoveryWriteSnapshot_(snapshot) {
+  const range = snapshot.range;
+  range.setValue(snapshot.value);
+  if (snapshot.formula) range.setFormula(snapshot.formula);
+  if (typeof range.setNote === 'function') range.setNote(snapshot.note);
+  if (typeof range.setBackground === 'function') range.setBackground(snapshot.background);
+  if (typeof range.setNumberFormat === 'function') range.setNumberFormat(snapshot.numberFormat);
+  if (typeof range.getFormula === 'function' && range.getFormula() !== snapshot.formula) {
+    throw new Error('Формула не восстановлена');
+  }
+  if (!snapshot.formula && typeof range.getValue === 'function'
+    && range.getValue() !== snapshot.value) {
+    throw new Error('Значение не восстановлено');
+  }
+  if (typeof range.getNote === 'function' && range.getNote() !== snapshot.note) {
+    throw new Error('Примечание не восстановлено');
+  }
+  if (typeof range.getBackground === 'function'
+    && range.getBackground() !== snapshot.background) {
+    throw new Error('Фон не восстановлен');
+  }
+  if (typeof range.getNumberFormat === 'function'
+    && range.getNumberFormat() !== snapshot.numberFormat) {
+    throw new Error('Формат числа не восстановлен');
+  }
 }
 
 function prepareRecoveryBaselineFacts_(claimFacts, recoveryState) {
@@ -1887,6 +2029,33 @@ function buildVacationDerivativeDependencies_(sheet, table, previousValues, reca
   }, []);
 }
 
+function buildVacationOutputDependencies_(sheet, table, markerDestinations) {
+  if (!sheet || !table || !table.layout || table.layout.id !== 'vacation') return [];
+  const semanticByColumn = new Map([
+    ['averageDailyEarning', table.columns.averageDailyEarning],
+    ['correctDerivativeAmount', table.columns.correctDerivativeAmount],
+    ['derivativeUnderpayment', table.columns.derivativeUnderpayment],
+    ['derivativeIndexation', table.columns.derivativeIndexation],
+    ['derivativeLiability', table.columns.derivativeLiability],
+  ].filter((item) => Number.isInteger(item[1])).map((item) => [item[1] + 1, item[0]]));
+  return (markerDestinations || []).reduce((dependencies, destination) => {
+    const semantic = semanticByColumn.get(destination.column);
+    if (!semantic) return dependencies;
+    const outputRange = sheet.getRange(destination.row, destination.column);
+    dependencies.push({
+      layoutId: 'vacation',
+      dependencyKind: 'average_earnings',
+      semanticOutput: semantic,
+      baseChanged: true,
+      destination: Object.assign({}, destination, {
+        adapterOwned: isVacationDerivativeColumnOwned_(table.layout, semantic),
+      }),
+      recalculate: () => parseMoney_(outputRange.getValue()),
+    });
+    return dependencies;
+  }, []);
+}
+
 function detectDerivativePaymentDependencies_(spreadsheet, calculationResults, recoveryEffects) {
   const dependencies = [];
   (calculationResults || []).forEach((result) => {
@@ -2076,44 +2245,42 @@ function resolveSheetLayout_(sheet) {
     ? Math.min(SETTINGS.HEADER_SCAN_ROWS, sheet.getLastRow())
     : 0;
   const columnCount = typeof sheet.getLastColumn === 'function' ? sheet.getLastColumn() : 0;
-  let semanticRowsReadable = false;
   if (rowCount > 0 && columnCount > 0) {
     let rows = [];
     try {
       rows = sheet.getRange(1, 1, rowCount, columnCount).getDisplayValues();
-      semanticRowsReadable = rows.length > 0;
     } catch (error) {
       rows = [];
     }
+    const normalizedName = normalizeText_(String(sheet.getName() || '').replace(/^Из_1С_/i, ''));
+    const nameHint = SETTINGS.SHEET_LAYOUTS.find((layout) =>
+      new RegExp(layout.namePattern, 'i').test(normalizedName)
+    );
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
       const headers = rows[rowIndex].map(normalizeText_);
-      const text = headers.join(' | ');
-      const hasUnderpayment = /(недоплат|невыплачен)/.test(text);
-      const hasIndexation = /индексац/.test(text);
-      const hasLiability = /(пен[ия]|ст\.?\s*236|материальн.*ответствен)/.test(text);
-      if (!(hasUnderpayment && hasIndexation && hasLiability)) continue;
-      let id = null;
-      if (/отпуск/.test(text)) id = 'vacation';
-      else if (/(ежекварт|квартальн.*прем)/.test(text)) id = 'quarterlyPremiums';
-      else if (/(ежегод|годов.*прем)/.test(text)) id = 'annualPremiums';
-      else if (/(ежемесяч|месячн.*прем)/.test(text)) id = 'monthlyPremiums';
-      else {
-        const hasYear = headers.some((header) => headerMatches_(header, HEADER_ALIASES.year));
-        const hasMonth = headers.some((header) => headerMatches_(header, HEADER_ALIASES.month));
-        if (hasYear && hasMonth && /(оклад|заработн.*плат)/.test(text)) id = 'salary';
-      }
-      if (id) return SETTINGS.SHEET_LAYOUTS.find((layout) => layout.id === id) || null;
+      const ids = getSemanticallyCompatibleLayoutIds_(headers);
+      if (!ids.length) continue;
+      const id = nameHint && ids.indexOf(nameHint.id) >= 0 ? nameHint.id : ids[0];
+      return SETTINGS.SHEET_LAYOUTS.find((layout) => layout.id === id) || null;
     }
   }
-  const normalizedName = normalizeText_(String(sheet.getName() || '').replace(/^Из_1С_/i, ''));
-  const nameHint = SETTINGS.SHEET_LAYOUTS.find((layout) =>
-    new RegExp(layout.namePattern, 'i').test(normalizedName)
-  );
-  if (nameHint && nameHint.id === 'salary' && semanticRowsReadable) return null;
-  if (nameHint) return nameHint;
-  // Preserve injected/custom adapter registries without reviving the built-in salary catch-all.
-  const externalHint = getSheetLayout_(sheet.getName());
-  return externalHint && externalHint !== getDefaultSheetLayout_() ? externalHint : null;
+  return null;
+}
+
+function getSemanticallyCompatibleLayoutIds_(headers) {
+  const normalizedHeaders = (headers || []).map(normalizeText_);
+  const text = normalizedHeaders.join(' | ');
+  const has = (aliases) => normalizedHeaders.some((header) => headerMatches_(header, aliases));
+  const common = /(недоплат|невыплачен)/.test(text)
+    && /индексац/.test(text)
+    && /(пен[ия]|ст\.?\s*236|материальн.*ответствен)/.test(text);
+  if (!common) return [];
+  return Object.keys(SHEET_LAYOUT_SEMANTIC_CONTRACTS).filter((layoutId) => {
+    const contract = SHEET_LAYOUT_SEMANTIC_CONTRACTS[layoutId];
+    return (contract.requiredFields || []).every((field) =>
+      HEADER_ALIASES[field] && has(HEADER_ALIASES[field])
+    ) && (contract.requiredPatterns || []).every((pattern) => pattern.test(text));
+  });
 }
 
 function getDefaultSheetLayout_() {
