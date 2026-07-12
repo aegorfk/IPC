@@ -6035,21 +6035,35 @@ assertRollbackPreflightFailurePreservesRunState(
     targetKey: selectedKey,
   };
   const globalWarning = {
-    code: 'calculation_source_failed',
-    message: 'Общее предупреждение расчета',
+    code: 'unallocated_recovery',
+    message: 'Глобальное нераспределенное погашение',
     sourceContext: 'Импорт!A2',
+  };
+  const selectedNestedWarning = {
+    code: 'recovery_overpayment',
+    reason: 'Остаток выбранного погашения требует проверки',
+    overpayment: { targetKey: selectedKey, remainder: 10 },
   };
   run.results.calculations = [{ calculationEffects: {
     warnings: [
       selectedWarning,
+      selectedNestedWarning,
       {
         code: 'unchecked_target_warning', reason: 'Не должно попасть в payload',
         claimKey: uncheckedKey, source: 'Индексация!B4',
       },
+      {
+        code: 'recovery_overpayment', reason: 'Снятое погашение не должно попасть',
+        overpayment: { targetKey: uncheckedKey, remainder: 20 },
+      },
       globalWarning,
     ],
     derivativeEffects: {
-      warnings: [Object.assign({}, selectedWarning), Object.assign({}, globalWarning)],
+      warnings: [
+        Object.assign({}, selectedWarning),
+        Object.assign({}, selectedNestedWarning),
+        Object.assign({}, globalWarning),
+      ],
     },
   } }];
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
@@ -6072,11 +6086,19 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(payload.recoveries.unallocated.length, 1);
   assert.strictEqual(payload.recoveries.invalid.length, 1);
   assert.deepStrictEqual(Array.from(payload.warnings, (warning) => warning.code), [
-    'derivative_payment_requires_review', 'calculation_source_failed',
+    'derivative_payment_requires_review', 'recovery_overpayment', 'unallocated_recovery',
   ]);
   assert.strictEqual(payload.warnings[0].source, 'Премия!R8');
   assert.strictEqual(payload.warnings[0].sourceContext.targetKey, selectedKey);
-  assert.strictEqual(payload.warnings[1].reason, 'Общее предупреждение расчета');
+  assert.strictEqual(payload.warnings[1].sourceContext.targetKey, selectedKey);
+  assert.strictEqual(payload.warnings[2].reason, 'Глобальное нераспределенное погашение');
+  ['recovery', 'effect', 'writeBack', 'sourceAdjustment'].forEach((container) => {
+    assert.strictEqual(
+      harness.context.extractClaimWarningTargetKey_({ [container]: { targetKey: selectedKey } }),
+      selectedKey,
+      container
+    );
+  });
   assert.ok(!JSON.stringify(payload).includes('ст. 236 ТК РФ'));
 }
 

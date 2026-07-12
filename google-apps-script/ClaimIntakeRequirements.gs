@@ -1251,7 +1251,7 @@ function collectSelectedClaimWarnings_(calculationEffects, selectedClaimKeys) {
   return (calculationEffects.warnings || []).concat(
     derivative && derivative.warnings || []
   ).filter((warning) => {
-    const targetKey = warning.targetKey || warning.claimKey || '';
+    const targetKey = extractClaimWarningTargetKey_(warning);
     if (targetKey && !selected.has(targetKey)) return false;
     const semanticKey = buildClaimWarningSemanticKey_(warning);
     if (seen.has(semanticKey)) return false;
@@ -1259,16 +1259,17 @@ function collectSelectedClaimWarnings_(calculationEffects, selectedClaimKeys) {
     return true;
   }).map((warning) => {
     const recovery = warning.recovery || warning.overpayment && warning.overpayment.recovery;
+    const targetKey = extractClaimWarningTargetKey_(warning);
     return {
       code: warning.code || '',
       reason: warning.reason || warning.message || '',
       source: warning.source || warning.sourceRef
         || (typeof warning.sourceContext === 'string' ? warning.sourceContext : '')
-        || warning.targetKey || warning.claimKey || '',
+        || targetKey,
       disputed: warning.disputed === true,
       sourceContext: {
         source: warning.sourceContext || warning.source || warning.sourceRef || '',
-        targetKey: warning.targetKey || warning.claimKey || '',
+        targetKey,
         amount: Number.isFinite(Number(warning.amount)) ? Number(warning.amount) : null,
         sourceIdentities: (warning.sourceIdentities || []).slice(),
         recovery: recovery ? {
@@ -1289,10 +1290,29 @@ function buildClaimWarningSemanticKey_(warning) {
     : (value.source !== undefined ? value.source : value.sourceRef || '');
   return stableClaimWarningStringify_([
     value.code || '',
-    value.targetKey || value.claimKey || '',
+    extractClaimWarningTargetKey_(value),
     sourceContext,
     value.reason || value.message || '',
   ]);
+}
+
+function extractClaimWarningTargetKey_(warning) {
+  const value = warning || {};
+  const candidates = [
+    value,
+    value.overpayment,
+    value.recovery,
+    value.effect,
+    value.writeBack,
+    value.sourceAdjustment,
+  ];
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    if (!candidate || typeof candidate !== 'object') continue;
+    const targetKey = candidate.targetKey || candidate.claimKey || '';
+    if (targetKey) return String(targetKey);
+  }
+  return '';
 }
 
 function stableClaimWarningStringify_(value) {
