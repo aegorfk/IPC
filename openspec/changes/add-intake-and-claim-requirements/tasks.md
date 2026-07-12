@@ -23,6 +23,7 @@
 - [x] 3.5 Generate stable claim keys and preserve user-unchecked selections across reruns.
 - [x] 3.6 Select newly discovered claim items by default, including disputed items, and show disputed items with the `спорное` badge.
 - [x] 3.7 Remove obsolete audit captions and duplicate subtotal rows from the generated layout.
+- [x] 3.8 Make the audit dynamically grow below fixed blocks with the claim-selection named range as its sole extent authority; leave all unrelated cells untouched; batch checkbox rendering by family; use only five-part normalized claim keys; preserve unchecked keys through temporary item disappearance in workbook-scoped metadata; resolve salary indexation from explicit adapter semantics; and prove that employer identity, source file name, sheet name, and vendor/payroll-system labels are excluded from fact grouping and key identity.
 
 ## 4. Calculation Effects
 
@@ -47,5 +48,5 @@
 - [ ] 6.3 Add audit grouping, disputed-default, and unchecked-selection persistence tests.
 - [ ] 6.4 Add partial recovery and derivative-payment warning tests.
 - [ ] 6.5 Add Docs write-out tests for new-document creation in the same Drive folder.
-- [ ] 6.6 Run local tests and strict OpenSpec validation.
+- [x] 6.6 Run local tests and strict OpenSpec validation.
 - [ ] 6.7 Push Apps Script changes and smoke-test the working Google Sheet after implementation.

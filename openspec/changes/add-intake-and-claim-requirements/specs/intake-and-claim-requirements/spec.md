@@ -99,6 +99,8 @@ The system SHALL support multiple partial recovery rows, each with date, amount,
 ### Requirement: Audit and requirements checklist
 The system SHALL render a section named `Аудит и требования` with grouped, user-readable claim items built from existing payroll-slip calculations.
 
+The audit SHALL grow to the realistic number of normalized claim facts without a fixed row limit. Its dynamic area SHALL remain below the fixed questionnaire, partial-recovery, and generated-Docs-history blocks. `CLAIM_INTAKE_CLAIM_SELECTIONS` SHALL be the sole authority for the previous audit extent. A missing, malformed, or wrong-sheet named range SHALL initialize a one-row audit extent at the configured first row without scanning other sheet rows.
+
 #### Scenario: Audit section is rendered
 - **WHEN** payroll-slip calculation results are available
 - **THEN** the system renders `Аудит и требования`
@@ -120,6 +122,27 @@ The system SHALL render a section named `Аудит и требования` wit
 - **THEN** the system separates `Индексация заработной платы` from `Индексация недоплаты`
 - **AND** nests `Индексация недоплаты` by affected base and period
 
+#### Scenario: Audit exceeds the former fixed capacity
+- **WHEN** six periods produce items in each of four claim families
+- **THEN** all 24 items and four family headings are rendered
+- **AND** the claim-selection named range covers the full dynamic audit extent
+- **AND** the generated Docs history, questionnaire answers, partial recoveries, and user-unchecked selections remain unchanged
+
+#### Scenario: Audit becomes smaller or empty
+- **WHEN** a rerun produces fewer items or no items
+- **THEN** the system clears only the authoritative previous range and the new target range
+- **AND** resizes the claim-selection named range to the current rendered extent
+- **AND** shows the empty-state row when no items remain
+
+#### Scenario: Unrelated rows remain outside audit ownership
+- **WHEN** setup or rerender encounters unrelated content outside the authoritative claim-selection named range, including rows above the audit and distant rows below it
+- **THEN** it does not inspect, move, clear, or reinterpret that content as audit state
+
+#### Scenario: Checkbox rendering is bounded
+- **WHEN** the number of selectable audit items grows substantially
+- **THEN** checkbox validation and value writes use a constant number of batches bounded by the supported claim families
+- **AND** family-heading rows do not receive checkbox validation
+
 ### Requirement: Claim selection defaults and persistence
 The system MUST include newly discovered claim items by default, including disputed items, while preserving user-unchecked selections across reruns.
 
@@ -130,12 +153,53 @@ The system MUST include newly discovered claim items by default, including dispu
 
 #### Scenario: User unchecks item
 - **WHEN** the user unchecks a claim item
-- **THEN** the system persists that decision by stable claim key
+- **THEN** the system persists that decision by its full five-part stable claim key in workbook-scoped selection metadata
 - **AND** keeps the item unchecked after recalculation if the same claim key is still present
+
+#### Scenario: Temporarily missing item returns
+- **WHEN** a user-unchecked item disappears because a calculation temporarily fails and a later successful calculation produces the same five-part key
+- **THEN** the returned item remains unchecked
+- **AND** no stale monetary fact or total is restored from selection metadata
+
+#### Scenario: User explicitly rechecks item
+- **WHEN** the user explicitly checks a previously unchecked item
+- **THEN** the system removes that key from workbook-scoped selection metadata
 
 #### Scenario: New item after rerun is checked
 - **WHEN** a repeated calculation discovers a new claim item
 - **THEN** the new item is selected by default even if other items were previously unchecked
+
+### Requirement: Vendor-neutral claim identity
+The system SHALL derive audit facts, grouping, and stable claim keys from exactly five normalized calculation dimensions: claim family, canonical normalized layout identifier, normalized base kind/payment semantics, period, and calculation item. Layout and base kind SHALL remain independent; missing values SHALL use explicit deterministic sentinels. No earlier key shape or alias SHALL be accepted for selection persistence. Employer identity, organization label, source file or sheet name, and payroll-system-specific display labels MUST NOT affect claim identity or grouping. A source sheet name MAY remain in `sourceRef` only for traceability. 1C:ZUP SHALL remain the priority adapter and test scenario, not the domain model.
+
+#### Scenario: Equivalent normalized sources have identical identity
+- **WHEN** different sheet names, employer labels, or payroll-system labels are normalized by the same adapter and layout
+- **THEN** their claim facts have equivalent normalized semantics
+- **AND** their stable claim keys are identical
+- **AND** their `sourceRef` values may differ for traceability
+
+#### Scenario: Different supported layouts remain distinct
+- **WHEN** two facts have the same period, family, and calculation item but originate from different normalized supported layouts or base kinds
+- **THEN** their stable claim keys remain distinct
+
+#### Scenario: Layout and base kind cannot collide
+- **WHEN** facts share a normalized layout but have different normalized base kinds, or share a normalized base kind but have different normalized layouts
+- **THEN** their stable claim keys remain distinct
+- **AND** audit grouping does not merge their amounts
+
+#### Scenario: Unknown normalized layout is organization-neutral
+- **WHEN** an adapter supplies an unknown but normalized layout identifier
+- **THEN** the fallback fact uses that normalized identifier and a generic display label
+- **AND** does not hardcode any employer, organization, workbook sheet title, or payroll vendor
+
+#### Scenario: Salary indexation uses explicit adapter semantics
+- **WHEN** a salary adapter maps corrected salary and pre-indexation salary to reordered physical columns
+- **THEN** the generated salary-indexation fact uses those explicit semantic mappings
+- **AND** does not infer the pre-indexation amount from an adjacent cell
+
+#### Scenario: Salary indexation mapping is unavailable
+- **WHEN** the adapter provides no pre-indexation salary or direct indexation amount mapping
+- **THEN** no salary-indexation fact is fabricated
 
 ### Requirement: Derived payment recalculation warnings
 The system SHALL recalculate supported derivative payments affected by changed bases and visually highlight affected rows without blocking unrelated calculations.

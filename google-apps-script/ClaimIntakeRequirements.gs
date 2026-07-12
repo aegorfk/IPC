@@ -76,9 +76,8 @@ function getClaimIntakeLayout_() {
       namedRange: 'CLAIM_INTAKE_PARTIAL_RECOVERIES',
     },
     claimSelections: {
-      titleCell: 'A25',
-      firstRow: 26,
-      rowCount: 20,
+      titleCell: 'A62',
+      firstRow: 63,
       columnCount: 5,
       namedRange: 'CLAIM_INTAKE_CLAIM_SELECTIONS',
     },
@@ -180,9 +179,23 @@ function insertClaimIntakeCheckboxesPreservingValues_(range) {
 
 function buildStableClaimKey_(item) {
   const value = item || {};
-  return [value.family, value.baseKind, value.periodKey, value.calculationItem]
+  return [
+    value.family,
+    normalizeClaimLayoutIdentity_(value.layoutId),
+    normalizeClaimBaseKindIdentity_(value.baseKind),
+    value.periodKey,
+    value.calculationItem,
+  ]
     .map((part) => encodeURIComponent(normalizeText_(part)))
     .join('|');
+}
+
+function normalizeClaimLayoutIdentity_(layoutId) {
+  return normalizeText_(layoutId) || 'unknown_layout';
+}
+
+function normalizeClaimBaseKindIdentity_(baseKind) {
+  return normalizeText_(baseKind) || 'unknown_base_kind';
 }
 
 function buildClaimAuditModel_(claimFacts) {
@@ -212,6 +225,7 @@ function buildClaimAuditModel_(claimFacts) {
     factsByFamily[fact.family].set(key, {
       key,
       family: fact.family,
+      layoutId: fact.layoutId,
       baseKind: fact.baseKind,
       baseLabel: fact.baseLabel,
       periodKey: fact.periodKey,
@@ -245,22 +259,62 @@ function buildClaimAuditModel_(claimFacts) {
 function mergeClaimSelections_(existingSelections, currentItems) {
   const prior = new Map();
   (existingSelections || []).forEach((item) => {
-    if (!item || !item.key) return;
+    if (!item || !isFivePartClaimKey_(item.key)) return;
     if (item.selected === true || item.selected === false) prior.set(item.key, item.selected);
   });
-  return (currentItems || []).map((item) => Object.assign({}, item, {
-    selected: prior.has(item.key) ? prior.get(item.key) : true,
-  }));
+  return (currentItems || []).map((item) => {
+    return Object.assign({}, item, {
+      selected: prior.has(item.key) ? prior.get(item.key) : true,
+    });
+  });
+}
+
+const CLAIM_UNCHECKED_SELECTIONS_PROPERTY = 'CLAIM_INTAKE_UNCHECKED_SELECTIONS_V1';
+
+function readDurableUncheckedClaimKeys_() {
+  if (typeof PropertiesService === 'undefined') return new Set();
+  const raw = PropertiesService.getDocumentProperties()
+    .getProperty(CLAIM_UNCHECKED_SELECTIONS_PROPERTY);
+  if (!raw) return new Set();
+  try {
+    const keys = JSON.parse(raw);
+    return new Set((Array.isArray(keys) ? keys : []).filter(isFivePartClaimKey_));
+  } catch (error) {
+    return new Set();
+  }
+}
+
+function writeDurableUncheckedClaimKeys_(keys) {
+  if (typeof PropertiesService === 'undefined') return;
+  const properties = PropertiesService.getDocumentProperties();
+  const values = Array.from(keys || []).filter(isFivePartClaimKey_).sort();
+  if (!values.length) {
+    properties.deleteProperty(CLAIM_UNCHECKED_SELECTIONS_PROPERTY);
+    return;
+  }
+  properties.setProperty(CLAIM_UNCHECKED_SELECTIONS_PROPERTY, JSON.stringify(values));
+}
+
+function isFivePartClaimKey_(key) {
+  return typeof key === 'string' && key.split('|').length === 5;
+}
+
+function captureDurableClaimSelections_(existingSelections) {
+  const unchecked = readDurableUncheckedClaimKeys_();
+  (existingSelections || []).forEach((item) => {
+    if (!item || !isFivePartClaimKey_(item.key)) return;
+    if (item.selected === false) unchecked.add(item.key);
+    if (item.selected === true) unchecked.delete(item.key);
+  });
+  writeDurableUncheckedClaimKeys_(unchecked);
+  return unchecked;
 }
 
 function readExistingClaimSelections_(sheet) {
   const layout = getClaimIntakeLayout_().claimSelections;
-  return sheet.getRange(
-    layout.firstRow,
-    1,
-    layout.rowCount,
-    layout.columnCount
-  ).getValues().reduce((items, row) => {
+  const namedRange = sheet.getParent().getRangeByName(layout.namedRange);
+  const extent = getClaimAuditRenderedExtent_(sheet, layout, namedRange);
+  return sheet.getRange(layout.firstRow, 1, extent, layout.columnCount).getValues().reduce((items, row) => {
     const key = String(row[4] || '').trim();
     if (key) items.push({ key, selected: row[0] === true });
     return items;
@@ -272,7 +326,12 @@ function renderClaimAudit_(sheet, claimFacts) {
   const audit = layout.claimSelections;
   const model = buildClaimAuditModel_(claimFacts);
   const prior = readExistingClaimSelections_(sheet);
-  const merged = mergeClaimSelections_(prior, model.groups.reduce(
+  const durableUnchecked = captureDurableClaimSelections_(prior);
+  const persistedSelections = prior.concat(Array.from(durableUnchecked, (key) => ({
+    key,
+    selected: false,
+  })));
+  const merged = mergeClaimSelections_(persistedSelections, model.groups.reduce(
     (items, group) => items.concat(group.items),
     []
   ));
@@ -282,34 +341,65 @@ function renderClaimAudit_(sheet, claimFacts) {
   });
 
   const rows = [];
+  const checkboxRanges = [];
   model.groups.forEach((group) => {
     rows.push(['', `${group.label} — ${formatClaimAuditAmount_(group.total)}`, '', '', '']);
+    const firstItemOffset = rows.length;
     group.items.forEach((item) => {
       rows.push([item.selected, item.label, item.badge, item.amount, item.key]);
     });
+    checkboxRanges.push({ firstItemOffset, rowCount: group.items.length });
   });
   if (!rows.length) rows.push(['', 'Расчетные позиции пока не найдены', '', '', '']);
-  if (rows.length > audit.rowCount) {
-    throw new Error(`Для аудита требуется ${rows.length} строк, доступно ${audit.rowCount}`);
-  }
-
-  const range = sheet.getRange(
-    audit.firstRow,
-    1,
-    audit.rowCount,
-    audit.columnCount
-  );
+  const spreadsheet = sheet.getParent();
+  const namedRange = spreadsheet.getRangeByName(audit.namedRange);
+  const previousExtent = getClaimAuditRenderedExtent_(sheet, audit, namedRange);
+  ensureClaimAuditRows_(sheet, audit.firstRow + Math.max(previousExtent, rows.length) - 1);
+  const clearExtent = Math.max(previousExtent, rows.length);
+  const range = sheet.getRange(audit.firstRow, 1, clearExtent, audit.columnCount);
   range.clearContent();
   if (typeof range.clearDataValidations === 'function') range.clearDataValidations();
   sheet.getRange(audit.titleCell).setValue('Аудит и требования');
   sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount).setValues(rows);
-  rows.forEach((row, index) => {
-    if (!row[4]) return;
-    insertClaimIntakeCheckboxesPreservingValues_(sheet.getRange(audit.firstRow + index, 1));
+  checkboxRanges.forEach((checkboxRange) => {
+    if (!checkboxRange.rowCount) return;
+    const values = rows
+      .slice(checkboxRange.firstItemOffset, checkboxRange.firstItemOffset + checkboxRange.rowCount)
+      .map((row) => [row[0]]);
+    const target = sheet.getRange(
+      audit.firstRow + checkboxRange.firstItemOffset,
+      1,
+      checkboxRange.rowCount,
+      1
+    );
+    target.insertCheckboxes();
+    target.setValues(values);
   });
-  sheet.getRange(audit.firstRow, 4, audit.rowCount, 1).setNumberFormat('#,##0.00');
+  sheet.getRange(audit.firstRow, 4, rows.length, 1).setNumberFormat('#,##0.00');
+  spreadsheet.setNamedRange(
+    audit.namedRange,
+    sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount)
+  );
   if (typeof sheet.hideColumns === 'function') sheet.hideColumns(5);
   return model;
+}
+
+function ensureClaimAuditRows_(sheet, requiredLastRow) {
+  if (typeof sheet.getMaxRows !== 'function' || typeof sheet.insertRowsAfter !== 'function') return;
+  const maxRows = sheet.getMaxRows();
+  if (requiredLastRow > maxRows) sheet.insertRowsAfter(maxRows, requiredLastRow - maxRows);
+}
+
+function getClaimAuditRenderedExtent_(sheet, audit, namedRange) {
+  if (namedRange
+    && namedRange.getSheet().getSheetId() === sheet.getSheetId()
+    && namedRange.getRow() === audit.firstRow
+    && namedRange.getColumn() === 1
+    && namedRange.getNumColumns() === audit.columnCount
+    && namedRange.getNumRows() > 0) {
+    return namedRange.getNumRows();
+  }
+  return 1;
 }
 
 function roundClaimAuditMoney_(value) {
@@ -358,12 +448,26 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
   ].forEach((field) => {
     spreadsheet.setNamedRange(field.namedRange, sheet.getRange(field.valueCell));
   });
-  [layout.partialRecoveries, layout.claimSelections, layout.docsHistory].forEach((table) => {
+  [layout.partialRecoveries, layout.docsHistory].forEach((table) => {
     spreadsheet.setNamedRange(
       table.namedRange,
       sheet.getRange(table.firstRow, 1, table.rowCount, table.columnCount)
     );
   });
+  const auditExtent = getClaimAuditRenderedExtent_(
+    sheet,
+    layout.claimSelections,
+    spreadsheet.getRangeByName(layout.claimSelections.namedRange)
+  );
+  spreadsheet.setNamedRange(
+    layout.claimSelections.namedRange,
+    sheet.getRange(
+      layout.claimSelections.firstRow,
+      1,
+      auditExtent,
+      layout.claimSelections.columnCount
+    )
+  );
 }
 
 function readAverageEarningsState_(spreadsheet) {

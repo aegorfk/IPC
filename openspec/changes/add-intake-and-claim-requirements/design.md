@@ -51,9 +51,15 @@ The audit and requirement checklist uses existing payroll-slip import, reconstru
 
 Underpayment, material liability, and indexation are displayed as two-level groups. The top level is the claim family and base, and the second level is the period or calculation item. Every selectable item has a stable key so reruns can preserve user-unchecked selections.
 
+The generated-Docs history remains a fixed block above the audit. The audit starts below all fixed blocks and owns only the cells identified by `CLAIM_INTAKE_CLAIM_SELECTIONS`. That named range is the sole authority for the previously rendered extent. A missing, malformed, or wrong-sheet named range initializes a one-row extent at the configured first row; setup and rendering never inspect surrounding rows to infer ownership. Rendering expands the sheet only when required, clears only the authoritative previous range and the new target range, batches checkbox validation by claim family, and then resizes the named range. Unrelated cells above, below, or beside the named range are never migration candidates.
+
+Claim identity is vendor- and employer-neutral. Facts and stable keys use exactly five dimensions: claim family, canonical normalized `layout.id`, normalized base kind/payment semantics, period, and calculation item. Layout and base kind remain independent. Missing dimensions use explicit deterministic sentinels (`unknown_layout` and `unknown_base_kind`). No earlier key shape or alias is recognized. Employer identity, organization labels, source filenames/sheet names, and payroll-system display labels are excluded from identity and grouping. A sheet name may be retained only in `sourceRef` for traceability. 1C:ZUP remains the priority adapter and fixture source, not the domain model; an unknown normalized layout uses its normalized identifier and a generic label.
+
+Salary-indexation facts use an explicit normalized adapter field for the pre-indexation salary column (or an equivalent direct indexation amount source). The resolver places that semantic field in `table.columns`; fact generation never assumes that the cell immediately left of the corrected amount has this meaning. If the adapter cannot provide the semantic mapping, no salary-indexation fact is fabricated.
+
 ### 5. Disputed items are included by default
 
-Newly discovered items, including disputed ones, are checked by default. Disputed items show the badge `спорное`. If the user unchecks an item, that decision persists across reruns unless the item key disappears. New findings after rerun are checked automatically.
+Newly discovered items, including disputed ones, are checked by default. Disputed items show the badge `спорное`. Before each rerender, unchecked five-part keys are captured in a workbook-scoped metadata registry. This preserves the user's choice if a temporary calculation failure makes an item disappear and the same key later returns. Explicitly checking an item removes its key from the registry. Monetary facts and totals are never retained there. New keys after rerun are checked automatically.
 
 This follows the chosen litigation posture: claim broadly, mark uncertainty, and let the court reduce if necessary.
 

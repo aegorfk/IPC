@@ -187,6 +187,7 @@ class FakeSheet {
     this.frozenRows = 0;
     this.columnWidths = new Map();
     this.hiddenColumns = new Set();
+    this.maxRows = 100;
   }
 
   key(row, column) {
@@ -310,6 +311,12 @@ class FakeSheet {
     return Math.max(0, ...this.getStateStores().flatMap((store) =>
       Array.from(store.keys()).map((key) => Number(key.split(':')[1]))
     ));
+  }
+  getMaxRows() { return this.maxRows; }
+  insertRowsAfter(afterPosition, howMany) {
+    if (afterPosition !== this.maxRows) throw new Error('Fake supports appending rows only');
+    this.maxRows += howMany;
+    return this;
   }
   getIndex() { return this.spreadsheet.sheets.indexOf(this) + 1; }
   activate() { this.spreadsheet.activeSheet = this; return this; }
@@ -3502,7 +3509,7 @@ function stubBatchSessionStartup(harness) {
   const salaryTable = {
     headerRow: 2,
     layout: { id: 'salary' },
-    columns: { year: 3, month: 4, correctAmount: 7 },
+    columns: { year: 3, month: 4, correctAmount: 7, salaryBeforeIndexation: 6 },
   };
   const salaryRows = [
     ['', '', '', 2026, 'Январь', '', 100000, 104000],
@@ -3552,6 +3559,7 @@ function stubBatchSessionStartup(harness) {
     [
       {
         family: 'underpayment',
+        layoutId: 'salary',
         baseKind: 'salary',
         baseLabel: 'Оклад',
         periodKey: '2026-01',
@@ -3563,6 +3571,7 @@ function stubBatchSessionStartup(harness) {
       },
       {
         family: 'salary_indexation',
+        layoutId: 'salary',
         baseKind: 'salary',
         baseLabel: 'Оклад',
         periodKey: '2026-01',
@@ -3574,6 +3583,7 @@ function stubBatchSessionStartup(harness) {
       },
       {
         family: 'underpayment_indexation',
+        layoutId: 'salary',
         baseKind: 'salary',
         baseLabel: 'Оклад',
         periodKey: '2026-01',
@@ -3585,6 +3595,7 @@ function stubBatchSessionStartup(harness) {
       },
       {
         family: 'material_liability',
+        layoutId: 'salary',
         baseKind: 'salary',
         baseLabel: 'Оклад',
         periodKey: '2026-01',
@@ -3601,12 +3612,98 @@ function stubBatchSessionStartup(harness) {
     facts.reduce((sum, fact) => sum + (fact.family === 'material_liability' ? fact.amount : 0), 0),
     615
   );
+
+  const reorderedSalaryFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Произвольный лист',
+    table: {
+      headerRow: 2,
+      layout: { id: 'salary' },
+      columns: { year: 0, month: 1, correctAmount: 2, salaryBeforeIndexation: 5 },
+    },
+    rows: [[2026, 'Апрель', 104000, 'x', 'y', 100000]],
+    underpaymentValues: [[0]],
+    indexationValues: [[0]],
+    liabilityValues: [[0]],
+  });
+  assert.strictEqual(
+    reorderedSalaryFacts.find((fact) => fact.family === 'salary_indexation').amount,
+    4000,
+    'explicit semantic mapping survives physical column reorder'
+  );
+
+  const missingSalarySemantic = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Произвольный лист',
+    table: {
+      headerRow: 2,
+      layout: { id: 'salary' },
+      columns: { year: 0, month: 1, correctAmount: 2 },
+    },
+    rows: [[2026, 'Апрель', 104000, 100000]],
+    underpaymentValues: [[0]],
+    indexationValues: [[0]],
+    liabilityValues: [[0]],
+  });
+  assert.strictEqual(
+    missingSalarySemantic.some((fact) => fact.family === 'salary_indexation'),
+    false,
+    'missing semantic field must not fabricate salary indexation from an adjacent cell'
+  );
+}
+
+{
+  const harness = createHarness();
+  const makeFacts = (sheetName, layoutId, employerLabel, sourceSystemLabel) =>
+    harness.context.buildClaimFactsFromCalculationRows_({
+      sheetName,
+      employerLabel,
+      sourceSystemLabel,
+      table: {
+        headerRow: 2,
+        layout: { id: layoutId },
+        columns: { year: 0, month: 1 },
+      },
+      rows: [[2026, 'Январь']],
+      underpaymentValues: [[100]],
+      indexationValues: [[20]],
+      liabilityValues: [[5]],
+    });
+  const first = makeFacts('ООО Ромашка — выгрузка 1С', 'monthlyPremiums', 'ООО Ромашка', '1С:ЗУП');
+  const second = makeFacts('Payroll export — ACME', 'monthlyPremiums', 'ACME Ltd', 'Vendor B');
+  const semantics = (facts) => facts.map((fact) => ({
+    family: fact.family,
+    layoutId: fact.layoutId,
+    baseKind: fact.baseKind,
+    periodKey: fact.periodKey,
+    calculationItem: fact.calculationItem,
+    amount: fact.amount,
+  }));
+
+  assert.deepStrictEqual(semantics(first), semantics(second));
+  assert.ok(first.every((fact) => fact.layoutId === 'monthlyPremiums'));
+  assert.deepStrictEqual(
+    first.map((fact) => harness.context.buildStableClaimKey_(fact)),
+    second.map((fact) => harness.context.buildStableClaimKey_(fact))
+  );
+  assert.notStrictEqual(first[0].sourceRef, second[0].sourceRef, 'sourceRef keeps traceability');
+
+  const alternate = makeFacts('Любое имя', 'quarterlyPremiums', 'Тот же работодатель', 'Vendor B');
+  assert.notStrictEqual(
+    harness.context.buildStableClaimKey_(first[0]),
+    harness.context.buildStableClaimKey_(alternate[0]),
+    'different normalized layouts remain distinct'
+  );
+
+  const unknown = makeFacts('Лист конкретной организации', 'vendor_neutral_other', 'Организация', 'Unknown');
+  assert.strictEqual(unknown[0].baseLabel, 'Иное начисление');
+  assert.strictEqual(unknown[0].baseKind, 'vendor_neutral_other');
+  assert.ok(!JSON.stringify(semantics(unknown)).includes('Организация'));
 }
 
 {
   const harness = createHarness();
   const base = {
     family: 'underpayment',
+    layoutId: 'salary',
     baseKind: 'salary',
     baseLabel: 'Старый отображаемый текст',
     periodKey: '2026|01',
@@ -3632,9 +3729,51 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(first, changedDisplay);
   assert.notStrictEqual(first, changedPeriod);
   assert.notStrictEqual(first, changedFamily);
-  assert.strictEqual(first.split('|').length, 4);
+  assert.strictEqual(first.split('|').length, 5);
   assert.ok(!first.includes('2026|01'));
   assert.ok(!first.includes('principal|monthly'));
+
+  const changedBaseWithinLayout = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    baseKind: 'vacation',
+  }));
+  assert.notStrictEqual(first, changedBaseWithinLayout, 'base kind remains an independent identity dimension');
+
+  const sharedBaseLayoutA = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    layoutId: 'layoutA',
+    baseKind: 'shared_payment',
+  }));
+  const sharedBaseLayoutB = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    layoutId: 'layoutB',
+    baseKind: 'shared_payment',
+  }));
+  assert.notStrictEqual(sharedBaseLayoutA, sharedBaseLayoutB, 'layout remains an independent identity dimension');
+
+  const sameSemanticsDifferentSource = harness.context.buildStableClaimKey_(Object.assign({}, base, {
+    sheetName: 'Payroll export — ACME',
+    sourceRef: 'Payroll export — ACME!99',
+    employerLabel: 'ACME Ltd',
+    sourceSystemLabel: 'Vendor B',
+    baseLabel: 'Different display label',
+    amount: 999999,
+  }));
+  assert.strictEqual(first, sameSemanticsDifferentSource);
+
+  const missingDimensions = harness.context.buildStableClaimKey_({
+    family: 'underpayment',
+    periodKey: '2026-01',
+    calculationItem: 'principal',
+  }).split('|');
+  assert.strictEqual(decodeURIComponent(missingDimensions[1]), 'unknown_layout');
+  assert.strictEqual(decodeURIComponent(missingDimensions[2]), 'unknown_base_kind');
+
+  const collisionModel = harness.context.buildClaimAuditModel_([
+    Object.assign({}, base, { amount: 100 }),
+    Object.assign({}, base, { baseKind: 'vacation', amount: 200 }),
+    Object.assign({}, base, { layoutId: 'layoutB', baseKind: 'salary', amount: 300 }),
+  ]);
+  assert.strictEqual(collisionModel.groups[0].items.length, 3, 'normalized dimensions must not merge');
+  assert.strictEqual(collisionModel.groups[0].total, 600);
+
 }
 
 {
@@ -3714,12 +3853,9 @@ function stubBatchSessionStartup(harness) {
   ];
 
   harness.context.renderClaimAudit_(sheet, facts);
-  const rendered = sheet.getRange(
-    layout.claimSelections.firstRow,
-    1,
-    layout.claimSelections.rowCount,
-    layout.claimSelections.columnCount
-  ).getValues();
+  const rendered = harness.spreadsheet
+    .getRangeByName(layout.claimSelections.namedRange)
+    .getValues();
   const itemRows = rendered.filter((row) => row[4]);
   assert.strictEqual(sheet.getRange(layout.claimSelections.titleCell).getValue(), 'Аудит и требования');
   assert.strictEqual(itemRows.length, 2);
@@ -3739,12 +3875,10 @@ function stubBatchSessionStartup(harness) {
     periodLabel: '01.2026', calculationItem: 'inflation_indexation', amount: 20, disputed: false,
     sourceRef: 'Оклад!3',
   }));
-  const rerendered = sheet.getRange(
-    layout.claimSelections.firstRow,
-    1,
-    layout.claimSelections.rowCount,
-    layout.claimSelections.columnCount
-  ).getValues().filter((row) => row[4]);
+  const rerendered = harness.spreadsheet
+    .getRangeByName(layout.claimSelections.namedRange)
+    .getValues()
+    .filter((row) => row[4]);
   assert.strictEqual(rerendered.find((row) => row[4] === itemRows[0][4])[0], false);
   assert.strictEqual(rerendered.find((row) => row[4] !== itemRows[0][4] && row[4] !== itemRows[1][4])[0], true);
   assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
@@ -3754,15 +3888,211 @@ function stubBatchSessionStartup(harness) {
   );
 
   harness.context.renderClaimAudit_(sheet, []);
-  const empty = sheet.getRange(
-    layout.claimSelections.firstRow,
-    1,
-    layout.claimSelections.rowCount,
-    layout.claimSelections.columnCount
-  ).getValues();
+  const empty = harness.spreadsheet
+    .getRangeByName(layout.claimSelections.namedRange)
+    .getValues();
   assert.strictEqual(empty[0][1], 'Расчетные позиции пока не найдены');
   assert.strictEqual(empty.filter((row) => row[4]).length, 0);
   assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  sheet.maxRows = 70;
+  sheet.getRange(layout.employerSector.valueCell).setValue('Бюджетный сектор / публичный должник');
+  sheet.getRange(layout.partialRecoveries.firstRow, 2, 1, 3)
+    .setValues([['10.01.2026', 125, 'salary:2025-12']]);
+  sheet.getRange(layout.docsHistory.firstRow, 1, 1, 3)
+    .setValues([['12.07.2026', 'https://docs.google.com/document/d/keep/edit', 'existing']]);
+
+  const families = [
+    ['underpayment', 'principal'],
+    ['material_liability', 'article_236'],
+    ['salary_indexation', 'salary_indexation'],
+    ['underpayment_indexation', 'inflation_indexation'],
+  ];
+  const facts = [];
+  families.forEach(([family, calculationItem]) => {
+    for (let month = 1; month <= 6; month++) {
+      facts.push({
+        family,
+        layoutId: 'salary',
+        baseKind: 'salary',
+        baseLabel: 'Оклад',
+        periodKey: `2026-${String(month).padStart(2, '0')}`,
+        periodLabel: `${String(month).padStart(2, '0')}.2026`,
+        calculationItem,
+        amount: 100 + month,
+        disputed: month === 6,
+        sourceRef: `Произвольный источник!${month}`,
+      });
+    }
+  });
+
+  harness.context.renderClaimAudit_(sheet, facts);
+  const named = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange);
+  const rows = named.getValues();
+  assert.strictEqual(layout.claimSelections.titleCell, 'A62');
+  assert.strictEqual(layout.claimSelections.firstRow, 63);
+  assert.strictEqual(rows.length, 28, '6 periods x 4 families plus four headings');
+  assert.ok(rows[27][4], 'last stable key is rendered');
+  assert.strictEqual(named.getRow(), layout.claimSelections.firstRow);
+  assert.strictEqual(named.getNumRows(), 28);
+  assert.ok(sheet.getMaxRows() >= 90, 'sheet grows only when audit needs more rows');
+  assert.strictEqual(sheet.getRange(layout.docsHistory.firstRow, 2).getValue(), 'https://docs.google.com/document/d/keep/edit');
+  assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Бюджетный сектор / публичный должник');
+  assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 3).getValue(), 125);
+
+  const uncheckedRow = rows.findIndex((row) => row[4]) + layout.claimSelections.firstRow;
+  const uncheckedKey = sheet.getRange(uncheckedRow, 5).getValue();
+  sheet.getRange(uncheckedRow, 1).setValue(false);
+  harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  assert.strictEqual(
+    harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getNumRows(),
+    28,
+    'repair preserves the dynamic audit extent'
+  );
+  assert.strictEqual(sheet.getRange(uncheckedRow, 1).getValue(), false);
+  harness.context.renderClaimAudit_(sheet, facts.slice(0, 2));
+  const smaller = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange);
+  assert.strictEqual(smaller.getNumRows(), 3);
+  assert.strictEqual(
+    smaller.getValues().find((row) => row[4] === uncheckedKey)[0],
+    false,
+    'unchecked selection persists'
+  );
+  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 3, 5).getValue(), '', 'stale tail cleared');
+
+  harness.context.renderClaimAudit_(sheet, []);
+  const empty = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange);
+  assert.strictEqual(empty.getNumRows(), 1);
+  assert.strictEqual(empty.getValues()[0][1], 'Расчетные позиции пока не найдены');
+  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 1, 5).getValue(), '');
+  assert.strictEqual(sheet.getRange(layout.docsHistory.firstRow, 2).getValue(), 'https://docs.google.com/document/d/keep/edit');
+}
+
+{
+  const harness = createHarness();
+  const layout = harness.context.getClaimIntakeLayout_();
+  const sheet = harness.spreadsheet.insertSheet(layout.sheetName);
+  sheet.getRange(25, 1, 21, 5).setValues(Array.from({ length: 21 }, (_, index) => [
+    `unrelated-a-${index}`,
+    `unrelated-b-${index}`,
+    `unrelated-c-${index}`,
+    `unrelated-d-${index}`,
+    `unrelated-e-${index}`,
+  ]));
+  const unrelatedRows = sheet.getRange(25, 1, 21, 5).getValues();
+  sheet.getRange(layout.docsHistory.firstRow, 1, 1, 3)
+    .setValues([['12.07.2026', 'https://docs.google.com/document/d/keep/edit', 'existing']]);
+
+  harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  harness.context.renderClaimAudit_(sheet, [{
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal',
+    amount: 100, disputed: false, sourceRef: 'trace!1',
+  }]);
+
+  assert.deepStrictEqual(sheet.getRange(25, 1, 21, 5).getValues(), unrelatedRows);
+  assert.strictEqual(sheet.getRange(layout.docsHistory.firstRow, 2).getValue(), 'https://docs.google.com/document/d/keep/edit');
+}
+
+{
+  const harness = createHarness();
+  const layout = harness.context.getClaimIntakeLayout_();
+  const unrelatedSheet = harness.spreadsheet.insertSheet('Не связанный лист');
+  harness.spreadsheet.setNamedRange(
+    layout.claimSelections.namedRange,
+    unrelatedSheet.getRange(layout.claimSelections.firstRow, 1, 9, layout.claimSelections.columnCount)
+  );
+  const sheet = harness.spreadsheet.insertSheet(layout.sheetName);
+  sheet.getRange(200, 2).setValue('unrelated below audit');
+  sheet.getRange(200, 5).setValue('unrelated-key-looking-content');
+  harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  assert.strictEqual(
+    harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getNumRows(),
+    1,
+    'wrong-sheet named range initializes a one-row audit extent'
+  );
+  harness.context.renderClaimAudit_(sheet, [{
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal',
+    amount: 100, disputed: false, sourceRef: 'trace!1',
+  }]);
+  harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(200, 2).getValue(), 'unrelated below audit');
+  assert.strictEqual(sheet.getRange(200, 5).getValue(), 'unrelated-key-looking-content');
+}
+
+{
+  const renderAndCountWrites = (periodCount) => {
+    const harness = createHarness();
+    const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+    const families = [
+      ['underpayment', 'principal'],
+      ['material_liability', 'article_236'],
+      ['salary_indexation', 'salary_indexation'],
+      ['underpayment_indexation', 'inflation_indexation'],
+    ];
+    const facts = [];
+    families.forEach(([family, calculationItem]) => {
+      for (let period = 1; period <= periodCount; period++) {
+        facts.push({
+          family, layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+          periodKey: `2026-${String(period).padStart(3, '0')}`,
+          periodLabel: String(period), calculationItem, amount: period,
+          disputed: false, sourceRef: `trace!${period}`,
+        });
+      }
+    });
+    const before = harness.spreadsheet.serviceCalls.writes;
+    harness.context.renderClaimAudit_(sheet, facts);
+    return harness.spreadsheet.serviceCalls.writes - before;
+  };
+  const smallAuditWrites = renderAndCountWrites(2);
+  const largeAuditWrites = renderAndCountWrites(40);
+  assert.ok(
+    largeAuditWrites <= smallAuditWrites + 4,
+    `checkbox rendering RPCs must be bounded: small=${smallAuditWrites}, large=${largeAuditWrites}`
+  );
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const original = {
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', baseLabel: 'Оклад',
+    periodKey: '2026-01', periodLabel: '01.2026', calculationItem: 'principal',
+    amount: 100, disputed: false, sourceRef: 'trace!1',
+  };
+  const newItem = Object.assign({}, original, { periodKey: '2026-02', periodLabel: '02.2026' });
+  const originalKey = harness.context.buildStableClaimKey_(original);
+  const newKey = harness.context.buildStableClaimKey_(newItem);
+
+  harness.context.renderClaimAudit_(sheet, [original]);
+  const firstRows = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getValues();
+  const originalOffset = firstRows.findIndex((row) => row[4] === originalKey);
+  sheet.getRange(layout.claimSelections.firstRow + originalOffset, 1).setValue(false);
+  harness.context.renderClaimAudit_(sheet, []);
+  harness.context.renderClaimAudit_(sheet, [original, newItem]);
+
+  const restored = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getValues();
+  assert.strictEqual(restored.find((row) => row[4] === originalKey)[0], false);
+  assert.strictEqual(restored.find((row) => row[4] === newKey)[0], true);
+
+  const restoredOffset = restored.findIndex((row) => row[4] === originalKey);
+  sheet.getRange(layout.claimSelections.firstRow + restoredOffset, 1).setValue(true);
+  harness.context.renderClaimAudit_(sheet, []);
+  harness.context.renderClaimAudit_(sheet, [original]);
+  assert.strictEqual(
+    harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange)
+      .getValues().find((row) => row[4] === originalKey)[0],
+    true,
+    'explicitly rechecked key is removed from durable unchecked registry'
+  );
 }
 
 {
@@ -3786,12 +4116,9 @@ function stubBatchSessionStartup(harness) {
   const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
   assert.ok(intake, 'mass calculation must create the audit workspace');
   const layout = harness.context.getClaimIntakeLayout_();
-  const rendered = intake.getRange(
-    layout.claimSelections.firstRow,
-    1,
-    layout.claimSelections.rowCount,
-    layout.claimSelections.columnCount
-  ).getValues();
+  const rendered = harness.spreadsheet
+    .getRangeByName(layout.claimSelections.namedRange)
+    .getValues();
   assert.strictEqual(rendered.filter((row) => row[4]).length, 1);
   assert.strictEqual(rendered.find((row) => row[4])[4], harness.context.buildStableClaimKey_(claimFact));
 }

@@ -99,6 +99,7 @@ const SETTINGS = {
       yearColumn: 'D',
       monthColumn: 'E',
       monthlyIpcColumn: 'F',
+      salaryBeforeIndexationColumn: 'G',
       correctAmountColumn: 'H',
       underpaymentColumn: 'J',
       targetColumn: 'K',
@@ -120,6 +121,7 @@ const HEADER_ALIASES = {
   target: ['сумма индексации недоплаты', 'сумма индексации самой недоплаты'],
   totalUnderpayment: ['общая недоплата по окладу'],
   correctAmount: ['размер надлежащей к выплате премии', 'размер надлежащей к выплате', 'размер надлежащей выплаты', 'надлежащей к выплате премии'],
+  salaryBeforeIndexation: ['оклад до индексации', 'заработная плата до индексации', 'сумма до индексации'],
   correctAnnualSalary: ['сумма корректного годового заработка', 'корректный годовой заработок'],
   vacationStartDate: ['дата начала отпуска', 'начало отпуска', 'дата начала периода отпуска'],
   annualPremiumYear: ['за какой год премия', 'год премии', 'год расчета премии', 'год расчёта премии'],
@@ -1012,6 +1014,7 @@ function buildClaimFactsFromCalculationRows_(params) {
     const period = parseRowPeriod_(row, columns);
     if (!period) return;
     const common = {
+      layoutId,
       baseKind: base.kind,
       baseLabel: base.label,
       periodKey: `${period.year}-${pad2_(period.month)}`,
@@ -1050,9 +1053,10 @@ function readClaimFactAmount_(values, rowIndex) {
 }
 
 function calculateSalaryIndexationFactAmount_(row, columns) {
-  if (!Number.isInteger(columns.correctAmount) || columns.correctAmount < 1) return null;
+  if (!Number.isInteger(columns.correctAmount)
+    || !Number.isInteger(columns.salaryBeforeIndexation)) return null;
   const indexedSalary = parseMoney_(row[columns.correctAmount]);
-  const salaryBeforeIndexation = parseMoney_(row[columns.correctAmount - 1]);
+  const salaryBeforeIndexation = parseMoney_(row[columns.salaryBeforeIndexation]);
   if (indexedSalary === null || salaryBeforeIndexation === null) return null;
   return roundMoney_(indexedSalary - salaryBeforeIndexation);
 }
@@ -1061,6 +1065,7 @@ function appendClaimFactIfPositive_(facts, common, family, calculationItem, amou
   if (amount === null || !Number.isFinite(Number(amount)) || Number(amount) <= 0) return;
   facts.push({
     family,
+    layoutId: common.layoutId,
     baseKind: common.baseKind,
     baseLabel: common.baseLabel,
     periodKey: common.periodKey,
@@ -1090,6 +1095,7 @@ function findTable_(sheet) {
         monthlyIpc: layout.updateMonthlyIpc ? columnLetterToIndex_(layout.monthlyIpcColumn) : null,
         unpaidSalary: columnLetterToIndex_(layout.underpaymentColumn),
         correctAmount: layout.correctAmountColumn ? columnLetterToIndex_(layout.correctAmountColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAmount),
+        salaryBeforeIndexation: layout.salaryBeforeIndexationColumn ? columnLetterToIndex_(layout.salaryBeforeIndexationColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.salaryBeforeIndexation),
         correctAnnualSalary: layout.correctAnnualSalaryColumn ? columnLetterToIndex_(layout.correctAnnualSalaryColumn) : resolveOptionalColumn_(headerValues, HEADER_ALIASES.correctAnnualSalary),
         vacationStartDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationStartDate),
         paymentDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentDate),
