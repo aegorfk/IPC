@@ -5450,6 +5450,58 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(restoredRange.getNumRows(), 1);
 }
 
+// Exact rollback contract: an audit named range created during a failed run is removed.
+{
+  const harness = createHarness(['Источник', 'Анкета и требования']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const audit = harness.context.getClaimIntakeLayout_().claimSelections;
+  const futureRow = audit.firstRow + 2;
+  intake.getRange(audit.titleCell).setValue('custom title');
+  intake.getRange(audit.firstRow, 1, 1, 5)
+    .setValues([['custom', 'preexisting audit cell', '', 9, 'custom|layout|base|period|item']]);
+  intake.getRange(futureRow, 2).setValue('future custom').setNote('keep note')
+    .setBackground('#654321').setNumberFormat('keep-format');
+  harness.documentProperties.setProperty('KEEP_PROPERTY', 'keep-value');
+  assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), null);
+  harness.context.discoverCalculationSheetDescriptors_ = () => [{
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' },
+    sheet: source, headerRow: 1, semanticColumns: {},
+  }];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  const facts = [1, 2].map((month) => ({
+    family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+    baseLabel: 'Премия', periodKey: `2026-0${month}`, periodLabel: `0${month}.2026`,
+    calculationItem: 'principal', amount: month * 10,
+  }));
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: source.getName(), layoutId: 'monthlyPremiums', calculated: 2, skipped: 0,
+    totals: {}, claimFacts: facts, derivativeWarnings: [], derivativeDependencies: [],
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const realRender = harness.context.renderClaimAudit_;
+  harness.context.renderClaimAudit_ = (...args) => {
+    realRender(...args);
+    throw new Error('injected absent-range post-render failure');
+  };
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /injected absent-range post-render failure/
+  );
+  assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), null);
+  assert.strictEqual(intake.getRange(audit.titleCell).getValue(), 'custom title');
+  assert.deepStrictEqual(Array.from(
+    intake.getRange(audit.firstRow, 1, 1, 5).getValues()[0]
+  ), ['custom', 'preexisting audit cell', '', 9, 'custom|layout|base|period|item']);
+  assert.strictEqual(intake.getRange(futureRow, 2).getValue(), 'future custom');
+  assert.strictEqual(intake.getRange(futureRow, 2).getNote(), 'keep note');
+  assert.strictEqual(intake.getRange(futureRow, 2).getBackground(), '#654321');
+  assert.strictEqual(intake.getRange(futureRow, 2).getNumberFormat(), 'keep-format');
+  assert.deepStrictEqual(harness.documentProperties.getProperties(), {
+    KEEP_PROPERTY: 'keep-value',
+  });
+}
+
 console.log('claim constructor characterization ok');
 
 module.exports = {

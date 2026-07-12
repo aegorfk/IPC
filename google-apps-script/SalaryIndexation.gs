@@ -576,6 +576,10 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
   return {
     cells: Array.from(cells.values()),
     cellKeys: new Set(cells.keys()),
+    auditSpreadsheet: spreadsheet,
+    auditNamedRangeName: typeof getClaimIntakeLayout_ === 'function'
+      ? getClaimIntakeLayout_().claimSelections.namedRange : '',
+    auditNamedRangeExisted: !!auditNamedRange,
     auditNamedRange,
     auditSnapshot,
     properties,
@@ -637,11 +641,16 @@ function rollbackCalculationTransaction_(spreadsheet, snapshot) {
       }
     }
   });
-  if (snapshot.auditNamedRange && typeof getClaimIntakeLayout_ === 'function') {
+  if (snapshot.auditNamedRangeExisted && snapshot.auditNamedRange
+    && snapshot.auditNamedRangeName) {
     try {
       spreadsheet.setNamedRange(
-        getClaimIntakeLayout_().claimSelections.namedRange, snapshot.auditNamedRange
+        snapshot.auditNamedRangeName, snapshot.auditNamedRange
       );
+    } catch (error) { errors.push(error); }
+  } else if (!snapshot.auditNamedRangeExisted && snapshot.auditNamedRangeName) {
+    try {
+      removeCalculationNamedRange_(spreadsheet, snapshot.auditNamedRangeName);
     } catch (error) { errors.push(error); }
   }
   if (snapshot.properties) {
@@ -683,20 +692,36 @@ function verifyCalculationTransactionRollback_(snapshot, errors) {
       errors.push(new Error('Транзакционный rollback не восстановил свойства документа.'));
     }
   }
-  if (snapshot.auditNamedRange && typeof getClaimIntakeLayout_ === 'function') {
-    const currentRange = snapshot.auditNamedRange.getSheet().getParent()
-      .getRangeByName(getClaimIntakeLayout_().claimSelections.namedRange);
-    if (!currentRange || currentRange.getSheet().getSheetId()
-      !== snapshot.auditNamedRange.getSheet().getSheetId()
-      || currentRange.getRow() !== snapshot.auditNamedRange.getRow()
-      || currentRange.getColumn() !== snapshot.auditNamedRange.getColumn()
-      || currentRange.getNumRows() !== snapshot.auditNamedRange.getNumRows()
-      || currentRange.getNumColumns() !== snapshot.auditNamedRange.getNumColumns()) {
-      errors.push(new Error('Транзакционный rollback не восстановил границы аудита.'));
+  if (snapshot.auditNamedRangeName && snapshot.auditSpreadsheet) {
+    const currentRange = snapshot.auditSpreadsheet.getRangeByName(snapshot.auditNamedRangeName);
+    if (snapshot.auditNamedRangeExisted) {
+      if (!currentRange || currentRange.getSheet().getSheetId()
+        !== snapshot.auditNamedRange.getSheet().getSheetId()
+        || currentRange.getRow() !== snapshot.auditNamedRange.getRow()
+        || currentRange.getColumn() !== snapshot.auditNamedRange.getColumn()
+        || currentRange.getNumRows() !== snapshot.auditNamedRange.getNumRows()
+        || currentRange.getNumColumns() !== snapshot.auditNamedRange.getNumColumns()) {
+        errors.push(new Error('Транзакционный rollback не восстановил границы аудита.'));
+      }
+    } else if (currentRange) {
+      errors.push(new Error('Транзакционный rollback не удалил вновь созданный диапазон аудита.'));
     }
   }
   if (errors.length) throw new Error(`Rollback failed: ${errors.map((error) =>
     error.message || error).join('; ')}`);
+}
+
+function removeCalculationNamedRange_(spreadsheet, name) {
+  if (!spreadsheet || !name) return;
+  if (typeof spreadsheet.removeNamedRange === 'function') {
+    spreadsheet.removeNamedRange(name);
+    return;
+  }
+  if (typeof spreadsheet.getNamedRanges !== 'function') return;
+  const namedRange = spreadsheet.getNamedRanges().find((candidate) =>
+    candidate.getName && candidate.getName() === name
+  );
+  if (namedRange && typeof namedRange.remove === 'function') namedRange.remove();
 }
 
 function calculationDataValidationsEqual_(left, right) {
