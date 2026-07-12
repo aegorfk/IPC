@@ -6028,12 +6028,30 @@ assertRollbackPreflightFailurePreservesRunState(
     [true, '31.02.2026', -1, selectedKey],
   ]);
   const run = harness.context.createClaimConstructorRun_({}, { now: new Date(2026, 2, 1) });
-  run.results.calculations = [{ calculationEffects: { warnings: [{
+  const selectedWarning = {
     code: 'derivative_payment_requires_review',
     reason: 'Проверьте зависимую выплату',
     source: 'Премия!R8',
     targetKey: selectedKey,
-  }] } }];
+  };
+  const globalWarning = {
+    code: 'calculation_source_failed',
+    message: 'Общее предупреждение расчета',
+    sourceContext: 'Импорт!A2',
+  };
+  run.results.calculations = [{ calculationEffects: {
+    warnings: [
+      selectedWarning,
+      {
+        code: 'unchecked_target_warning', reason: 'Не должно попасть в payload',
+        claimKey: uncheckedKey, source: 'Индексация!B4',
+      },
+      globalWarning,
+    ],
+    derivativeEffects: {
+      warnings: [Object.assign({}, selectedWarning), Object.assign({}, globalWarning)],
+    },
+  } }];
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
 
   const payload = harness.context.buildSelectedClaimPayload_(harness.spreadsheet);
@@ -6053,8 +6071,12 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(payload.recoveries.valid.length, 1);
   assert.strictEqual(payload.recoveries.unallocated.length, 1);
   assert.strictEqual(payload.recoveries.invalid.length, 1);
+  assert.deepStrictEqual(Array.from(payload.warnings, (warning) => warning.code), [
+    'derivative_payment_requires_review', 'calculation_source_failed',
+  ]);
   assert.strictEqual(payload.warnings[0].source, 'Премия!R8');
   assert.strictEqual(payload.warnings[0].sourceContext.targetKey, selectedKey);
+  assert.strictEqual(payload.warnings[1].reason, 'Общее предупреждение расчета');
   assert.ok(!JSON.stringify(payload).includes('ст. 236 ТК РФ'));
 }
 

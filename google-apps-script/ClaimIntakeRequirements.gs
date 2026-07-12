@@ -1184,6 +1184,9 @@ function buildSelectedClaimPayload_(spreadsheet) {
     currentGroup.total = roundClaimAuditMoney_(currentGroup.total + item.amount);
   });
   const selectedGroups = groups.filter((group) => group.items.length);
+  const selectedClaimKeys = new Set(selectedGroups.reduce(
+    (keys, group) => keys.concat(group.items.map((item) => item.key)), []
+  ));
   const averageState = readAverageEarningsState_(target);
   const selectedAverage = resolveSelectedAverageEarnings_(averageState);
   const scenarios = ['calculated', 'user'].map((source) => {
@@ -1213,7 +1216,7 @@ function buildSelectedClaimPayload_(spreadsheet) {
       invalid: recoveries.invalid,
       unallocated: recoveries.unallocated,
     },
-    warnings: collectSelectedClaimWarnings_(effects),
+    warnings: collectSelectedClaimWarnings_(effects, selectedClaimKeys),
     sourceKind: 'payroll_slips',
   };
 }
@@ -1240,20 +1243,32 @@ function findLatestCalculationEffects_(results) {
   return null;
 }
 
-function collectSelectedClaimWarnings_(calculationEffects) {
+function collectSelectedClaimWarnings_(calculationEffects, selectedClaimKeys) {
   if (!calculationEffects) return [];
   const derivative = calculationEffects.derivativeEffects;
+  const selected = selectedClaimKeys instanceof Set ? selectedClaimKeys : new Set();
+  const seen = new Set();
   return (calculationEffects.warnings || []).concat(
     derivative && derivative.warnings || []
-  ).map((warning) => {
+  ).filter((warning) => {
+    const targetKey = warning.targetKey || warning.claimKey || '';
+    if (targetKey && !selected.has(targetKey)) return false;
+    const semanticKey = buildClaimWarningSemanticKey_(warning);
+    if (seen.has(semanticKey)) return false;
+    seen.add(semanticKey);
+    return true;
+  }).map((warning) => {
     const recovery = warning.recovery || warning.overpayment && warning.overpayment.recovery;
     return {
       code: warning.code || '',
-      reason: warning.reason || '',
-      source: warning.source || warning.sourceRef || warning.targetKey || '',
+      reason: warning.reason || warning.message || '',
+      source: warning.source || warning.sourceRef
+        || (typeof warning.sourceContext === 'string' ? warning.sourceContext : '')
+        || warning.targetKey || warning.claimKey || '',
       disputed: warning.disputed === true,
       sourceContext: {
-        targetKey: warning.targetKey || '',
+        source: warning.sourceContext || warning.source || warning.sourceRef || '',
+        targetKey: warning.targetKey || warning.claimKey || '',
         amount: Number.isFinite(Number(warning.amount)) ? Number(warning.amount) : null,
         sourceIdentities: (warning.sourceIdentities || []).slice(),
         recovery: recovery ? {
@@ -1265,6 +1280,31 @@ function collectSelectedClaimWarnings_(calculationEffects) {
       },
     };
   });
+}
+
+function buildClaimWarningSemanticKey_(warning) {
+  const value = warning || {};
+  const sourceContext = value.sourceContext !== undefined
+    ? value.sourceContext
+    : (value.source !== undefined ? value.source : value.sourceRef || '');
+  return stableClaimWarningStringify_([
+    value.code || '',
+    value.targetKey || value.claimKey || '',
+    sourceContext,
+    value.reason || value.message || '',
+  ]);
+}
+
+function stableClaimWarningStringify_(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableClaimWarningStringify_).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableClaimWarningStringify_(value[key])}`
+    ).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function resolveSelectedClaimDocumentFolder_(spreadsheet) {
