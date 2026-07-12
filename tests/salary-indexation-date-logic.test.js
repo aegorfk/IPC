@@ -751,6 +751,7 @@ const calendar = {
 {
   const premiumSheet = {
     getName: () => 'Ежемесячные',
+    getLastRow: () => 1,
     getLastColumn: () => 10,
     getRange(row, column, rowCount, columnCount) {
       assert.strictEqual(row, 1);

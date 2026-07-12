@@ -303,14 +303,14 @@ function isFivePartClaimKey_(key) {
   return typeof key === 'string' && key.split('|').length === 5;
 }
 
-function captureDurableClaimSelections_(existingSelections) {
+function captureDurableClaimSelections_(existingSelections, options) {
   const unchecked = readDurableUncheckedClaimKeys_();
   (existingSelections || []).forEach((item) => {
     if (!item || !isFivePartClaimKey_(item.key)) return;
     if (item.selected === false) unchecked.add(item.key);
     if (item.selected === true) unchecked.delete(item.key);
   });
-  writeDurableUncheckedClaimKeys_(unchecked);
+  if (!(options && options.deferPropertyWrite)) writeDurableUncheckedClaimKeys_(unchecked);
   return unchecked;
 }
 
@@ -325,12 +325,12 @@ function readExistingClaimSelections_(sheet) {
   }, []);
 }
 
-function renderClaimAudit_(sheet, claimFacts) {
+function renderClaimAudit_(sheet, claimFacts, options) {
   const layout = getClaimIntakeLayout_();
   const audit = layout.claimSelections;
   const model = buildClaimAuditModel_(claimFacts);
   const prior = readExistingClaimSelections_(sheet);
-  const durableUnchecked = captureDurableClaimSelections_(prior);
+  const durableUnchecked = captureDurableClaimSelections_(prior, options);
   const persistedSelections = prior.concat(Array.from(durableUnchecked, (key) => ({
     key,
     selected: false,
@@ -385,6 +385,7 @@ function renderClaimAudit_(sheet, claimFacts) {
     sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount)
   );
   if (typeof sheet.hideColumns === 'function') sheet.hideColumns(5);
+  model.durableUncheckedClaimKeys = Array.from(durableUnchecked);
   return model;
 }
 

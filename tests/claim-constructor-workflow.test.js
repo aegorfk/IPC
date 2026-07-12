@@ -411,7 +411,13 @@ class FakeProperties {
     this.getPropertiesCalls++;
     return Object.fromEntries(this.values);
   }
-  setProperty(name, value) { this.values.set(name, String(value)); return this; }
+  setProperty(name, value) {
+    if (this.failSetPropertyOnce) {
+      this.failSetPropertyOnce = false;
+      throw new Error('injected property set failure');
+    }
+    this.values.set(name, String(value)); return this;
+  }
   setProperties(values) {
     this.setPropertiesCalls++;
     if (this.failSetPropertiesOnce) {
@@ -551,6 +557,11 @@ function createHarness(sheetNames = ['Оклад']) {
   SOURCE_FILES.filter((file) => fs.existsSync(file)).forEach((file) => {
     vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
   });
+
+  // Calculation orchestration preloads these once per run; individual tests may override.
+  context.loadConsultantIndexes_ = () => ({});
+  context.loadProductionCalendar_ = () => ({});
+  context.loadSalaryCompensationRates_ = () => ([]);
 
   return {
     context,
@@ -1762,6 +1773,9 @@ function stubAllSheetsCalculation(harness) {
     const id = layoutByName[sheet.getName()];
     return id ? { id } : null;
   };
+  harness.context.loadConsultantIndexes_ = () => ({});
+  harness.context.loadProductionCalendar_ = () => ({});
+  harness.context.loadSalaryCompensationRates_ = () => ([]);
   harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet }) => ({
     sheetName: sheet.getName(),
     layoutId: layoutByName[sheet.getName()],
@@ -4974,6 +4988,287 @@ function stubBatchSessionStartup(harness) {
     pipelineAuditRows.find((row) => row[4] === harness.context.buildStableClaimKey_(principal))[3],
     190
   );
+}
+
+// Task 4 quality: a full recovery remains reversible even though adjusted principal is zero.
+{
+  const harness = createHarness(['Произвольные выплаты']);
+  const sheet = harness.spreadsheet.getSheetByName('Произвольные выплаты');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: {
+      id: 'monthlyPremiums', recoveryPrincipalOutput: true, recoveryLiabilityOutput: true,
+    },
+    sheet, headerRow: 1,
+    semanticColumns: { period: 0, correctAmount: 1, unpaidSalary: 2, totalUnderpayment: 2, target: 3, penalty: 4 },
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.loadConsultantIndexes_ = () => ({});
+  harness.context.loadProductionCalendar_ = () => ({});
+  harness.context.loadSalaryCompensationRates_ = () => [{ date: new Date(2020, 0, 1), rate: 15 }];
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  sheet.getRange(1, 1, 2, 5).setValues([
+    ['Период', 'Надлежащая ежемесячная премия', 'Недоплата по ежемесячной премии', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    ['01.2026', 1000, 1000, 0, 1],
+  ]);
+  const fact = () => ({
+    family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+    baseLabel: 'Ежемесячная премия', periodKey: '2026-01', periodLabel: '01.2026',
+    calculationItem: 'principal', amount: Number(sheet.getRange(2, 3).getValue()),
+    dueDate: new Date(2026, 0, 1), calculationEndDate: new Date(2026, 0, 31),
+    liabilityTiming: 'single_due_date',
+    source: { sheetId: sheet.getSheetId(), sheetName: sheet.getName(), row: 2, adapterId: 'monthlyPremiums' },
+    destinations: {
+      principal: { sheetName: sheet.getName(), row: 2, column: 3, adapterOwned: true },
+      liability: { sheetName: sheet.getName(), row: 2, column: 5, adapterOwned: true },
+    },
+  });
+  const stableKey = harness.context.buildStableClaimKey_(fact());
+  let enabled = true;
+  let amount = 1000;
+  let recoveryDate = new Date(2026, 0, 15);
+  let allocation = stableKey;
+  harness.context.normalizePartialRecoveries_ = () => ({
+    valid: enabled ? [{ rowIndex: 0, date: recoveryDate, amount, allocation }] : [],
+    invalid: [], unallocated: [],
+  });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    const principal = fact();
+    return {
+      sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: { underpayment: principal.amount, indexation: 0, liability: 1 },
+      claimFacts: principal.amount > 0 ? [principal, Object.assign({}, principal, {
+        family: 'material_liability', calculationItem: 'article_236', amount: 1,
+      })] : [], derivativeDependencies: [], derivativeWarnings: [],
+    };
+  };
+  harness.context.rescanCalculationResultFromSheet_ = (spreadsheet, result) => {
+    const principal = fact();
+    return Object.assign({}, result, { claimFacts: principal.amount > 0 ? [principal] : [] });
+  };
+
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 0);
+  const stored = JSON.parse(harness.documentProperties.getProperty('CLAIM_RECOVERY_BASELINES_V1'));
+  assert.strictEqual(Object.values(stored)[0].baselinePrincipal, 1000);
+  assert.strictEqual(Object.values(stored)[0].lastAdjusted, 0);
+  assert.ok(Object.values(stored)[0].destination, 'registry retains explicit destination metadata');
+  assert.strictEqual(Object.values(stored)[0].destination.column, 3);
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 0, 'same full recovery is idempotent');
+  recoveryDate = new Date(2026, 0, 20);
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 0, 'edited recovery date starts from baseline');
+  allocation = 'underpayment|monthlyPremiums|missing|2026-01|principal';
+  const allocationEdit = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 1000,
+    'edited allocation never leaves the prior adjustment stranded');
+  assert.ok(allocationEdit.calculationEffects.warnings.some((warning) =>
+    warning.code === 'recovery_target_missing'
+  ));
+  allocation = stableKey;
+  enabled = false;
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 1000, 'removed full recovery restores source');
+  enabled = true;
+  amount = 500;
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 500, 'changed recovery starts from retained baseline');
+}
+
+// Task 4 quality: semantic discovery carries the real header and reordered columns into the core.
+{
+  const harness = createHarness(['Любое имя']);
+  const sheet = harness.spreadsheet.getSheetByName('Любое имя');
+  sheet.getRange(1, 1, 2, 9).setValues([
+    ['Пени ст. 236', 'Сумма индексации недоплаты', 'Недоплата по ежемесячной премии',
+      'Период премии', 'Размер надлежащей к выплате ежемесячной премии', '', '', '', ''],
+    [0, 0, 100, '01.2026', 100, '', '', '', ''],
+  ]);
+  const descriptors = harness.context.discoverCalculationSheetDescriptors_(harness.spreadsheet);
+  assert.strictEqual(descriptors.length, 1);
+  assert.strictEqual(descriptors[0].layout.id, 'monthlyPremiums');
+  assert.strictEqual(descriptors[0].headerRow, 1);
+  assert.deepStrictEqual(Array.from([
+    descriptors[0].semanticColumns.penalty,
+    descriptors[0].semanticColumns.target,
+    descriptors[0].semanticColumns.unpaidSalary,
+    descriptors[0].semanticColumns.period,
+    descriptors[0].semanticColumns.correctAmount,
+  ]), [0, 1, 2, 3, 4]);
+  const table = harness.context.findTable_(sheet, descriptors[0]);
+  assert.strictEqual(table.columns.unpaidSalary, 2);
+  assert.strictEqual(table.columns.totalUnderpayment, 2);
+  harness.context.loadConsultantIndexes_ = () => ({});
+  harness.context.loadProductionCalendar_ = () => ({});
+  harness.context.loadSalaryCompensationRates_ = () => [{ date: new Date(2020, 0, 1), rate: 15 }];
+  harness.context.updateUnpaidSalaryIndexationCore_({
+    sheet, descriptor: descriptors[0], indexes: {}, productionCalendar: {}, compensationRates: [],
+  });
+  assert.strictEqual(typeof sheet.getRange(2, 2).getValue(), 'number', 'semantic target is written');
+  assert.strictEqual(sheet.getRange(2, 8).getValue(), '', 'legacy fixed target is untouched');
+}
+
+// Task 4 quality: one run discovers and preloads once, and result warnings reach constructor issues.
+{
+  const sheetNames = Array.from({ length: 12 }, (_, index) => `Источник ${index + 1}`);
+  const harness = createHarness(sheetNames);
+  const descriptors = harness.spreadsheet.getSheets().map((sheet) => ({
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet, headerRow: 1,
+    semanticColumns: { period: 0, unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
+  }));
+  const calls = { discover: 0, indexes: 0, calendar: 0, rates: 0 };
+  harness.context.discoverCalculationSheetDescriptors_ = () => { calls.discover++; return descriptors; };
+  harness.context.loadConsultantIndexes_ = () => { calls.indexes++; return {}; };
+  harness.context.loadProductionCalendar_ = () => { calls.calendar++; return {}; };
+  harness.context.loadSalaryCompensationRates_ = () => { calls.rates++; return []; };
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = ({ sheet, descriptor, indexes, productionCalendar, compensationRates }) => {
+    assert.ok(descriptor && indexes && productionCalendar && compensationRates);
+    return {
+      sheetName: sheet.getName(), layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeDependencies: [],
+      derivativeWarnings: [{ code: 'derivative_requires_review', reason: 'Проверить производную выплату.' }],
+    };
+  };
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.deepStrictEqual(calls, { discover: 1, indexes: 1, calendar: 1, rates: 1 });
+  assert.strictEqual(results.calculationEffects.warnings.length, sheetNames.length,
+    'same warning on different sources retains source context');
+  assert.deepStrictEqual(Array.from(
+    harness.context.collectClaimConstructorIssueSignals_(harness.spreadsheet, {}, results)
+      .calculationEffectIssues,
+    (issue) => issue.source
+  ), sheetNames);
+  const aggregated = harness.context.aggregateClaimConstructorIssues_(
+    harness.context.collectClaimConstructorIssueSignals_(harness.spreadsheet, {}, results)
+  );
+  assert.ok(aggregated.some((issue) => issue.reason === 'Проверить производную выплату.'),
+    'real constructor review data contains calculation warning');
+}
+
+// Task 4 quality: derivative, registry, audit and flush failures roll back all owned state.
+['derivative', 'registry', 'audit', 'flush'].forEach((failurePoint) => {
+  const harness = createHarness(['A', 'Анкета и требования']);
+  const sheet = harness.spreadsheet.getSheetByName('A');
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  const auditLayout = harness.context.getClaimIntakeLayout_().claimSelections;
+  sheet.getRange(1, 1, 2, 4).setValues([
+    ['Период', 'Недоплата по ежемесячной премии', 'Сумма индексации недоплаты', 'Пени ст. 236'],
+    ['01.2026', 100, 7, 8],
+  ]);
+  intake.getRange(auditLayout.firstRow, 1, 1, 5)
+    .setValues([['old', 'audit', '', 55, 'old|key|x|y|z']]);
+  harness.spreadsheet.setNamedRange(
+    auditLayout.namedRange, intake.getRange(auditLayout.firstRow, 1, 1, 5)
+  );
+  harness.documentProperties.setProperty('before', 'yes');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums', derivativeOutput: false }, sheet,
+    headerRow: 1, semanticColumns: { period: 0, unpaidSalary: 1, totalUnderpayment: 1, target: 2, penalty: 3 },
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.loadConsultantIndexes_ = () => ({});
+  harness.context.loadProductionCalendar_ = () => ({});
+  harness.context.loadSalaryCompensationRates_ = () => ([]);
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.normalizePartialRecoveries_ = () => ({ valid: [], invalid: [], unallocated: [] });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    sheet.getRange(2, 3).setValue(99).setNote('changed').setBackground('#000000');
+    return { sheetName: 'A', layoutId: 'monthlyPremiums', calculated: 1, skipped: 0,
+      totals: {}, claimFacts: [], derivativeDependencies: [], derivativeWarnings: [] };
+  };
+  if (failurePoint === 'derivative') {
+    harness.context.writeDerivativePaymentEffectsToSheets_ = () => { throw new Error('derivative fatal'); };
+  } else if (failurePoint === 'registry') {
+    harness.context.persistRecoveryBaselineState_ = () => ({ forced: {
+      baselinePrincipal: 1, lastAdjusted: 1, fingerprint: 'forced',
+      destination: { sheetName: 'A', row: 2, column: 2 },
+    } });
+    harness.context.renderClaimAudit_ = () => {};
+    harness.documentProperties.failSetPropertyOnce = true;
+  } else if (failurePoint === 'audit') {
+    harness.context.renderClaimAudit_ = () => {
+      intake.getRange(auditLayout.firstRow, 1).setValue('changed audit');
+      intake.getRange(auditLayout.firstRow + 1, 1).setValue('new audit row');
+      harness.spreadsheet.setNamedRange(
+        auditLayout.namedRange, intake.getRange(auditLayout.firstRow, 1, 2, 5)
+      );
+      throw new Error('audit fatal');
+    };
+  } else {
+    let flushes = 0;
+    harness.context.SpreadsheetApp.flush = () => {
+      flushes++;
+      if (flushes >= 1) throw new Error('flush fatal');
+    };
+  }
+  assert.throws(
+    () => harness.context.runAllSheetsIndexation_(harness.spreadsheet),
+    /fatal|injected property set failure/
+  );
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 7, `${failurePoint}: value restored`);
+  assert.strictEqual(sheet.getRange(2, 3).getNote(), '', `${failurePoint}: note restored`);
+  assert.strictEqual(sheet.getRange(2, 3).getBackground(), '', `${failurePoint}: background restored`);
+  assert.strictEqual(intake.getRange(auditLayout.firstRow, 1).getValue(), 'old', `${failurePoint}: audit restored`);
+  assert.strictEqual(intake.getRange(auditLayout.firstRow + 1, 1).getValue(), '',
+    `${failurePoint}: newly grown audit extent cleared`);
+  assert.deepStrictEqual(harness.documentProperties.getProperties(), { before: 'yes' });
+});
+
+// Task 4 quality: an ambiguous required current-run source preserves stale vacation outputs.
+{
+  const harness = createHarness(['Источник', 'Отпуск']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  const vacation = harness.spreadsheet.getSheetByName('Отпуск');
+  vacation.getRange(2, 2).setValue(777).setNote('stale but authoritative');
+  const descriptors = [
+    { id: 'salary', layout: { id: 'salary' }, sheet: source, headerRow: 1,
+      semanticColumns: {}, ambiguous: true },
+    { id: 'vacation', layout: { id: 'vacation' }, sheet: vacation, headerRow: 1,
+      semanticColumns: { correctAnnualSalary: 1 } },
+  ];
+  harness.context.discoverCalculationSheetDescriptors_ = () => descriptors;
+  harness.context.captureClaimQuestionnaireState_ = () => ({ partialRecoveries: [] });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  let coreCalls = 0;
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => {
+    coreCalls++;
+    return { claimFacts: [], derivativeWarnings: [], derivativeDependencies: [] };
+  };
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.strictEqual(coreCalls, 0, 'ambiguous source and dependent vacation are not recomputed');
+  assert.strictEqual(vacation.getRange(2, 2).getValue(), 777);
+  assert.strictEqual(vacation.getRange(2, 2).getNote(), 'stale but authoritative');
+  assert.ok(results.calculationEffects.warnings.some((warning) =>
+    warning.code === 'vacation_upstream_source_failed' && warning.source === 'Отпуск'
+  ));
+}
+
+// Task 4 quality: all-sheets calculation lock contention and document-to-script fallback.
+{
+  const busy = createHarness([]);
+  busy.documentLock.allow = false;
+  assert.throws(
+    () => busy.context.runAllSheetsIndexation_(busy.spreadsheet),
+    /Не удалось получить блокировку/
+  );
+  assert.strictEqual(busy.documentLock.acquired, 1);
+  assert.strictEqual(busy.documentLock.released, 0);
+
+  const fallback = createHarness([]);
+  const scriptLock = {
+    acquired: 0, released: 0,
+    tryLock() { this.acquired++; return true; },
+    releaseLock() { this.released++; },
+  };
+  fallback.context.LockService.getDocumentLock = () => null;
+  fallback.context.LockService.getScriptLock = () => scriptLock;
+  fallback.context.runAllSheetsIndexation_(fallback.spreadsheet);
+  assert.strictEqual(scriptLock.acquired, 1);
+  assert.strictEqual(scriptLock.released, 1);
 }
 
 console.log('claim constructor characterization ok');

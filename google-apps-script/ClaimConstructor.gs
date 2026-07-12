@@ -1311,7 +1311,7 @@ function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult,
   );
   const calculationEffectIssues = calculationEffects && calculationEffects.warnings
     ? calculationEffects.warnings.map((warning) => ({
-        source: warning.targetKey || '',
+        source: warning.source || warning.targetKey || '',
         reason: warning.reason || warning.code,
         reviewStatus: warning.code === 'unallocated_recovery'
           ? 'спорное нераспределенное погашение'

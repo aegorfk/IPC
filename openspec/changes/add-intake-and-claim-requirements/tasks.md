@@ -27,9 +27,9 @@
 
 ## 4. Calculation Effects
 
-- [x] 4.1 Apply valid partial recoveries to the selected bases and affected material-liability calculations.
+- [x] 4.1 Apply valid partial recoveries to the selected bases and affected material-liability calculations, retaining reversible source/destination baseline metadata even when the adjusted principal is zero.
 - [x] 4.2 Place unknown-allocation partial recoveries in a disputed unallocated bucket without reducing allocated totals.
-- [x] 4.3 Recalculate supported derivative payments when their base changes.
+- [x] 4.3 Recalculate supported derivative payments when their base changes from one semantic discovery and current-run source snapshot inside a coordinated rollback boundary.
 - [x] 4.4 Highlight affected derivative-payment rows with fill and explanation without blocking other calculations.
 
 ## 5. Docs Write-Out
@@ -46,7 +46,7 @@
 - [ ] 6.1 Add layout tests for two normal sheets, normative placeholder placement, and preserved values.
 - [ ] 6.2 Add questionnaire persistence and validation tests.
 - [ ] 6.3 Add audit grouping, disputed-default, and unchecked-selection persistence tests.
-- [x] 6.4 Add partial recovery and derivative-payment warning tests, including split salary liability schedules, semantic multi-sheet discovery, explicit formula ownership, disputed unallocated audit rows, and unchanged unsupported recovery-timing indexation.
+- [x] 6.4 Add partial recovery and derivative-payment warning tests, including split salary liability schedules, full-recovery reversibility, semantic reordered multi-sheet discovery, current-run vacation dependencies, explicit formula ownership, disputed unallocated audit rows, unchanged unsupported recovery-timing indexation, preload/discovery call ceilings, lock fallback/contention, and rollback injection at derivative, registry, audit, and flush boundaries.
 - [ ] 6.5 Add Docs write-out tests for new-document creation in the same Drive folder.
 - [x] 6.6 Run local tests and strict OpenSpec validation.
 - [ ] 6.7 Push Apps Script changes and smoke-test the working Google Sheet after implementation.
