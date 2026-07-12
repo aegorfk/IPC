@@ -279,18 +279,7 @@ function normalizeAverageEarningsStateForWrite_(state) {
 
 function writeAverageEarningsState_(state, spreadsheet) {
   const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
-  const layout = getClaimIntakeLayout_();
-  const normalized = normalizeAverageEarningsStateForWrite_(state);
-  target.getRangeByName(layout.calculatedAverage.namedRange)
-    .setValue(normalized.calculatedAmount);
-  target.getRangeByName(layout.calculatedAverageContext.namedRange)
-    .setValue(normalized.calculatedContext);
-  target.getRangeByName(layout.manualAverage.namedRange)
-    .setValue(normalized.userAmount);
-  target.getRangeByName(layout.manualAverageContext.namedRange)
-    .setValue(normalized.userContext);
-  target.getRangeByName(layout.finalAverageScenario.namedRange)
-    .setValue(normalized.selectedScenario);
+  writeClaimQuestionnaireState_({ averageEarnings: state }, target);
 }
 
 function normalizeAverageEarningsSource_(value) {
@@ -685,6 +674,7 @@ function validateClaimPartialRecoveries_(spreadsheet, options) {
     const nextNotes = notes.map((row) => row.slice());
     const properties = PropertiesService.getDocumentProperties();
     const ownership = properties.getProperties();
+    const ownershipSnapshots = {};
     const propertyUpdates = {};
     const propertyDeletes = [];
     let backgroundsChanged = false;
@@ -693,6 +683,9 @@ function validateClaimPartialRecoveries_(spreadsheet, options) {
     for (let index = 0; index < layout.partialRecoveries.rowCount; index++) {
       const absoluteRow = layout.partialRecoveries.firstRow + index;
       const key = getClaimRecoveryValidationPropertyKeyForRow_(sheet, absoluteRow);
+      ownershipSnapshots[key] = Object.prototype.hasOwnProperty.call(ownership, key)
+        ? { present: true, value: ownership[key] }
+        : { present: false, value: null };
       let previous = null;
       if (ownership[key]) {
         try {
@@ -745,10 +738,49 @@ function validateClaimPartialRecoveries_(spreadsheet, options) {
         propertyDeletes.push(key);
       }
     }
-    if (backgroundsChanged) range.setBackgrounds(nextBackgrounds);
-    if (notesChanged) noteRange.setNotes(nextNotes);
-    if (Object.keys(propertyUpdates).length) properties.setProperties(propertyUpdates);
-    propertyDeletes.forEach((key) => properties.deleteProperty(key));
+    const rollback = () => {
+      try {
+        range.setBackgrounds(backgrounds);
+      } catch (error) {
+        // Continue restoring notes and ownership even if a visual rollback fails.
+      }
+      try {
+        noteRange.setNotes(notes);
+      } catch (error) {
+        // Continue restoring ownership even if a note rollback fails.
+      }
+      const propertyRestores = {};
+      Object.keys(ownershipSnapshots).forEach((key) => {
+        if (ownershipSnapshots[key].present) {
+          propertyRestores[key] = ownershipSnapshots[key].value;
+        }
+      });
+      if (Object.keys(propertyRestores).length) {
+        try {
+          properties.setProperties(propertyRestores);
+        } catch (error) {
+          // Best effort: preserve the original mutation error.
+        }
+      }
+      Object.keys(ownershipSnapshots).forEach((key) => {
+        if (!ownershipSnapshots[key].present) {
+          try {
+            properties.deleteProperty(key);
+          } catch (error) {
+            // Best effort: preserve the original mutation error.
+          }
+        }
+      });
+    };
+    try {
+      if (Object.keys(propertyUpdates).length) properties.setProperties(propertyUpdates);
+      if (backgroundsChanged) range.setBackgrounds(nextBackgrounds);
+      if (notesChanged) noteRange.setNotes(nextNotes);
+      propertyDeletes.forEach((key) => properties.deleteProperty(key));
+    } catch (error) {
+      rollback();
+      throw error;
+    }
     return result;
   }, settings);
 }
@@ -758,47 +790,6 @@ function indexClaimRecoveryRows_(items) {
     result[item.rowIndex] = item;
     return result;
   }, {});
-}
-
-function applyClaimRecoveryValidation_(rowRange, background, message) {
-  const noteCell = rowRange.getSheet().getRange(rowRange.getRow(), rowRange.getColumn() + 3);
-  const state = {
-    backgrounds: rowRange.getBackgrounds()[0],
-    note: noteCell.getNote(),
-    ownedBackground: background,
-    ownedNote: message,
-  };
-  PropertiesService.getDocumentProperties().setProperty(
-    getClaimRecoveryValidationPropertyKey_(rowRange),
-    JSON.stringify(state)
-  );
-  rowRange.setBackground(background);
-  noteCell.setNote(message);
-}
-
-function clearClaimRecoveryValidation_(rowRange) {
-  const noteCell = rowRange.getSheet().getRange(rowRange.getRow(), rowRange.getColumn() + 3);
-  const properties = PropertiesService.getDocumentProperties();
-  const key = getClaimRecoveryValidationPropertyKey_(rowRange);
-  const serialized = properties.getProperty(key);
-  if (!serialized) return;
-  try {
-    const state = JSON.parse(serialized);
-    const current = rowRange.getBackgrounds()[0];
-    rowRange.setBackgrounds([current.map((background, index) =>
-      background === state.ownedBackground ? state.backgrounds[index] : background
-    )]);
-    if (noteCell.getNote() === state.ownedNote) {
-      noteCell.setNote(state.note || '');
-    }
-  } catch (error) {
-    // Leave non-validator formatting untouched when ownership metadata is malformed.
-  }
-  properties.deleteProperty(key);
-}
-
-function getClaimRecoveryValidationPropertyKey_(rowRange) {
-  return getClaimRecoveryValidationPropertyKeyForRow_(rowRange.getSheet(), rowRange.getRow());
 }
 
 function getClaimRecoveryValidationPropertyKeyForRow_(sheet, row) {

@@ -218,6 +218,10 @@ class FakeSheet {
         store.set(this.key(row + rowOffset, column + columnOffset), value);
       });
     });
+    if (this.spreadsheet.failAfterWriteKind === (kind || 'value')) {
+      this.spreadsheet.failAfterWriteKind = null;
+      throw new Error(`injected ${kind || 'value'} write failure`);
+    }
   }
 
   getStateStores() {
@@ -321,6 +325,7 @@ class FakeSpreadsheet {
     this.visibilityOperations = [];
     this.writeAttempts = 0;
     this.failWriteAt = null;
+    this.failAfterWriteKind = null;
     this.serviceCalls = { writes: 0, namedRangeSets: 0 };
   }
 
@@ -369,10 +374,21 @@ class FakeProperties {
   setProperty(name, value) { this.values.set(name, String(value)); return this; }
   setProperties(values) {
     this.setPropertiesCalls++;
+    if (this.failSetPropertiesOnce) {
+      this.failSetPropertiesOnce = false;
+      throw new Error('injected property set failure');
+    }
     Object.keys(values || {}).forEach((name) => this.values.set(name, String(values[name])));
     return this;
   }
-  deleteProperty(name) { this.values.delete(name); return this; }
+  deleteProperty(name) {
+    if (this.failDeletePropertyOnce) {
+      this.failDeletePropertyOnce = false;
+      throw new Error('injected property delete failure');
+    }
+    this.values.delete(name);
+    return this;
+  }
 }
 
 function createHarness(sheetNames = ['Оклад']) {
@@ -3344,6 +3360,128 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(harness.documentLock.released, 1);
   assert.strictEqual(harness.documentProperties.getPropertiesCalls, 1);
   assert.strictEqual(harness.documentProperties.getPropertyCalls, 0);
+}
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  harness.context.writeClaimQuestionnaireState_({
+    employerSector: 'Неизвестно',
+    manualAverageEnabled: false,
+    averageEarnings: {
+      calculated: { amount: 3200, context: '2025 год' },
+      user: { amount: 3500, context: '2026 год' },
+      selectedSource: 'calculated',
+    },
+    partialRecoveries: [[true, '10.01.2026', 100, 'claim:initial']],
+  }, harness.spreadsheet);
+  const before = JSON.stringify(sheet.getDataRange().getValues());
+  harness.documentLock.acquired = 0;
+  harness.documentLock.released = 0;
+  harness.spreadsheet.failWriteAt = harness.spreadsheet.writeAttempts + 2;
+
+  assert.throws(() => harness.context.writeAverageEarningsState_({
+    calculated: { amount: 9999, context: 'changed calculated' },
+    user: { amount: 8888, context: 'changed user' },
+    selectedSource: 'user',
+  }, harness.spreadsheet), /injected sheet write failure/);
+
+  assert.strictEqual(JSON.stringify(sheet.getDataRange().getValues()), before);
+  assert.strictEqual(harness.documentLock.acquired, 1);
+  assert.strictEqual(harness.documentLock.released, 1);
+}
+
+[
+  {
+    name: 'background',
+    inject(harness) { harness.spreadsheet.failAfterWriteKind = 'background'; },
+    error: /injected background write failure/,
+  },
+  {
+    name: 'note',
+    inject(harness) { harness.spreadsheet.failAfterWriteKind = 'note'; },
+    error: /injected note write failure/,
+  },
+  {
+    name: 'properties',
+    inject(harness) { harness.documentProperties.failSetPropertiesOnce = true; },
+    error: /injected property set failure/,
+  },
+].forEach((scenario) => {
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const row = layout.partialRecoveries.firstRow;
+  const rowRange = sheet.getRange(row, 1, 1, 4);
+  rowRange.setValues([[true, '31.02.2026', 100, 'claim:a']]);
+  sheet.getRange(row, 1).setBackground('#D9EAD3');
+  sheet.getRange(row, 4).setNote('Пользовательская заметка');
+  const beforeBackgrounds = rowRange.getBackgrounds();
+  const beforeNote = sheet.getRange(row, 4).getNote();
+  const beforeProperties = JSON.stringify(Array.from(harness.documentProperties.values.entries()));
+  scenario.inject(harness);
+  const acquiredBefore = harness.documentLock.acquired;
+  const releasedBefore = harness.documentLock.released;
+
+  assert.throws(
+    () => harness.context.validateClaimPartialRecoveries_(harness.spreadsheet),
+    scenario.error,
+    `${scenario.name}: validation must surface the service failure`
+  );
+  assert.deepStrictEqual(rowRange.getBackgrounds(), beforeBackgrounds, `${scenario.name}: backgrounds rollback`);
+  assert.strictEqual(sheet.getRange(row, 4).getNote(), beforeNote, `${scenario.name}: note rollback`);
+  assert.strictEqual(
+    JSON.stringify(Array.from(harness.documentProperties.values.entries())),
+    beforeProperties,
+    `${scenario.name}: ownership rollback`
+  );
+  assert.strictEqual(harness.documentLock.acquired, acquiredBefore + 1);
+  assert.strictEqual(harness.documentLock.released, releasedBefore + 1);
+
+  harness.context.validateClaimPartialRecoveries_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#F4CCCC');
+  assert.ok(sheet.getRange(row, 4).getNote().includes('Некорректная дата'));
+  sheet.getRange(row, 2).setValue('09.02.2026');
+  harness.context.validateClaimPartialRecoveries_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#D9EAD3');
+  assert.strictEqual(sheet.getRange(row, 4).getNote(), 'Пользовательская заметка');
+  assert.strictEqual(
+    Array.from(harness.documentProperties.values.keys())
+      .filter((key) => key.includes(`_${sheet.getSheetId()}_${row}`)).length,
+    0,
+    `${scenario.name}: corrected row must not retain ownership`
+  );
+});
+
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  const row = layout.partialRecoveries.firstRow;
+  const rowRange = sheet.getRange(row, 1, 1, 4);
+  rowRange.setValues([[true, '31.02.2026', 100, 'claim:a']]);
+  sheet.getRange(row, 1).setBackground('#D9EAD3');
+  sheet.getRange(row, 4).setNote('Пользовательская заметка');
+  harness.context.validateClaimPartialRecoveries_(harness.spreadsheet);
+  const validatorBackgrounds = rowRange.getBackgrounds();
+  const validatorNote = sheet.getRange(row, 4).getNote();
+  const validatorProperties = JSON.stringify(Array.from(harness.documentProperties.values.entries()));
+  sheet.getRange(row, 2).setValue('09.02.2026');
+  harness.documentProperties.failDeletePropertyOnce = true;
+
+  assert.throws(
+    () => harness.context.validateClaimPartialRecoveries_(harness.spreadsheet),
+    /injected property delete failure/
+  );
+  assert.deepStrictEqual(rowRange.getBackgrounds(), validatorBackgrounds);
+  assert.strictEqual(sheet.getRange(row, 4).getNote(), validatorNote);
+  assert.strictEqual(JSON.stringify(Array.from(harness.documentProperties.values.entries())), validatorProperties);
+
+  harness.context.validateClaimPartialRecoveries_(harness.spreadsheet);
+  assert.strictEqual(sheet.getRange(row, 1).getBackground(), '#D9EAD3');
+  assert.strictEqual(sheet.getRange(row, 4).getNote(), 'Пользовательская заметка');
+  assert.strictEqual(harness.documentProperties.values.size, 0);
 }
 
 console.log('claim constructor characterization ok');
