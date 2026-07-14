@@ -27,7 +27,7 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
     validating: 'Проверка исходных данных',
     importing: 'Распознавание расчетных листков',
     reconstructing: 'Импорт завершен. Реконструкция начислений и выплат',
-    calculating: 'Расчет недоплат, индексации и пеней',
+    calculating: 'Расчет недоплат, индексации и материальной ответственности',
     writing_doc: 'Создание новой версии расчета в Google Docs',
     complete: 'Готово',
     completeWithWarnings: 'Готово с замечаниями',
@@ -648,9 +648,17 @@ function formatClaimConstructorProgress_(run) {
     const progress = normalizeClaimConstructorProgress_(value.progress);
     return `${buildClaimConstructorProgressBar_(progress.percent)} ${progress.percent}% · ${progress.processed} из ${progress.total}`;
   }
-  const phasePercent = value.phase === 'reconstructing' ? 70 : null;
+  const phasePercents = {
+    validating: 5,
+    importing: 20,
+    reconstructing: 70,
+    calculating: 85,
+    writing_doc: 95,
+  };
+  const phasePercent = phasePercents[value.phase];
   if (Number.isFinite(phasePercent)) {
-    return `${buildClaimConstructorProgressBar_(phasePercent)} ${phasePercent}%`;
+    const suffix = value.progressText ? ` · ${value.progressText}` : '';
+    return `${buildClaimConstructorProgressBar_(phasePercent)} ${phasePercent}%${suffix}`;
   }
   return value.progressText || '';
 }

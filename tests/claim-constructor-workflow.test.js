@@ -1544,11 +1544,20 @@ function createHarness(sheetNames = ['Оклад']) {
   run.updatedAt = '2026-07-11T09:05:00.000Z';
 
   harness.context.writeClaimConstructorStatus_(sheet, run);
-  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Расчет недоплат, индексации и пеней');
-  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Считаем недоплаты');
+  assert.strictEqual(
+    sheet.getRange(layout.status.phaseCell).getValue(),
+    'Расчет недоплат, индексации и материальной ответственности'
+  );
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /85%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /Считаем недоплаты/);
   assert.strictEqual(sheet.getRange(layout.status.updatedAtCell).getValue(), '11.07.2026 12:05');
 
   run.phase = 'importing';
+  delete run.progress;
+  harness.context.writeClaimConstructorStatus_(sheet, run);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /20%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /[█░]/);
+
   run.progress = { processed: 3, total: 31 };
   harness.context.writeClaimConstructorStatus_(sheet, run);
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /3 из 31/);
@@ -1774,7 +1783,8 @@ function createHarness(sheetNames = ['Оклад']) {
 
   harness.context.onOpen();
 
-  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Восстановленный статус');
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /85%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /Восстановленный статус/);
   assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 321);
   assert.deepStrictEqual(visibilityCalls, ['detail']);
   assert.deepStrictEqual(pipelineCalls, []);
@@ -2148,7 +2158,8 @@ function stubDocsHandoff(harness, ready = true) {
   assert.strictEqual(result.joined, true);
   assert.strictEqual(result.run.id, active.id);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Распознавание расчетных листков');
-  assert.strictEqual(sheet.getRange(layout.status.messageCell).getValue(), 'Импорт продолжается');
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /20%/);
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /Импорт продолжается/);
 }
 
 {
