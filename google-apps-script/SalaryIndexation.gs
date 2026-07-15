@@ -553,6 +553,9 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       || recoveryState.unallocated.length || recoveryEffects.warnings.length)) {
       results[0].calculationEffects = recoveryEffects;
     }
+    if (typeof syncCalculatedAverageEarningsFromDescriptors_ === 'function') {
+      syncCalculatedAverageEarningsFromDescriptors_(spreadsheet, descriptors);
+    }
     let auditModel = null;
     const auditFacts = results.reduce(
       (facts, result) => facts.concat(result.claimFacts || []), []

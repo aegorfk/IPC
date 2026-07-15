@@ -1790,6 +1790,33 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.deepStrictEqual(pipelineCalls, []);
 }
 
+// Reopening a completed workbook must render the persisted dashboard payload.
+// The phase results live beside `dashboard`, not at the top-level totals key.
+{
+  const harness = createHarness(['Конструктор', 'Оклад']);
+  const sheet = harness.spreadsheet.getSheetByName('Конструктор');
+  const layout = harness.context.getClaimConstructorLayout_();
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-11T09:00:00.000Z'),
+  });
+  run.status = 'complete_with_warnings';
+  run.phase = 'complete_with_warnings';
+  run.results = {
+    calculations: [{ sheetName: 'Оклад', totals: { underpayment: 654 } }],
+    dashboard: {
+      totals: { underpayment: 654, indexation: 32, liability: 14, total: 700 },
+    },
+  };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  harness.context.onOpen();
+
+  assert.strictEqual(sheet.getRange(layout.resultFields.underpayment.valueCell).getValue(), 654);
+  assert.strictEqual(sheet.getRange(layout.resultFields.indexation.valueCell).getValue(), 32);
+  assert.strictEqual(sheet.getRange(layout.resultFields.liability.valueCell).getValue(), 14);
+  assert.strictEqual(sheet.getRange(layout.resultFields.total.valueCell).getValue(), 700);
+}
+
 function stubReconstructionPipeline(harness) {
   const model = {
     salary: [],
@@ -3312,6 +3339,46 @@ function stubBatchSessionStartup(harness) {
     beforeInvalidWrite,
     'Ошибочный selector не должен частично записывать сценарии'
   );
+}
+
+// The calculated scenario is read from the semantic vacation adapter, not from
+// a fixed organization, sheet name, or vendor-specific payroll-slip layout.
+{
+  const harness = createHarness(['Производная выплата произвольной системы']);
+  const source = harness.spreadsheet.getSheetByName('Производная выплата произвольной системы');
+  source.getRange(1, 1, 1, 3).setValues([[
+    'Период', 'Произвольная база', 'Средний дневной заработок',
+  ]]);
+  source.getRange(2, 1, 2, 3).setValues([
+    ['01.2026', 100000, 3412.25],
+    ['02.2026', 120000, 3890.75],
+  ]);
+  const questionnaire = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  questionnaire.getRange(layout.manualAverage.valueCell).setValue(5000);
+  questionnaire.getRange(layout.manualAverageContext.valueCell).setValue('со слов работника');
+  questionnaire.getRange(layout.finalAverageScenario.valueCell).setValue('Заданный вручную');
+  const descriptor = {
+    sheet: source,
+    headerRow: 1,
+    layout: { id: 'vacation' },
+    semanticColumns: { period: 0, averageDailyEarning: 2 },
+  };
+
+  const synced = harness.context.syncCalculatedAverageEarningsFromDescriptors_(
+    harness.spreadsheet, [descriptor]
+  );
+
+  assert.strictEqual(synced.amount, 3890.75);
+  assert.strictEqual(synced.context, '02.2026 · Производная выплата произвольной системы');
+  assert.strictEqual(questionnaire.getRange(layout.calculatedAverage.valueCell).getValue(), 3890.75);
+  assert.strictEqual(
+    questionnaire.getRange(layout.calculatedAverageContext.valueCell).getValue(),
+    '02.2026 · Производная выплата произвольной системы'
+  );
+  assert.strictEqual(questionnaire.getRange(layout.manualAverage.valueCell).getValue(), 5000);
+  assert.strictEqual(questionnaire.getRange(layout.manualAverageContext.valueCell).getValue(), 'со слов работника');
+  assert.strictEqual(questionnaire.getRange(layout.finalAverageScenario.valueCell).getValue(), 'Заданный вручную');
 }
 
 {

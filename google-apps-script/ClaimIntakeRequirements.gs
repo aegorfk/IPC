@@ -509,6 +509,73 @@ function readAverageEarningsState_(spreadsheet) {
   };
 }
 
+function syncCalculatedAverageEarningsFromDescriptors_(spreadsheet, descriptors) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const candidate = findCalculatedAverageEarningsFromDescriptors_(descriptors);
+  if (!candidate) return null;
+  const layout = getClaimIntakeLayout_();
+  const sheet = ensureClaimIntakeSheet_(target);
+  sheet.getRange(layout.calculatedAverage.valueCell)
+    .setValue(candidate.amount)
+    .setNumberFormat('#,##0.00');
+  sheet.getRange(layout.calculatedAverageContext.valueCell).setValue(candidate.context);
+  return candidate;
+}
+
+function findCalculatedAverageEarningsFromDescriptors_(descriptors) {
+  let latest = null;
+  (descriptors || []).forEach((descriptor) => {
+    const layout = descriptor && descriptor.layout || {};
+    const columns = descriptor && descriptor.semanticColumns || {};
+    const sheet = descriptor && descriptor.sheet;
+    if (!sheet || layout.id !== 'vacation' || !Number.isInteger(columns.averageDailyEarning)) {
+      return;
+    }
+    const rowCount = Math.max(0, sheet.getLastRow() - descriptor.headerRow);
+    if (!rowCount) return;
+    const values = sheet.getRange(
+      descriptor.headerRow + 1, 1, rowCount, sheet.getLastColumn()
+    ).getDisplayValues();
+    for (let rowIndex = values.length - 1; rowIndex >= 0; rowIndex--) {
+      const amount = parseClaimPositiveAmount_(values[rowIndex][columns.averageDailyEarning]);
+      if (amount === null) continue;
+      latest = {
+        amount,
+        context: buildCalculatedAverageEarningsContext_(
+          sheet, values[rowIndex], columns, descriptor.headerRow + rowIndex + 1
+        ),
+        source: {
+          sheetName: sheet.getName(),
+          row: descriptor.headerRow + rowIndex + 1,
+          adapterId: layout.id,
+        },
+      };
+      break;
+    }
+  });
+  return latest;
+}
+
+function buildCalculatedAverageEarningsContext_(sheet, row, columns, sheetRow) {
+  const firstDisplayValue = (semantics) => {
+    for (let index = 0; index < semantics.length; index++) {
+      const column = columns[semantics[index]];
+      if (!Number.isInteger(column)) continue;
+      const value = String(row[column] || '').trim();
+      if (value) return value;
+    }
+    return '';
+  };
+  let period = firstDisplayValue(['vacationStartDate', 'paymentDate', 'period']);
+  if (!period && Number.isInteger(columns.year) && Number.isInteger(columns.month)) {
+    const year = String(row[columns.year] || '').trim();
+    const month = String(row[columns.month] || '').trim();
+    period = [month, year].filter(Boolean).join('.');
+  }
+  const source = sheet && sheet.getName ? sheet.getName() : `строка ${sheetRow}`;
+  return period ? `${period} · ${source}` : source;
+}
+
 function normalizeAverageEarningsStateForWrite_(state) {
   const value = state || {};
   const calculated = value.calculated || {};

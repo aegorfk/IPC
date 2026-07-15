@@ -852,8 +852,19 @@ function hydrateClaimConstructorOnOpen_(spreadsheet) {
   const run = loadClaimConstructorRun_();
   if (run) {
     writeClaimConstructorStatus_(sheet, run);
-    renderClaimConstructorResults_(sheet, run.results);
+    renderClaimConstructorResults_(sheet, run.results.dashboard || run.results);
     renderClaimConstructorIssues_(sheet, run.issues);
+  }
+  if (typeof discoverCalculationSheetDescriptors_ === 'function'
+    && typeof syncCalculatedAverageEarningsFromDescriptors_ === 'function') {
+    try {
+      syncCalculatedAverageEarningsFromDescriptors_(
+        spreadsheet,
+        discoverCalculationSheetDescriptors_(spreadsheet)
+      );
+    } catch (error) {
+      Logger.log(`Не удалось обновить рассчитанный средний заработок при открытии: ${error}`);
+    }
   }
   const mode = PropertiesService
     .getDocumentProperties()
