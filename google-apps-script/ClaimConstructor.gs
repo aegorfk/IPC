@@ -877,6 +877,11 @@ function buildClaimCalculation() {
   const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
   sheet.showSheet();
   sheet.activate();
+  const persistedRun = loadClaimConstructorRun_();
+  const recoveredStaleImport = recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, persistedRun);
+  if (recoveredStaleImport) {
+    return recoveredStaleImport;
+  }
   const activeRun = joinFreshClaimConstructorRun_();
   if (activeRun) {
     const recovered = recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun);
