@@ -2142,6 +2142,36 @@ function stubDocsHandoff(harness, ready = true) {
   assert.strictEqual(starts.length, 0);
 }
 
+// If a scheduled post-import continuation never runs, repeating the primary
+// action must safely resume the active phase instead of only repainting 70%.
+{
+  const harness = createHarness();
+  harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const active = harness.context.createClaimConstructorRun_({}, { now: new Date() });
+  harness.context.completeClaimConstructorPhase_(active, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(active, 'importing', 'reconstructing', new Date());
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  const pipelineCalls = [];
+  harness.context.continueClaimConstructorPipeline_ = (runId, options) => {
+    pipelineCalls.push({ runId, spreadsheet: options.spreadsheet });
+    const completed = harness.context.loadClaimConstructorRun_(harness.scriptProperties);
+    completed.status = 'complete';
+    completed.phase = 'complete';
+    harness.context.saveClaimConstructorRun_(completed, harness.scriptProperties);
+    return completed;
+  };
+
+  const result = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(result.joined, true);
+  assert.strictEqual(result.resumed, true);
+  assert.strictEqual(result.run.status, 'complete');
+  assert.deepStrictEqual(pipelineCalls, [{
+    runId: active.id,
+    spreadsheet: harness.spreadsheet,
+  }]);
+}
+
 {
   const harness = createHarness();
   const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);

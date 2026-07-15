@@ -888,6 +888,16 @@ function buildClaimCalculation() {
     if (recovered) {
       return recovered;
     }
+    if (['reconstructing', 'calculating', 'writing_doc'].indexOf(activeRun.phase) >= 0) {
+      const continued = continueClaimConstructorPipeline_(activeRun.id, { spreadsheet });
+      return {
+        started: false,
+        joined: true,
+        resumed: true,
+        validation: null,
+        run: continued || loadClaimConstructorRun_() || activeRun,
+      };
+    }
     writeClaimConstructorStatus_(sheet, activeRun);
     return { started: false, joined: true, validation: null, run: activeRun };
   }
