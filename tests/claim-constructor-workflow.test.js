@@ -2264,6 +2264,70 @@ function stubDocsHandoff(harness, ready = true) {
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Импорт завершен. Реконструкция начислений и выплат');
 }
 
+// A final batch can write its last state row and then time out before clearing
+// the persisted 30/31 session. A repeated build must trust current-run output
+// evidence and recover instead of silently scheduling the stale session again.
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const active = harness.context.createClaimConstructorRun_({
+    folderUrl: 'https://drive.google.com/drive/folders/folder-1',
+  }, { now: new Date('2026-07-11T08:00:00.000Z') });
+  harness.context.completeClaimConstructorPhase_(
+    active,
+    'validating',
+    'importing',
+    new Date('2026-07-11T08:01:00.000Z')
+  );
+  active.progress = { processed: 30, total: 31 };
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  harness.scriptProperties.setProperty('ZUP_IMPORT_BATCH_STATE', JSON.stringify({
+    spreadsheetId: harness.spreadsheet.getId(),
+    folderId: 'folder-1',
+    constructorRunId: active.id,
+    constructorNextPhase: 'reconstructing',
+    nextIndex: 30,
+    total: 31,
+    startedAt: '2026-07-11T08:00:00.000Z',
+    updatedAt: '2026-07-14T18:48:00.000Z',
+  }));
+  const importSheet = harness.spreadsheet.insertSheet('Импорт_1С_ЗУП');
+  const importRow = Array(20).fill('');
+  importRow[0] = 'листок-31.png';
+  importRow[13] = 'Начислено';
+  importRow[14] = 'Оклад';
+  importRow[16] = 100;
+  importSheet.getRange(1, 1, 2, 20).setValues([
+    Array.from({ length: 20 }, (_, index) => `H${index + 1}`),
+    importRow,
+  ]);
+  const stateSheet = harness.spreadsheet.insertSheet('Импорт_1С_Состояние');
+  stateSheet.getRange(1, 1, 32, 11).setValues([
+    Array.from({ length: 11 }, (_, index) => `S${index + 1}`),
+  ].concat(Array.from({ length: 31 }, (_, index) => [
+    `folder::листок-${index + 1}.png`,
+    `file-${index + 1}`,
+    `листок-${index + 1}.png`,
+    'image/png',
+    '',
+    '',
+    'parser',
+    `sig-${index + 1}`,
+    1,
+    'Не изменился',
+    '2026-07-15T05:50:00.000Z',
+  ])));
+
+  const result = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(result.recovered, true);
+  assert.strictEqual(result.run.phase, 'reconstructing');
+  assert.strictEqual(result.run.results.import.total, 31);
+  assert.strictEqual(harness.scriptProperties.getProperty('ZUP_IMPORT_BATCH_STATE'), null);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Импорт завершен. Реконструкция начислений и выплат');
+}
+
 {
   const harness = createHarness();
   harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);

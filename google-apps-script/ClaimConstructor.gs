@@ -950,11 +950,48 @@ function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun)
     return null;
   }
   const session = loadClaimConstructorBatchSession_();
+  let importResult = null;
+  let waitingRun = null;
   if (session && session.constructorRunId === run.id) {
-    if (typeof scheduleZupBatchImportTrigger_ === 'function') {
-      scheduleZupBatchImportTrigger_();
+    importResult = buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run, session);
+    if (importResult) {
+      if (typeof clearZupBatchImportState_ === 'function') {
+        clearZupBatchImportState_();
+      }
+      if (typeof deleteZupBatchImportTriggers_ === 'function') {
+        deleteZupBatchImportTriggers_();
+      }
+    } else {
+      waitingRun = Object.assign({}, run, {
+        updatedAt: new Date().toISOString(),
+      });
+      writeClaimConstructorStatus_(sheet, waitingRun);
+      if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
+        SpreadsheetApp.flush();
+      }
+      if (spreadsheet && typeof spreadsheet.toast === 'function') {
+        spreadsheet.toast(
+          'Команда принята. Проверяем последний шаг импорта.',
+          'Конструктор требований',
+          5
+        );
+      }
     }
-    return null;
+    if (typeof scheduleZupBatchImportTrigger_ === 'function') {
+      if (!importResult) {
+        scheduleZupBatchImportTrigger_();
+      }
+    }
+    if (!importResult) {
+      return {
+        started: false,
+        joined: true,
+        recovered: false,
+        waiting: true,
+        validation: null,
+        run: waitingRun,
+      };
+    }
   }
   writeClaimConstructorStatus_(sheet, Object.assign({}, run, {
     progressText: 'Импорт завершен. Восстанавливаем переход к реконструкции.',
@@ -962,7 +999,7 @@ function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun)
   if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
     SpreadsheetApp.flush();
   }
-  const importResult = buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run);
+  importResult = importResult || buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run);
   if (!importResult) {
     return null;
   }
@@ -984,7 +1021,7 @@ function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun)
   };
 }
 
-function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run) {
+function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run, session) {
   if (
     typeof readExistingZupSkippedFiles_ !== 'function' ||
     typeof readExistingZupStateRowsByGroup_ !== 'function'
@@ -995,6 +1032,9 @@ function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run)
   const stateCount = Object.keys(stateRowsByGroup).length;
   const expectedTotal = Number(run && run.progress && run.progress.total) || 0;
   if (expectedTotal && stateCount < expectedTotal) {
+    return null;
+  }
+  if (session && !hasCompleteCurrentClaimConstructorBatchState_(stateRowsByGroup, session, expectedTotal)) {
     return null;
   }
   const rowsRecognized = Object.keys(stateRowsByGroup).reduce((sum, key) => {
@@ -1021,6 +1061,20 @@ function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run)
     dryRun: false,
     processedNow: 0,
   };
+}
+
+function hasCompleteCurrentClaimConstructorBatchState_(stateRowsByGroup, session, expectedTotal) {
+  const total = Number(expectedTotal) || Number(session && session.total) || 0;
+  const startedAt = new Date(session && session.startedAt || 0).getTime();
+  if (!total || !Number.isFinite(startedAt)) {
+    return false;
+  }
+  const currentRows = Object.keys(stateRowsByGroup || {}).filter((key) => {
+    const row = stateRowsByGroup[key] || [];
+    const updatedAt = new Date(row[10] || 0).getTime();
+    return Number.isFinite(updatedAt) && updatedAt >= startedAt;
+  });
+  return currentRows.length >= total;
 }
 
 function joinFreshClaimConstructorRun_() {
