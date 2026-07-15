@@ -2164,6 +2164,53 @@ function stubDocsHandoff(harness, ready = true) {
 
 {
   const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  sheet.getRange(layout.sourceFolder.valueCell).setValue('испорченная ссылка во время запуска');
+  sheet.getRange(layout.outputDoc.valueCell).setValue('');
+  const active = harness.context.createClaimConstructorRun_({
+    folderUrl: 'https://drive.google.com/drive/folders/folder-1',
+  }, { now: new Date() });
+  harness.context.completeClaimConstructorPhase_(
+    active,
+    'validating',
+    'importing',
+    new Date()
+  );
+  active.progress = { processed: 1, total: 2 };
+  harness.context.saveClaimConstructorRun_(active, harness.scriptProperties);
+  const importRow = Array(20).fill('');
+  importRow[0] = 'листок-1.png';
+  importRow[1] = 'Polza VLM';
+  importRow[13] = 'Начислено';
+  importRow[14] = 'Оклад';
+  importRow[16] = 100;
+  const importSheet = harness.spreadsheet.insertSheet('Импорт_1С_ЗУП');
+  importSheet.getRange(1, 1, 2, 20).setValues([
+    Array.from({ length: 20 }, (_, index) => `H${index + 1}`),
+    importRow,
+  ]);
+  const stateSheet = harness.spreadsheet.insertSheet('Импорт_1С_Состояние');
+  stateSheet.getRange(1, 1, 3, 11).setValues([
+    Array.from({ length: 11 }, (_, index) => `S${index + 1}`),
+    ['folder::листок-1.png', 'file-1', 'листок-1.png', 'image/png', '', '', 'parser', 'sig-1', 1, 'Не изменился', '15.07.2026'],
+    ['folder::листок-2.png', 'file-2', 'листок-2.png', 'image/png', '', '', 'parser', 'sig-2', 1, 'Не изменился', '15.07.2026'],
+  ]);
+
+  const result = harness.context.buildClaimCalculation();
+
+  assert.strictEqual(result.recovered, true);
+  assert.strictEqual(result.run.phase, 'reconstructing');
+  assert.strictEqual(result.run.results.import.rowsRecognized, 1);
+  assert.strictEqual(result.run.results.import.recovered, true);
+  assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Импорт завершен. Реконструкция начислений и выплат');
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /70%/);
+  assert.strictEqual(harness.triggers.length, 1);
+  assert.strictEqual(harness.triggers[0].getHandlerFunction(), 'resumeClaimConstructorPipeline_');
+}
+
+{
+  const harness = createHarness();
   harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
   harness.scriptProperties.setProperty('CLAIM_CONSTRUCTOR_RUN_STATE', '{повреждено');
   const sideEffects = [];

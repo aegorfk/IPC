@@ -879,6 +879,10 @@ function buildClaimCalculation() {
   sheet.activate();
   const activeRun = joinFreshClaimConstructorRun_();
   if (activeRun) {
+    const recovered = recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun);
+    if (recovered) {
+      return recovered;
+    }
     writeClaimConstructorStatus_(sheet, activeRun);
     return { started: false, joined: true, validation: null, run: activeRun };
   }
@@ -935,6 +939,81 @@ function buildClaimCalculation() {
   }
 }
 
+function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun) {
+  const run = activeRun || {};
+  if (run.status !== 'running' || run.phase !== 'importing') {
+    return null;
+  }
+  const session = loadClaimConstructorBatchSession_();
+  if (session && session.constructorRunId === run.id) {
+    if (typeof scheduleZupBatchImportTrigger_ === 'function') {
+      scheduleZupBatchImportTrigger_();
+    }
+    return null;
+  }
+  const importResult = buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run);
+  if (!importResult) {
+    return null;
+  }
+  const advanced = continueClaimConstructorAfterImport_(
+    run.id,
+    'reconstructing',
+    importResult
+  );
+  if (!advanced) {
+    return null;
+  }
+  refreshClaimConstructorDashboard_(spreadsheet, advanced);
+  return {
+    started: false,
+    joined: true,
+    recovered: true,
+    validation: null,
+    run: advanced,
+  };
+}
+
+function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run) {
+  if (
+    typeof readExistingZupRowsByFile_ !== 'function' ||
+    typeof readExistingZupSkippedFiles_ !== 'function' ||
+    typeof readExistingZupStateRowsByGroup_ !== 'function'
+  ) {
+    return null;
+  }
+  const stateRowsByGroup = readExistingZupStateRowsByGroup_(spreadsheet);
+  const stateCount = Object.keys(stateRowsByGroup).length;
+  const expectedTotal = Number(run && run.progress && run.progress.total) || 0;
+  if (expectedTotal && stateCount < expectedTotal) {
+    return null;
+  }
+  const rowsByFile = readExistingZupRowsByFile_(spreadsheet);
+  const rows = typeof flattenZupRowsByFile_ === 'function'
+    ? flattenZupRowsByFile_(rowsByFile)
+    : Object.keys(rowsByFile).sort().reduce((acc, key) => acc.concat(rowsByFile[key] || []), []);
+  if (!rows.length) {
+    return null;
+  }
+  const skippedFiles = readExistingZupSkippedFiles_(spreadsheet);
+  const total = expectedTotal || stateCount || Object.keys(rowsByFile).length;
+  return {
+    complete: true,
+    recovered: true,
+    source: (run && run.results && run.results.import && run.results.import.source)
+      || (run && run.inputs && run.inputs.folderUrl)
+      || '',
+    total,
+    processed: total,
+    filesRead: stateCount || total,
+    rows,
+    rowsRecognized: rows.length,
+    skippedFiles,
+    skippedCount: skippedFiles.length,
+    dryRun: false,
+    processedNow: 0,
+  };
+}
+
 function joinFreshClaimConstructorRun_() {
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
@@ -986,6 +1065,18 @@ function continueClaimConstructorAfterImport_(runId, nextPhase, importResult) {
   if (!advanced) {
     return null;
   }
+  advanced.results = advanced.results || {};
+  advanced.results.import = {
+    source: importResult.source || '',
+    total: importResult.total || 0,
+    processed: importResult.processed || 0,
+    rowsRecognized: calculableRows,
+    skippedCount: Number.isFinite(importResult.skippedCount)
+      ? importResult.skippedCount
+      : (importResult.skippedFiles || []).length,
+    recovered: Boolean(importResult.recovered),
+  };
+  saveClaimConstructorRun_(advanced);
   scheduleClaimConstructorContinuation_();
   refreshClaimConstructorDashboard_(SpreadsheetApp.openById(advanced.spreadsheetId), advanced);
   return advanced;
