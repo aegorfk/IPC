@@ -956,6 +956,12 @@ function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun)
     }
     return null;
   }
+  writeClaimConstructorStatus_(sheet, Object.assign({}, run, {
+    progressText: 'Импорт завершен. Восстанавливаем переход к реконструкции.',
+  }));
+  if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
+    SpreadsheetApp.flush();
+  }
   const importResult = buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run);
   if (!importResult) {
     return null;
@@ -980,7 +986,6 @@ function recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun)
 
 function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run) {
   if (
-    typeof readExistingZupRowsByFile_ !== 'function' ||
     typeof readExistingZupSkippedFiles_ !== 'function' ||
     typeof readExistingZupStateRowsByGroup_ !== 'function'
   ) {
@@ -992,15 +997,15 @@ function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run)
   if (expectedTotal && stateCount < expectedTotal) {
     return null;
   }
-  const rowsByFile = readExistingZupRowsByFile_(spreadsheet);
-  const rows = typeof flattenZupRowsByFile_ === 'function'
-    ? flattenZupRowsByFile_(rowsByFile)
-    : Object.keys(rowsByFile).sort().reduce((acc, key) => acc.concat(rowsByFile[key] || []), []);
-  if (!rows.length) {
+  const rowsRecognized = Object.keys(stateRowsByGroup).reduce((sum, key) => {
+    const row = stateRowsByGroup[key] || [];
+    return sum + (Number(row[8]) || 0);
+  }, 0);
+  if (!rowsRecognized) {
     return null;
   }
   const skippedFiles = readExistingZupSkippedFiles_(spreadsheet);
-  const total = expectedTotal || stateCount || Object.keys(rowsByFile).length;
+  const total = expectedTotal || stateCount;
   return {
     complete: true,
     recovered: true,
@@ -1010,8 +1015,7 @@ function buildCompletedClaimConstructorImportResultFromSheets_(spreadsheet, run)
     total,
     processed: total,
     filesRead: stateCount || total,
-    rows,
-    rowsRecognized: rows.length,
+    rowsRecognized,
     skippedFiles,
     skippedCount: skippedFiles.length,
     dryRun: false,

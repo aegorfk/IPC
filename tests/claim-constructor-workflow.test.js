@@ -2201,7 +2201,7 @@ function stubDocsHandoff(harness, ready = true) {
 
   assert.strictEqual(result.recovered, true);
   assert.strictEqual(result.run.phase, 'reconstructing');
-  assert.strictEqual(result.run.results.import.rowsRecognized, 1);
+  assert.strictEqual(result.run.results.import.rowsRecognized, 2);
   assert.strictEqual(result.run.results.import.recovered, true);
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Импорт завершен. Реконструкция начислений и выплат');
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /70%/);
