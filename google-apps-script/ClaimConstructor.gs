@@ -11,6 +11,8 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   VISIBILITY_MODE_PROPERTY: 'CLAIM_CONSTRUCTOR_VISIBILITY_MODE',
   CONTINUATION_TRIGGER_FUNCTION: 'resumeClaimConstructorPipeline_',
   CONTINUATION_TRIGGER_DELAY_MS: 60 * 1000,
+  WATCHDOG_TRIGGER_FUNCTION: 'watchClaimConstructorPipeline_',
+  WATCHDOG_INTERVAL_MINUTES: 5,
   PHASE_EXECUTION_LEASE_MS: 7 * 60 * 1000,
   RUN_STALE_MS: 6 * 60 * 60 * 1000,
   ISSUE_HEADERS: [
@@ -937,6 +939,7 @@ function buildClaimCalculation() {
   }
   const activeRun = joinFreshClaimConstructorRun_();
   if (activeRun) {
+    ensureClaimConstructorWatchdogTrigger_();
     const recovered = recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, activeRun);
     if (recovered) {
       return recovered;
@@ -1212,6 +1215,7 @@ function resumeClaimConstructorPipeline_() {
   const run = loadClaimConstructorRun_();
   if (!isClaimConstructorRunActive_(run)) {
     deleteClaimConstructorContinuationTriggers_();
+    deleteClaimConstructorWatchdogTriggers_();
     return run;
   }
   scheduleClaimConstructorContinuation_();
@@ -1220,8 +1224,59 @@ function resumeClaimConstructorPipeline_() {
   });
   if (!isClaimConstructorRunActive_(result)) {
     deleteClaimConstructorContinuationTriggers_();
+    deleteClaimConstructorWatchdogTriggers_();
   }
   return result;
+}
+
+function watchClaimConstructorPipeline_() {
+  const run = loadClaimConstructorRun_();
+  if (!isClaimConstructorRunActive_(run)) {
+    deleteClaimConstructorWatchdogTriggers_();
+    return run;
+  }
+  ensureClaimConstructorWatchdogTrigger_();
+  const spreadsheet = SpreadsheetApp.openById(run.spreadsheetId);
+  if (run.phase === 'importing') {
+    const session = loadClaimConstructorBatchSession_();
+    if (session && session.constructorRunId === run.id
+      && typeof continueZupFolderImportBatch_ === 'function') {
+      return continueZupFolderImportBatch_();
+    }
+    const sheet = spreadsheet.getSheetByName(getClaimConstructorLayout_().sheetName);
+    const recovered = sheet
+      ? recoverClaimConstructorImportIfComplete_(spreadsheet, sheet, run)
+      : null;
+    if (recovered) return recovered;
+    if (typeof scheduleZupBatchImportTrigger_ === 'function') {
+      scheduleZupBatchImportTrigger_();
+    }
+    return run;
+  }
+  return continueClaimConstructorPipeline_(run.id, { spreadsheet });
+}
+
+function ensureClaimConstructorWatchdogTrigger_() {
+  const matches = ScriptApp.getProjectTriggers().filter((trigger) =>
+    trigger.getHandlerFunction
+      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION
+  );
+  matches.slice(1).forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+  if (matches.length) return matches[0];
+  return ScriptApp
+    .newTrigger(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION)
+    .timeBased()
+    .everyMinutes(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_INTERVAL_MINUTES)
+    .create();
+}
+
+function deleteClaimConstructorWatchdogTriggers_() {
+  ScriptApp.getProjectTriggers().forEach((trigger) => {
+    if (trigger.getHandlerFunction
+      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 }
 
 function scheduleClaimConstructorContinuation_() {
@@ -1355,6 +1410,7 @@ function continueClaimConstructorPipeline_(runId, options) {
       scheduleClaimConstructorContinuation_();
     } else {
       deleteClaimConstructorContinuationTriggers_();
+      deleteClaimConstructorWatchdogTriggers_();
     }
   } catch (error) {
     const failedPhase = run && getClaimConstructorPhaseOrder_().indexOf(run.phase) >= 0

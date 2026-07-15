@@ -44,6 +44,7 @@
 - [x] 5.8 Implement and test `Повторить последний запуск` as a successor run with a new run id, `parentRunId`, copied valid completed-phase markers, and restart at the first incomplete phase.
 - [x] 5.9 Test retry behavior separately for validation/import, reconstruction, calculation, and Docs failures, proving completed phases and durable results are not repeated or cleared.
 - [x] 5.10 Test repeated build, trigger, retry, and manual continuation interleavings to prove locking, run-id rejection, phase idempotency, and absence of duplicate output.
+- [x] 5.11 Add and test a deduplicated five-minute watchdog that resumes the same persisted import/post-import run when a one-shot trigger is lost and removes itself after terminal completion.
 
 ## 6. Sheet Visibility and Menu Simplification
 

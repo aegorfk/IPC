@@ -552,6 +552,10 @@ function startZupFolderImportBatch_(spreadsheet, folder, options) {
     session.constructorNextPhase = normalizedOptions.constructorNextPhase || 'reconstructing';
   }
   saveZupBatchImportSession_(session);
+  if (session.constructorRunId
+    && typeof ensureClaimConstructorWatchdogTrigger_ === 'function') {
+    ensureClaimConstructorWatchdogTrigger_();
+  }
   return continueZupFolderImportBatch_();
 }
 

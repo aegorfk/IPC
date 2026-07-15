@@ -555,10 +555,14 @@ function createHarness(sheetNames = ['Оклад']) {
         if (index >= 0) triggers.splice(index, 1);
       },
       newTrigger(handler) {
-        const trigger = { getHandlerFunction: () => handler };
+        const trigger = { getHandlerFunction: () => handler, schedule: null };
         return {
           timeBased() { return this; },
           after() { return this; },
+          everyMinutes(minutes) {
+            trigger.schedule = { type: 'minutes', minutes };
+            return this;
+          },
           create() { triggers.push(trigger); return trigger; },
         };
       },
@@ -2977,6 +2981,13 @@ function stubBatchSessionStartup(harness) {
   const joined = harness.context.buildClaimCalculation();
   assert.strictEqual(joined.run.id, oldRun.id);
   assert.strictEqual(importCalls.length, 0);
+  assert.strictEqual(
+    harness.triggers.filter((trigger) =>
+      trigger.getHandlerFunction() === 'watchClaimConstructorPipeline_'
+    ).length,
+    1,
+    'joining an active run must repair its watchdog without restarting import'
+  );
 
   oldRun.status = 'failed';
   oldRun.phase = 'failed';
@@ -3036,6 +3047,56 @@ function stubBatchSessionStartup(harness) {
   });
   assert.ok(/^complete/.test(completed.status));
   assert.deepStrictEqual(calls, ['reconstructing', 'calculating', 'writing_doc']);
+  assert.strictEqual(harness.triggers.length, 0);
+}
+
+// A recurring watchdog is the recovery path when Apps Script loses a one-shot
+// batch trigger. It joins the same session and never duplicates itself.
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({});
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  harness.scriptProperties.setProperty('ZUP_IMPORT_BATCH_STATE', JSON.stringify({
+    spreadsheetId: harness.spreadsheet.getId(),
+    constructorRunId: run.id,
+    constructorNextPhase: 'reconstructing',
+    nextIndex: 30,
+    total: 31,
+    updatedAt: '2026-07-15T14:16:00.000Z',
+  }));
+  let resumed = 0;
+  harness.context.continueZupFolderImportBatch_ = () => {
+    resumed++;
+    const session = harness.context.loadClaimConstructorBatchSession_();
+    assert.strictEqual(session.nextIndex, 30);
+    assert.strictEqual(session.constructorRunId, run.id);
+    return { complete: false, processed: 30, total: 31 };
+  };
+
+  harness.context.ensureClaimConstructorWatchdogTrigger_();
+  harness.context.ensureClaimConstructorWatchdogTrigger_();
+  const result = harness.context.watchClaimConstructorPipeline_();
+
+  const watchdogs = harness.triggers.filter((trigger) =>
+    trigger.getHandlerFunction() === 'watchClaimConstructorPipeline_'
+  );
+  assert.strictEqual(watchdogs.length, 1);
+  assert.deepStrictEqual(watchdogs[0].schedule, { type: 'minutes', minutes: 5 });
+  assert.strictEqual(resumed, 1);
+  assert.strictEqual(result.processed, 30);
+  assert.strictEqual(harness.context.loadClaimConstructorRun_().id, run.id);
+}
+
+// The watchdog removes its recurring trigger as soon as no active run remains.
+{
+  const harness = createHarness();
+  harness.context.ensureClaimConstructorWatchdogTrigger_();
+  assert.strictEqual(harness.triggers.length, 1);
+
+  const result = harness.context.watchClaimConstructorPipeline_();
+
+  assert.strictEqual(result, null);
   assert.strictEqual(harness.triggers.length, 0);
 }
 

@@ -69,6 +69,8 @@ Existing UI wrappers show modal alerts and combine computation with presentation
 
 `startZupFolderImportBatch_()` already schedules continuation when the import cannot finish in one execution. The constructor will attach its run id and next phase to the persisted batch session. When the final batch writes import outputs, it invokes a small continuation hook that advances the constructor to reconstruction and calculations.
 
+Because an Apps Script one-shot clock trigger may be delayed or disappear before the next batch runs, an active constructor run also owns one deduplicated recurring watchdog trigger. The watchdog runs every five minutes, joins the persisted run id, and invokes the same idempotent import or post-import continuation under the existing locks. It never creates a successor run and never resets `nextIndex`. The watchdog is deleted when the run reaches a terminal state, so it is a recovery path rather than a parallel scheduler.
+
 Manual `Продолжить пакетный импорт` remains callable in technical mode, but it is not part of the normal workflow. Repeated continuation calls MUST be idempotent for a completed phase.
 
 Import completion with zero calculable normalized rows is fatal. The constructor retains import diagnostics and issues but does not publish a successful zero-value calculation or update Docs.

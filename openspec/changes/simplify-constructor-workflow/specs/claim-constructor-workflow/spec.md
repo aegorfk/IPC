@@ -54,6 +54,12 @@ The system MUST persist constructor run state and automatically continue the wor
 - **THEN** the persisted batch session retains the constructor run id and pending next phase
 - **AND** the constructor displays the import as in progress
 
+#### Scenario: One-shot continuation is lost or delayed
+- **WHEN** an active import or post-import phase no longer has an effective one-shot continuation
+- **THEN** one deduplicated recurring watchdog resumes the same persisted run within its next interval
+- **AND** preserves the import `nextIndex`, completed phase results, and active run id
+- **AND** removes itself after the run reaches a terminal state
+
 #### Scenario: Final batch advances the constructor
 - **WHEN** the final scheduled import batch writes its outputs
 - **THEN** the system automatically advances the same constructor run to reconstruction and calculation
