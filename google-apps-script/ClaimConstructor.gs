@@ -11,7 +11,7 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   VISIBILITY_MODE_PROPERTY: 'CLAIM_CONSTRUCTOR_VISIBILITY_MODE',
   CONTINUATION_TRIGGER_FUNCTION: 'resumeClaimConstructorPipeline_',
   CONTINUATION_TRIGGER_DELAY_MS: 60 * 1000,
-  PHASE_EXECUTION_LEASE_MS: 15 * 60 * 1000,
+  PHASE_EXECUTION_LEASE_MS: 7 * 60 * 1000,
   RUN_STALE_MS: 6 * 60 * 60 * 1000,
   ISSUE_HEADERS: [
     'Уровень',
@@ -1216,7 +1216,7 @@ function continueClaimConstructorPipeline_(runId, options) {
         executionToken
       );
     }
-    if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
+    else if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
       const executionToken = claimClaimConstructorPhaseExecution_(runId, 'calculating');
       if (!executionToken) {
         return loadClaimConstructorRun_();
@@ -1251,7 +1251,7 @@ function continueClaimConstructorPipeline_(runId, options) {
         executionToken
       );
     }
-    if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
+    else if (run && run.phase === 'writing_doc' && run.phases.writing_doc === 'running') {
       let docs = findSuccessfulSelectedClaimDocumentByIdempotency_(spreadsheet, runId);
       const persistedExecution = run.phaseExecutions && run.phaseExecutions.writing_doc;
       const executionToken = docs && persistedExecution
@@ -1293,6 +1293,11 @@ function continueClaimConstructorPipeline_(runId, options) {
           docIssues, executionToken
         );
       }
+    }
+    if (isClaimConstructorRunActive_(run)) {
+      scheduleClaimConstructorContinuation_();
+    } else {
+      deleteClaimConstructorContinuationTriggers_();
     }
   } catch (error) {
     const failedPhase = run && getClaimConstructorPhaseOrder_().indexOf(run.phase) >= 0

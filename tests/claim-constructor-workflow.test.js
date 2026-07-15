@@ -2514,9 +2514,9 @@ function stubBatchSessionStartup(harness) {
     };
   };
 
-  const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
-    spreadsheet: harness.spreadsheet,
-  });
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.deepStrictEqual(order, ['reconstructing', 'calculating', 'writing_doc']);
   assert.strictEqual(completed.status, 'complete');
@@ -2553,6 +2553,8 @@ function stubBatchSessionStartup(harness) {
     );
   };
 
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.strictEqual(completed.status, 'complete_with_warnings');
@@ -2588,6 +2590,7 @@ function stubBatchSessionStartup(harness) {
     return { documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit' };
   };
 
+  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
   const completed = harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.deepStrictEqual(order, ['sheets', 'claim_sheet', 'docs']);
@@ -2855,7 +2858,12 @@ function stubBatchSessionStartup(harness) {
     return { documentId: `doc-${calls.length}`, url: `https://docs.google.com/document/d/doc-${calls.length}/edit` };
   };
 
-  const completed = harness.context.retryClaimCalculation();
+  let completed = harness.context.retryClaimCalculation();
+  while (completed && completed.status === 'running') {
+    completed = harness.context.continueClaimConstructorPipeline_(completed.id, {
+      spreadsheet: harness.spreadsheet,
+    });
+  }
 
   assert.deepStrictEqual(calls, expected);
   assert.strictEqual(completed.status, 'complete');
@@ -2922,10 +2930,27 @@ function stubBatchSessionStartup(harness) {
     return { documentId: 'new-doc', url: 'https://docs.google.com/document/d/new-doc/edit' };
   };
 
-  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
-  harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
+  const reconstructed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+  assert.strictEqual(reconstructed.phase, 'calculating');
+  assert.deepStrictEqual(calls, ['reconstructing']);
+  assert.strictEqual(harness.triggers.length, 1);
+  assert.strictEqual(harness.triggers[0].getHandlerFunction(), 'resumeClaimConstructorPipeline_');
 
+  const calculated = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+  assert.strictEqual(calculated.phase, 'writing_doc');
+  assert.deepStrictEqual(calls, ['reconstructing', 'calculating']);
+  assert.strictEqual(harness.triggers.length, 1);
+
+  const completed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+  assert.ok(/^complete/.test(completed.status));
   assert.deepStrictEqual(calls, ['reconstructing', 'calculating', 'writing_doc']);
+  assert.strictEqual(harness.triggers.length, 0);
 }
 
 {
@@ -2951,6 +2976,38 @@ function stubBatchSessionStartup(harness) {
   harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
 
   assert.strictEqual(reconstructionCalls, 1);
+}
+
+// Apps Script executions stop at six minutes. Keep one minute of safety, then
+// allow a later invocation to reclaim a phase left leased by a hard timeout.
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({});
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'reconstructing', 'calculating', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const first = harness.context.claimClaimConstructorPhaseExecution_(
+    run.id,
+    'calculating',
+    new Date('2026-07-15T07:00:00.000Z')
+  );
+  const stillRunning = harness.context.claimClaimConstructorPhaseExecution_(
+    run.id,
+    'calculating',
+    new Date('2026-07-15T07:06:30.000Z')
+  );
+  const reclaimed = harness.context.claimClaimConstructorPhaseExecution_(
+    run.id,
+    'calculating',
+    new Date('2026-07-15T07:07:01.000Z')
+  );
+
+  assert.ok(first);
+  assert.strictEqual(stillRunning, null);
+  assert.ok(reclaimed);
+  assert.notStrictEqual(reclaimed, first);
 }
 
 {
