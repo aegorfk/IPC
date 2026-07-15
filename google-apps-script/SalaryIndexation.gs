@@ -337,7 +337,8 @@ function updateAllSheetsIndexation() {
   showAllUpdateResults_(results);
 }
 
-function runAllSheetsIndexation_(spreadsheet) {
+function runAllSheetsIndexation_(spreadsheet, options) {
+  const calculationOptions = options || {};
   const lock = getRecoveryWriteLock_();
   let acquired = false;
   try {
@@ -353,9 +354,19 @@ function runAllSheetsIndexation_(spreadsheet) {
     } else if (typeof ensureClaimIntakeSheet_ === 'function') {
       ensureClaimIntakeSheet_(spreadsheet);
     }
-    return runAllSheetsIndexationTransaction_(spreadsheet, { lockHeld: acquired });
+    reportCalculationProgress_(calculationOptions, { stage: 'preparing' });
+    return runAllSheetsIndexationTransaction_(spreadsheet, {
+      lockHeld: acquired,
+      onProgress: calculationOptions.onProgress,
+    });
   } finally {
     if (lock && acquired) lock.releaseLock();
+  }
+}
+
+function reportCalculationProgress_(options, checkpoint) {
+  if (options && typeof options.onProgress === 'function') {
+    options.onProgress(Object.assign({ updatedAt: new Date().toISOString() }, checkpoint || {}));
   }
 }
 
@@ -396,6 +407,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
   const descriptors = discoverCalculationSheetDescriptors_(spreadsheet);
   const transactionSnapshot = snapshotCalculationTransaction_(spreadsheet, descriptors);
   try {
+    reportCalculationProgress_(transactionOptions, { stage: 'references' });
     const indexes = loadConsultantIndexes_();
     const productionCalendar = loadProductionCalendar_();
     const compensationRates = loadSalaryCompensationRates_();
@@ -422,9 +434,16 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const ordered = descriptors.slice().sort((left, right) =>
       Number(left.layout.id === 'vacation') - Number(right.layout.id === 'vacation')
     );
-    ordered.forEach((descriptor) => {
+    ordered.forEach((descriptor, descriptorIndex) => {
       const sheet = descriptor.sheet;
       const layoutId = descriptor.layout.id;
+      const progress = {
+        sheetName: sheet.getName(),
+        layoutId,
+        index: descriptorIndex + 1,
+        total: ordered.length,
+      };
+      reportCalculationProgress_(transactionOptions, Object.assign({ stage: 'sheet_started' }, progress));
       if (descriptor.ambiguous === true) {
         if (layoutId !== 'vacation') runContext.failedSourceLayouts.add(layoutId);
         results.push({
@@ -435,6 +454,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
             reason: 'Семантический адаптер не смог однозначно определить обязательный источник текущего запуска.',
           }],
         });
+        reportCalculationProgress_(transactionOptions, Object.assign({ stage: 'sheet_completed' }, progress));
         return;
       }
       if (layoutId === 'vacation' && runContext.failedSourceLayouts.size) {
@@ -449,6 +469,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
             reason: 'Отпускные сохранены без нового пересчета: обязательный источник текущего запуска завершился ошибкой или неоднозначен.',
           }],
         });
+        reportCalculationProgress_(transactionOptions, Object.assign({ stage: 'sheet_completed' }, progress));
         return;
       }
       try {
@@ -485,8 +506,10 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
           }],
         });
       }
+      reportCalculationProgress_(transactionOptions, Object.assign({ stage: 'sheet_completed' }, progress));
     });
 
+    reportCalculationProgress_(transactionOptions, { stage: 'recoveries' });
     const preparedRecoveryFacts = prepareRecoveryBaselineFacts_(
       results.reduce((facts, result) => facts.concat(result.claimFacts || []), []), recoveryState
     );
@@ -502,6 +525,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       throw new Error(recoveryWriteResult.warnings[0].reason || recoveryWriteResult.warnings[0].code);
     }
     recoveryEffects.warnings = recoveryEffects.warnings.concat(recoveryWriteResult.warnings);
+    reportCalculationProgress_(transactionOptions, { stage: 'derivatives' });
     const derivativeEffects = applyDerivativePaymentEffects_(
       detectDerivativePaymentDependencies_(spreadsheet, results, recoveryEffects)
     );
@@ -533,6 +557,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const auditFacts = results.reduce(
       (facts, result) => facts.concat(result.claimFacts || []), []
     ).concat(recoveryEffects.auditFacts || []);
+    reportCalculationProgress_(transactionOptions, { stage: 'audit' });
     if (typeof renderClaimAudit_ === 'function' && intakeSheet) {
       extendCalculationTransactionAuditSnapshot_(
         transactionSnapshot, spreadsheet, intakeSheet, auditFacts
@@ -552,6 +577,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       writeDurableUncheckedClaimKeys_(new Set(auditModel.durableUncheckedClaimKeys));
     }
     writeRecoveryBaselineRegistry_(nextRegistry);
+    reportCalculationProgress_(transactionOptions, { stage: 'complete' });
     return results;
   } catch (error) {
     rollbackCalculationTransaction_(spreadsheet, transactionSnapshot);

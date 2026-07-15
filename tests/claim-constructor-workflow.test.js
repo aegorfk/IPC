@@ -1879,6 +1879,37 @@ function stubAllSheetsCalculation(harness) {
   assert.deepStrictEqual(deleted, [], 'financial run never performs legacy sheet deletion');
 }
 
+// Long atomic calculations expose durable diagnostic boundaries without
+// changing their all-or-nothing transaction behavior.
+{
+  const harness = createHarness(['Оклад', 'Ежемесячные']);
+  stubAllSheetsCalculation(harness);
+  const checkpoints = [];
+
+  harness.context.runAllSheetsIndexation_(harness.spreadsheet, {
+    onProgress: (checkpoint) => checkpoints.push(checkpoint),
+  });
+
+  assert.deepStrictEqual(
+    checkpoints.map((checkpoint) => checkpoint.stage),
+    [
+      'preparing',
+      'references',
+      'sheet_started', 'sheet_completed',
+      'sheet_started', 'sheet_completed',
+      'recoveries',
+      'derivatives',
+      'audit',
+      'complete',
+    ]
+  );
+  assert.deepStrictEqual(
+    checkpoints.filter((checkpoint) => checkpoint.stage === 'sheet_started')
+      .map((checkpoint) => checkpoint.sheetName),
+    ['Оклад', 'Ежемесячные']
+  );
+}
+
 {
   const harness = createHarness(['Оклад', 'Ежемесячные']);
   const deleted = stubAllSheetsCalculation(harness);
@@ -2190,6 +2221,34 @@ function stubDocsHandoff(harness, ready = true) {
   assert.strictEqual(sheet.getRange(layout.status.phaseCell).getValue(), 'Распознавание расчетных листков');
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /20%/);
   assert.match(sheet.getRange(layout.status.messageCell).getValue(), /Импорт продолжается/);
+}
+
+// Calculation checkpoints survive hard timeouts and remain visible on the
+// constructor dashboard without completing the active calculation phase.
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimConstructorLayout_();
+  const run = harness.context.createClaimConstructorRun_({}, { now: new Date() });
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
+  harness.context.completeClaimConstructorPhase_(run, 'reconstructing', 'calculating', new Date());
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  assert.strictEqual(typeof harness.context.updateClaimConstructorCalculationCheckpoint_, 'function');
+  const updated = harness.context.updateClaimConstructorCalculationCheckpoint_(
+    run.id,
+    harness.spreadsheet,
+    {
+      stage: 'sheet_started', sheetName: 'Оклад', index: 1, total: 5,
+      updatedAt: '2026-07-15T08:40:00.000Z',
+    }
+  );
+
+  assert.strictEqual(updated.phase, 'calculating');
+  assert.strictEqual(updated.results.calculationCheckpoint.stage, 'sheet_started');
+  assert.strictEqual(updated.progressText, 'Рассчитываем лист 1 из 5: Оклад.');
+  assert.match(sheet.getRange(layout.status.messageCell).getValue(), /Рассчитываем лист 1 из 5: Оклад/);
 }
 
 {

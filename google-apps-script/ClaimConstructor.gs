@@ -711,6 +711,48 @@ function updateClaimConstructorImportProgress_(session) {
   return run;
 }
 
+function updateClaimConstructorCalculationCheckpoint_(runId, spreadsheet, checkpoint) {
+  const value = checkpoint || {};
+  const run = loadClaimConstructorRun_();
+  if (!run || run.id !== runId || run.status !== 'running' || run.phase !== 'calculating') {
+    return null;
+  }
+  run.results = run.results || {};
+  run.results.calculationCheckpoint = Object.assign({}, value);
+  run.progressText = formatClaimConstructorCalculationCheckpoint_(value);
+  run.updatedAt = value.updatedAt || new Date().toISOString();
+  saveClaimConstructorRun_(run);
+  const sheet = spreadsheet && spreadsheet.getSheetByName
+    ? spreadsheet.getSheetByName(getClaimConstructorLayout_().sheetName)
+    : null;
+  if (sheet) {
+    writeClaimConstructorStatus_(sheet, run);
+    if (typeof SpreadsheetApp !== 'undefined' && SpreadsheetApp.flush) {
+      SpreadsheetApp.flush();
+    }
+  }
+  return run;
+}
+
+function formatClaimConstructorCalculationCheckpoint_(checkpoint) {
+  const value = checkpoint || {};
+  const messages = {
+    preparing: 'Подготавливаем атомарный пересчет.',
+    references: 'Загружаем индексы, календарь и ставки.',
+    recoveries: 'Учитываем частичные взыскания.',
+    derivatives: 'Пересчитываем производные выплаты.',
+    audit: 'Формируем аудит и требования.',
+    complete: 'Расчетные листы пересчитаны.',
+  };
+  if (value.stage === 'sheet_started') {
+    return `Рассчитываем лист ${value.index || '?'} из ${value.total || '?'}: ${value.sheetName || 'без названия'}.`;
+  }
+  if (value.stage === 'sheet_completed') {
+    return `Лист ${value.index || '?'} из ${value.total || '?'} рассчитан: ${value.sheetName || 'без названия'}.`;
+  }
+  return messages[value.stage] || 'Пересчитываем требования.';
+}
+
 function normalizeClaimConstructorIssue_(issue) {
   const value = issue || {};
   return {
@@ -1221,7 +1263,11 @@ function continueClaimConstructorPipeline_(runId, options) {
       if (!executionToken) {
         return loadClaimConstructorRun_();
       }
-      const calculations = runAllSheetsIndexation_(spreadsheet);
+      const calculations = runAllSheetsIndexation_(spreadsheet, {
+        onProgress: (checkpoint) => updateClaimConstructorCalculationCheckpoint_(
+          runId, spreadsheet, checkpoint
+        ),
+      });
       const claimCalculation = runClaimSheetCalculation_(spreadsheet);
       const dashboard = buildClaimConstructorDashboardResult_(
         spreadsheet,
