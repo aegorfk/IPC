@@ -2793,7 +2793,11 @@ function stubBatchSessionStartup(harness) {
   harness.context.continueZupDiagnosticTargetStep_ = () => {
     chunks++;
     return chunks === 1
-      ? { complete: false, checkpoint: { diagnosticNextRow: 200, diagnosticOutputRows: 80 } }
+      ? {
+          complete: false,
+          checkpoint: { diagnosticNextRow: 200, diagnosticOutputRows: 80 },
+          progressText: 'Формируем диагностику: Оклад · 200 из 600 строк',
+        }
       : { complete: true, checkpoint: { diagnosticCommittedRows: 120 } };
   };
   const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
@@ -2806,6 +2810,7 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(partial.complete, false);
   assert.strictEqual(checkpoint.finalizationStep, 3);
   assert.strictEqual(checkpoint.diagnosticNextRow, 200);
+  assert.match(checkpoint.currentFinalizationStep, /200 из 600/);
 
   const completed = harness.context.runNextZupImportFinalizationStep_(
     harness.spreadsheet, checkpoint, inputs

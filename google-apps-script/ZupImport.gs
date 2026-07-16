@@ -957,7 +957,7 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
   Object.keys(stepResult.checkpoint || {}).forEach((key) => {
     state[key] = stepResult.checkpoint[key];
   });
-  state.currentFinalizationStep = step.label;
+  state.currentFinalizationStep = stepResult.progressText || step.label;
   state.finalizationTimings.push({
     step: step.key,
     startedAt: startedAt.toISOString(),
@@ -5733,7 +5733,11 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
     initializeZupDiagnosticSheet_(spreadsheet);
   }
   if (nextRow >= totalRows) {
-    return { complete: true, checkpoint: { diagnosticCommittedRows: baseRows + outputRows } };
+    return {
+      complete: true,
+      checkpoint: { diagnosticCommittedRows: baseRows + outputRows },
+      progressText: `Формируем диагностику: ${target.category} · завершено`,
+    };
   }
 
   const batchRows = Math.max(1, Number(ZUP_IMPORT_SETTINGS.DIAGNOSTIC_BATCH_ROWS) || 200);
@@ -5756,6 +5760,7 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
   const completedRows = nextRow + rowCount;
   return {
     complete: completedRows >= totalRows,
+    progressText: `Формируем диагностику: ${target.category} · ${completedRows} из ${totalRows} строк`,
     checkpoint: completedRows >= totalRows ? {
       diagnosticCommittedRows: baseRows + outputRows + diagnostics.length,
     } : {
