@@ -2740,8 +2740,9 @@ function stubBatchSessionStartup(harness) {
   harness.context.writeZupPaymentStructureSheet_ = () => calls.push('payment_structure');
   harness.context.continueZupDiagnosticTargetStep_ = (spreadsheet, rows, target, state, reset) => {
     calls.push(`diagnostic:${target.layoutId}:${reset ? 'reset' : 'append'}`);
-    return { complete: true, checkpoint: {} };
+    return { complete: true, checkpoint: { diagnosticCommittedRows: calls.length } };
   };
+  harness.context.trimZupDiagnosticSheet_ = () => calls.push('diagnostic:trim');
   let checkpoint = { finalizationStep: 0, finalizationTimings: [] };
   const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
 
@@ -2759,7 +2760,7 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(checkpoint.currentFinalizationStep, 'Проверяем качество импорта');
   assert.deepStrictEqual(calls, ['quality']);
 
-  while (!first.complete && checkpoint.finalizationStep < 8) {
+  while (!first.complete && checkpoint.finalizationStep < 9) {
     const next = harness.context.runNextZupImportFinalizationStep_(
       harness.spreadsheet,
       checkpoint,
@@ -2779,9 +2780,10 @@ function stubBatchSessionStartup(harness) {
     'diagnostic:quarterlyPremiums:append',
     'diagnostic:annualPremiums:append',
     'diagnostic:vacation:append',
+    'diagnostic:trim',
   ]);
-  assert.strictEqual(checkpoint.finalizationStep, 8);
-  assert.strictEqual(checkpoint.finalizationTimings.length, 8);
+  assert.strictEqual(checkpoint.finalizationStep, 9);
+  assert.strictEqual(checkpoint.finalizationTimings.length, 9);
 }
 
 // A large diagnostic family retains its finalization step until all row chunks finish.
@@ -2792,7 +2794,7 @@ function stubBatchSessionStartup(harness) {
     chunks++;
     return chunks === 1
       ? { complete: false, checkpoint: { diagnosticNextRow: 200, diagnosticOutputRows: 80 } }
-      : { complete: true, checkpoint: {} };
+      : { complete: true, checkpoint: { diagnosticCommittedRows: 120 } };
   };
   const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
   let checkpoint = { finalizationStep: 3, finalizationTimings: [] };
@@ -2809,6 +2811,7 @@ function stubBatchSessionStartup(harness) {
     harness.spreadsheet, checkpoint, inputs
   );
   assert.strictEqual(completed.checkpoint.finalizationStep, 4);
+  assert.strictEqual(completed.checkpoint.diagnosticCommittedRows, 120);
   assert.strictEqual(chunks, 2);
 }
 

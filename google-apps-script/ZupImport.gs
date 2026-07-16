@@ -939,7 +939,13 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
     execute: () => state.dryRun
       ? { complete: true, checkpoint: {} }
       : continueZupDiagnosticTargetStep_(spreadsheet, rows, target, state, index === 0),
-  })));
+  }))).concat([{
+    key: 'diagnostic_trim',
+    label: 'Завершаем диагностику',
+    execute: () => {
+      if (!state.dryRun) trimZupDiagnosticSheet_(spreadsheet, state.diagnosticCommittedRows);
+    },
+  }]);
   if (state.finalizationStep >= steps.length) {
     return { complete: true, checkpoint: state };
   }
@@ -976,7 +982,9 @@ function getZupImportFinalizationStepLabel_(stepIndex) {
     'Проверяем качество импорта',
     'Собираем свод импорта',
     'Собираем структуру выплат',
-  ].concat(getZupDiagnosticTargets_().map((target) => `Формируем диагностику: ${target.category}`));
+  ]
+    .concat(getZupDiagnosticTargets_().map((target) => `Формируем диагностику: ${target.category}`))
+    .concat(['Завершаем диагностику']);
   return labels[Number(stepIndex) || 0] || 'Завершаем импорт';
 }
 
@@ -5656,7 +5664,41 @@ function writeZupDiagnosticChunk_(sheet, diagnostics, startRow) {
   );
 }
 
+function initializeZupDiagnosticSheet_(spreadsheet) {
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  sheet
+    .getRange(1, 1, 1, ZUP_DIAGNOSTIC_HEADERS.length)
+    .setValues([ZUP_DIAGNOSTIC_HEADERS])
+    .setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  return sheet;
+}
+
+function trimZupDiagnosticSheet_(spreadsheet, committedRows) {
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  const firstStaleRow = Math.max(2, Number(committedRows) + 2 || 2);
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= firstStaleRow) {
+    sheet
+      .getRange(firstStaleRow, 1, lastRow - firstStaleRow + 1, ZUP_DIAGNOSTIC_HEADERS.length)
+      .clearContent();
+  }
+  if (typeof sheet.autoResizeColumns === 'function') {
+    sheet.autoResizeColumns(1, ZUP_DIAGNOSTIC_HEADERS.length);
+  }
+}
+
 function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state, reset) {
+  const commitTerminalRows = (diagnostics) => {
+    const baseRows = reset ? 0 : Math.max(0, Number(state.diagnosticCommittedRows) || 0);
+    if (reset) initializeZupDiagnosticSheet_(spreadsheet);
+    const diagnosticSheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+    writeZupDiagnosticChunk_(diagnosticSheet, diagnostics, baseRows + 2);
+    return {
+      complete: true,
+      checkpoint: { diagnosticCommittedRows: baseRows + diagnostics.length },
+    };
+  };
   const sourceSheet = spreadsheet
     .getSheets()
     .find((candidate) =>
@@ -5665,15 +5707,19 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
       getSheetLayout_(candidate.getName()).id === target.layoutId
     );
   if (!sourceSheet) {
-    writeZupDiagnosticTargetSheet_(spreadsheet, importRows, target, reset);
-    return { complete: true, checkpoint: {} };
+    return commitTerminalRows([[
+      target.category, '', target.category, '', '', '', '', 'Нет листа',
+      `Не найден рабочий лист для шаблона ${target.layoutId}.`,
+    ]]);
   }
 
   const table = findTable_(sourceSheet);
   const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
   if (!Number.isInteger(amountColumn)) {
-    writeZupDiagnosticTargetSheet_(spreadsheet, importRows, target, reset);
-    return { complete: true, checkpoint: {} };
+    return commitTerminalRows([[
+      sourceSheet.getName(), '', target.category, '', '', '', '', 'Нет колонки',
+      'Не найдена колонка с текущим значением для сверки.',
+    ]]);
   }
 
   const sameTarget = state.diagnosticTargetKey === target.layoutId;
@@ -5682,9 +5728,12 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
   const totalRows = Math.max(0, sourceSheet.getLastRow() - table.headerRow);
   const baseRows = sameTarget
     ? Math.max(0, Number(state.diagnosticBaseRows) || 0)
-    : prepareZupDiagnosticTargetSheet_(spreadsheet, target, reset);
+    : (reset ? 0 : Math.max(0, Number(state.diagnosticCommittedRows) || 0));
+  if (!sameTarget && reset) {
+    initializeZupDiagnosticSheet_(spreadsheet);
+  }
   if (nextRow >= totalRows) {
-    return { complete: true, checkpoint: {} };
+    return { complete: true, checkpoint: { diagnosticCommittedRows: baseRows + outputRows } };
   }
 
   const batchRows = Math.max(1, Number(ZUP_IMPORT_SETTINGS.DIAGNOSTIC_BATCH_ROWS) || 200);
@@ -5707,11 +5756,14 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
   const completedRows = nextRow + rowCount;
   return {
     complete: completedRows >= totalRows,
-    checkpoint: completedRows >= totalRows ? {} : {
+    checkpoint: completedRows >= totalRows ? {
+      diagnosticCommittedRows: baseRows + outputRows + diagnostics.length,
+    } : {
       diagnosticTargetKey: target.layoutId,
       diagnosticNextRow: completedRows,
       diagnosticOutputRows: outputRows + diagnostics.length,
       diagnosticBaseRows: baseRows,
+      diagnosticCommittedRows: Math.max(0, Number(state.diagnosticCommittedRows) || 0),
     },
   };
 }
