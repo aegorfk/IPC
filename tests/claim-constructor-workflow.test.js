@@ -1659,6 +1659,90 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(issue.suggestedAction, 'Сверить с расчетным листком');
 }
 
+// Source-level recognition issues are visible immediately and keep one stable row
+// while retries and the final audit refine their status.
+{
+  const harness = createHarness();
+  const sheet = harness.context.ensureClaimConstructorSheet_(harness.spreadsheet);
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-16T09:00:00.000Z'),
+    spreadsheetId: harness.spreadsheet.getId(),
+  });
+  run.phase = 'importing';
+  run.phases.importing = 'running';
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const session = {
+    constructorRunId: run.id,
+    spreadsheetId: harness.spreadsheet.getId(),
+    nextIndex: 1,
+    total: 3,
+    updatedAt: '2026-07-16T09:01:00.000Z',
+  };
+  const provisional = {
+    key: 'importing|vlm|листок.pdf',
+    provisional: true,
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Файл распознан через VLM.',
+    reviewStatus: 'предварительно · VLM',
+  };
+  const first = harness.context.updateClaimConstructorImportProgress_(session, [provisional]);
+  assert.strictEqual(first.issues.length, 1);
+  assert.strictEqual(first.issues[0].provisional, true);
+  assert.strictEqual(sheet.getRange(25, 4).getValue(), 'листок.pdf');
+  assert.match(sheet.getRange(25, 6).getValue(), /предварительно/);
+
+  const refined = harness.context.updateClaimConstructorImportProgress_(
+    Object.assign({}, session, { nextIndex: 2, updatedAt: '2026-07-16T09:02:00.000Z' }),
+    [Object.assign({}, provisional, { reason: 'Нужно сверить итог начислений.' })]
+  );
+  assert.strictEqual(refined.issues.length, 1);
+  assert.strictEqual(refined.issues[0].reason, 'Нужно сверить итог начислений.');
+
+  const audited = harness.context.mergeClaimConstructorIssues_(refined.issues, [{
+    key: provisional.key,
+    provisional: false,
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Итог начислений не совпадает с источником.',
+    reviewStatus: 'подтверждено аудитом',
+  }]);
+  assert.strictEqual(audited.length, 1);
+  assert.strictEqual(Boolean(audited[0].provisional), false);
+  assert.strictEqual(audited[0].reviewStatus, 'подтверждено аудитом');
+}
+
+{
+  const harness = createHarness();
+  const qualityRow = [
+    'group-1', 'листок.pdf', 'application/pdf', 'листок.pdf', 'Предупреждение', 4,
+    'Организация', 'Иванов', '06.2026', 100, 90, '', '', '', '', 'Итог начислений не совпадает.',
+  ];
+  const vlmRow = [
+    'листок.pdf', 'application/pdf', 'gemini', 'OK', 4, 0, 0, 0, 0, '', 'Низкая уверенность', '{}',
+  ];
+  const live = harness.context.buildClaimConstructorRecognitionIssues_({
+    qualityRow,
+    vlmRows: [vlmRow],
+    skippedFiles: [['листок.pdf', 'application/pdf', 'Временная ошибка чтения']],
+  });
+  assert.strictEqual(live.length, 2);
+  assert.ok(live.every((issue) => issue.provisional));
+
+  const finalIssues = harness.context.aggregateClaimConstructorIssues_({
+    qualityRows: [qualityRow],
+    vlmRows: [vlmRow],
+  });
+  assert.deepStrictEqual(
+    finalIssues.map((issue) => issue.key).sort(),
+    live.map((issue) => issue.key).sort()
+  );
+  assert.ok(finalIssues.every((issue) => !issue.provisional));
+}
+
 {
   const harness = createHarness();
   const signals = {
@@ -2654,7 +2738,9 @@ function stubBatchSessionStartup(harness) {
   harness.context.writeZupFinalQualityViews_ = () => calls.push('quality');
   harness.context.writeZupSummarySheet_ = () => calls.push('summary');
   harness.context.writeZupPaymentStructureSheet_ = () => calls.push('payment_structure');
-  harness.context.writeZupDiagnosticSheet_ = () => calls.push('diagnostic');
+  harness.context.writeZupDiagnosticTargetSheet_ = (spreadsheet, rows, target, reset) => {
+    calls.push(`diagnostic:${target.layoutId}:${reset ? 'reset' : 'append'}`);
+  };
   let checkpoint = { finalizationStep: 0, finalizationTimings: [] };
   const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
 
@@ -2672,7 +2758,7 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(checkpoint.currentFinalizationStep, 'Проверяем качество импорта');
   assert.deepStrictEqual(calls, ['quality']);
 
-  while (!first.complete && checkpoint.finalizationStep < 4) {
+  while (!first.complete && checkpoint.finalizationStep < 8) {
     const next = harness.context.runNextZupImportFinalizationStep_(
       harness.spreadsheet,
       checkpoint,
@@ -2683,9 +2769,36 @@ function stubBatchSessionStartup(harness) {
     if (next.complete) break;
   }
 
-  assert.deepStrictEqual(calls, ['quality', 'summary', 'payment_structure', 'diagnostic']);
-  assert.strictEqual(checkpoint.finalizationStep, 4);
-  assert.strictEqual(checkpoint.finalizationTimings.length, 4);
+  assert.deepStrictEqual(calls, [
+    'quality',
+    'summary',
+    'payment_structure',
+    'diagnostic:salary:reset',
+    'diagnostic:monthlyPremiums:append',
+    'diagnostic:quarterlyPremiums:append',
+    'diagnostic:annualPremiums:append',
+    'diagnostic:vacation:append',
+  ]);
+  assert.strictEqual(checkpoint.finalizationStep, 8);
+  assert.strictEqual(checkpoint.finalizationTimings.length, 8);
+}
+
+// Retrying one diagnostic target replaces its rows instead of duplicating them.
+{
+  const harness = createHarness(['Импорт_1С_Диагностика']);
+  const target = { layoutId: 'salary', category: 'Оклад' };
+  let revision = 0;
+  harness.context.buildZupDiagnosticsForTarget_ = () => [[
+    'Оклад', 2, 'Оклад', '01.2026', 100, 90, revision++, 'Не сходится', 'Проверить',
+  ]];
+
+  harness.context.writeZupDiagnosticTargetSheet_(harness.spreadsheet, [], target, true);
+  harness.context.writeZupDiagnosticTargetSheet_(harness.spreadsheet, [], target, false);
+
+  const sheet = harness.spreadsheet.getSheetByName('Импорт_1С_Диагностика');
+  assert.strictEqual(sheet.getLastRow(), 2);
+  assert.strictEqual(sheet.getRange(2, 3).getValue(), 'Оклад');
+  assert.strictEqual(sheet.getRange(2, 7).getValue(), 1);
 }
 
 // Technical-sheet presentation batches column resizing into one service call.

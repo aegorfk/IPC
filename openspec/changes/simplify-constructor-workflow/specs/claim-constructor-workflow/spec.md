@@ -70,6 +70,12 @@ The system MUST persist constructor run state and automatically continue the wor
 - **THEN** the session persists the recognized group count and enters a resumable finalization stage
 - **AND** a later continuation resumes the pending derived view instead of recognizing the last source again
 
+#### Scenario: Diagnostic audit exceeds one execution window
+- **WHEN** the final diagnostic audit must compare several calculation families
+- **THEN** each continuation materializes at most one family-specific diagnostic target
+- **AND** checkpoints the completed target before scheduling the next one
+- **AND** a retry replaces that target's diagnostic rows instead of appending duplicates
+
 #### Scenario: Reconstruction exceeds one execution window
 - **WHEN** reconstruction contains multiple target sheets or recalculation steps
 - **THEN** each continuation completes and checkpoints at most one bounded target step
@@ -101,6 +107,13 @@ The system SHALL continue every phase for which meaningful results can be calcul
 
 ### Requirement: Consolidated review issues
 The system SHALL aggregate existing import quality, VLM, diagnostic, reconstruction, and skipped-calculation signals into a concise constructor review table without removing the underlying audit records.
+
+#### Scenario: Recognition publishes provisional issues incrementally
+- **WHEN** an individual payroll-slip source finishes recognition with VLM provenance, warnings, reconciliation differences, missing fields, or a skipped-file outcome while other sources remain pending
+- **THEN** the constructor immediately publishes the source-specific issue in `Требует внимания` with a provisional review status
+- **AND** persists the same issue across later automatic continuations without waiting for import finalization
+- **AND** a retry or final audit updates the same stable issue instead of appending a duplicate
+- **AND** the final audit may resolve, confirm, or replace the provisional status without hiding unresolved issues
 
 #### Scenario: Issue contains actionable context
 - **WHEN** the system publishes a disputed item

@@ -689,7 +689,7 @@ function formatClaimConstructorTimestamp_(value) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm');
 }
 
-function updateClaimConstructorImportProgress_(session) {
+function updateClaimConstructorImportProgress_(session, recognitionIssues) {
   const value = session || {};
   if (!value.constructorRunId) {
     return null;
@@ -711,6 +711,7 @@ function updateClaimConstructorImportProgress_(session) {
     run.progressText = value.stage === 'finalizing'
       ? (value.currentFinalizationStep || 'Завершаем импорт')
       : '';
+    run.issues = mergeClaimConstructorIssues_(run.issues, recognitionIssues || []);
     run.updatedAt = value.updatedAt || new Date().toISOString();
     saveClaimConstructorRun_(run);
   } finally {
@@ -765,7 +766,7 @@ function formatClaimConstructorCalculationCheckpoint_(checkpoint) {
 
 function normalizeClaimConstructorIssue_(issue) {
   const value = issue || {};
-  return {
+  const normalized = {
     severity: value.severity === 'error' ? 'error' : 'warning',
     phase: value.phase || 'unknown',
     sourceKind: value.sourceKind || 'unknown',
@@ -777,11 +778,116 @@ function normalizeClaimConstructorIssue_(issue) {
       : value.knownImpact,
     suggestedAction: value.suggestedAction || 'Проверить исходный документ и уточнить данные.',
   };
+  if (value.provisional) normalized.provisional = true;
+  normalized.key = value.key || buildClaimConstructorIssueKey_(normalized);
+  return normalized;
+}
+
+function buildClaimConstructorIssueKey_(issue) {
+  const value = issue || {};
+  const identity = [
+    value.phase || 'unknown',
+    value.sourceKind || 'unknown',
+    value.source || '',
+    value.reason || '',
+  ].map((part) => String(part).trim().toLowerCase()).join('|');
+  let hash = 2166136261;
+  for (let index = 0; index < identity.length; index++) {
+    hash ^= identity.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `issue:${(hash >>> 0).toString(36)}`;
+}
+
+function mergeClaimConstructorIssues_(existingIssues, incomingIssues) {
+  const merged = (existingIssues || []).map((issue) => normalizeClaimConstructorIssue_(issue));
+  const indexByKey = {};
+  merged.forEach((issue, index) => {
+    indexByKey[issue.key] = index;
+  });
+  (incomingIssues || []).forEach((incoming) => {
+    const issue = normalizeClaimConstructorIssue_(incoming);
+    const existingIndex = indexByKey[issue.key];
+    if (existingIndex === undefined) {
+      indexByKey[issue.key] = merged.length;
+      merged.push(issue);
+      return;
+    }
+    if (!merged[existingIndex].provisional && issue.provisional) {
+      return;
+    }
+    merged[existingIndex] = issue;
+  });
+  return merged;
+}
+
+function buildClaimConstructorRecognitionIssues_(processed) {
+  const value = processed || {};
+  const issues = [];
+  const qualityRow = value.qualityRow || [];
+  const qualityStatus = String(qualityRow[4] || '');
+  const groupKey = qualityRow[0] || qualityRow[1] || value.fileName || '';
+  if (/(предуп|ошиб|пропущ|не распоз)/i.test(qualityStatus)) {
+    issues.push({
+      key: `importing|quality|${groupKey}`,
+      provisional: true,
+      severity: /ошиб/i.test(qualityStatus) ? 'error' : 'warning',
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source: qualityRow[1] || value.fileName || '',
+      reason: qualityRow[15] || `Статус распознавания: ${qualityStatus}.`,
+      reviewStatus: `предварительно · ${qualityStatus || 'требует проверки'}`,
+      suggestedAction: 'Сверить распознанные значения с исходным расчетным листком.',
+    });
+  }
+  (value.vlmRows || []).forEach((row) => {
+    const source = row[0] || value.fileName || '';
+    issues.push({
+      key: `importing|vlm|${source}`,
+      provisional: true,
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source,
+      reason: row[10] || 'Файл распознан с помощью VLM и требует сверки с источником.',
+      reviewStatus: `предварительно · ${row[3] || 'VLM'}`,
+      suggestedAction: 'Сверить распознанные значения с исходным расчетным листком.',
+    });
+  });
+  (value.skippedFiles || []).forEach((row) => {
+    const source = row[0] || value.fileName || '';
+    issues.push({
+      key: groupKey ? `importing|quality|${groupKey}` : `importing|skipped|${source}`,
+      provisional: true,
+      severity: 'error',
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source,
+      reason: row[2] || 'Файл не был распознан.',
+      reviewStatus: 'предварительно · файл пропущен',
+      suggestedAction: 'Проверить формат и содержимое исходного файла.',
+    });
+  });
+  return mergeClaimConstructorIssues_([], issues);
 }
 
 function aggregateClaimConstructorIssues_(signals) {
   const values = signals || {};
   const issues = [];
+  (values.qualityRows || []).forEach((row) => {
+    const status = String(row[4] || '');
+    if (!/(предуп|ошиб|пропущ|не распоз)/i.test(status)) return;
+    const groupKey = row[0] || row[1] || '';
+    issues.push(normalizeClaimConstructorIssue_({
+      key: `importing|quality|${groupKey}`,
+      severity: /ошиб/i.test(status) ? 'error' : 'warning',
+      phase: 'importing',
+      sourceKind: 'payroll_slips',
+      source: row[1] || '',
+      reason: row[15] || `Статус распознавания: ${status}.`,
+      reviewStatus: status || 'требует проверки',
+      suggestedAction: 'Сверить распознанные значения с исходным расчетным листком.',
+    }));
+  });
   (values.qualityGateRows || []).forEach((row) => {
     issues.push(normalizeClaimConstructorIssue_({
       severity: String(row[1] || '').toLowerCase().indexOf('ошиб') >= 0 ? 'error' : 'warning',
@@ -795,6 +901,7 @@ function aggregateClaimConstructorIssues_(signals) {
   });
   (values.vlmRows || []).forEach((row) => {
     issues.push(normalizeClaimConstructorIssue_({
+      key: `importing|vlm|${row[0] || ''}`,
       phase: 'importing',
       sourceKind: 'payroll_slips',
       source: row[0] || '',
@@ -807,7 +914,7 @@ function aggregateClaimConstructorIssues_(signals) {
   appendClaimConstructorSignalIssues_(issues, values.reconstructionIssues, 'reconstructing');
   appendClaimConstructorSignalIssues_(issues, values.skippedCalculationIssues, 'calculating');
   appendClaimConstructorSignalIssues_(issues, values.calculationEffectIssues, 'calculating');
-  return issues;
+  return mergeClaimConstructorIssues_([], issues);
 }
 
 function appendClaimConstructorSignalIssues_(target, sourceIssues, phase) {
@@ -1497,7 +1604,7 @@ function failClaimConstructorRuntime_(runId, failedPhase, error) {
     run.phase = 'failed';
     run.failedPhase = failedPhase;
     run.progressText = `Этап завершился ошибкой: ${reason}`;
-    run.issues.push(normalizeClaimConstructorIssue_({
+    run.issues = mergeClaimConstructorIssues_(run.issues, [{
       severity: 'error',
       phase: failedPhase,
       sourceKind: 'system',
@@ -1505,7 +1612,7 @@ function failClaimConstructorRuntime_(runId, failedPhase, error) {
       reviewStatus: 'фатальная ошибка',
       knownImpact: 'этап не завершен',
       suggestedAction: 'Устранить причину и выбрать «Повторить последний запуск».',
-    }));
+    }]);
     run.updatedAt = new Date().toISOString();
     run.completedAt = run.updatedAt;
     saveClaimConstructorRun_(run);
@@ -1531,7 +1638,7 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
     Object.keys(additionalResults || {}).forEach((key) => {
       run.results[key] = additionalResults[key];
     });
-    (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
     delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
     run.progressText = progressText || run.progressText;
@@ -1593,7 +1700,7 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
       run.results.dashboard.output.docUrl = result.url;
       run.inputs.docUrl = result.url;
     }
-    (issues || []).forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
     delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
     const hasWarnings = run.issues.length > 0;
@@ -1674,6 +1781,7 @@ function buildClaimConstructorDashboardResult_(spreadsheet, calculationResults, 
 }
 
 function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult, calculationResults) {
+  const qualityRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_Качество');
   const qualityGateRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_QG')
     .filter((row) => String(row[1] || '').toLowerCase() !== 'инфо');
   const vlmRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_VLM');
@@ -1709,6 +1817,7 @@ function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult,
       }))
     : [];
   return {
+    qualityRows,
     qualityGateRows,
     vlmRows,
     diagnosticIssues,
@@ -1766,7 +1875,7 @@ function appendClaimConstructorIssuesToRun_(runId, expectedPhase, issues) {
     if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running') {
       return null;
     }
-    issues.forEach((issue) => run.issues.push(normalizeClaimConstructorIssue_(issue)));
+    run.issues = mergeClaimConstructorIssues_(run.issues, issues);
     run.updatedAt = new Date().toISOString();
     saveClaimConstructorRun_(run);
     return run;
@@ -1795,7 +1904,7 @@ function failClaimConstructorRunAfterImport_(runId, importResult) {
         ? importResult.skippedCount
         : (importResult.skippedFiles || []).length,
     };
-    run.issues.push(normalizeClaimConstructorIssue_({
+    run.issues = mergeClaimConstructorIssues_(run.issues, [{
       severity: 'error',
       phase: 'importing',
       sourceKind: 'payroll_slips',
@@ -1803,7 +1912,7 @@ function failClaimConstructorRunAfterImport_(runId, importResult) {
       reviewStatus: 'фатальная проверка',
       knownImpact: 'расчет не выполнен',
       suggestedAction: 'Проверить исходные файлы и повторить импорт.',
-    }));
+    }]);
     run.status = 'failed';
     run.phase = 'failed';
     run.failedPhase = 'importing';

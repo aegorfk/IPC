@@ -756,6 +756,28 @@ function continueZupFolderImportBatch_() {
       if (session.recognitionTimings.length > 100) {
         session.recognitionTimings = session.recognitionTimings.slice(-100);
       }
+      session.updatedAt = groupFinishedAt.toISOString();
+      writeZupBatchImportOutputs_(
+        spreadsheet,
+        flattenZupRowsByFile_(rowsByFile),
+        dedupeZupSkippedFiles_(skippedFiles),
+        qualityRowsByGroup,
+        stateRowsByGroup,
+        vlmRows,
+        session,
+        false
+      );
+      saveZupBatchImportSession_(session);
+      if (session.constructorRunId && typeof updateClaimConstructorImportProgress_ === 'function') {
+        try {
+          const recognitionIssues = typeof buildClaimConstructorRecognitionIssues_ === 'function'
+            ? buildClaimConstructorRecognitionIssues_(processed)
+            : [];
+          updateClaimConstructorImportProgress_(session, recognitionIssues);
+        } catch (error) {
+          console.warn(`Не удалось опубликовать замечания распознавания: ${error && error.message ? error.message : error}`);
+        }
+      }
     }
 
     const recognitionComplete = session.nextIndex >= groups.length;
@@ -893,6 +915,7 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
   const values = inputs || {};
   const rows = values.rows || [];
   const qualityRowsByGroup = values.qualityRowsByGroup || {};
+  const diagnosticTargets = getZupDiagnosticTargets_();
   const steps = [
     {
       key: 'quality',
@@ -909,12 +932,13 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
       label: 'Собираем структуру выплат',
       execute: () => { if (!state.dryRun) writeZupPaymentStructureSheet_(spreadsheet, rows); },
     },
-    {
-      key: 'diagnostic',
-      label: 'Формируем диагностику',
-      execute: () => { if (!state.dryRun) writeZupDiagnosticSheet_(spreadsheet, rows); },
+  ].concat(diagnosticTargets.map((target, index) => ({
+    key: `diagnostic_${target.layoutId}`,
+    label: `Формируем диагностику: ${target.category}`,
+    execute: () => {
+      if (!state.dryRun) writeZupDiagnosticTargetSheet_(spreadsheet, rows, target, index === 0);
     },
-  ];
+  })));
   if (state.finalizationStep >= steps.length) {
     return { complete: true, checkpoint: state };
   }
@@ -938,12 +962,12 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
 }
 
 function getZupImportFinalizationStepLabel_(stepIndex) {
-  return [
+  const labels = [
     'Проверяем качество импорта',
     'Собираем свод импорта',
     'Собираем структуру выплат',
-    'Формируем диагностику',
-  ][Number(stepIndex) || 0] || 'Завершаем импорт';
+  ].concat(getZupDiagnosticTargets_().map((target) => `Формируем диагностику: ${target.category}`));
+  return labels[Number(stepIndex) || 0] || 'Завершаем импорт';
 }
 
 function writeZupFinalQualityViews_(spreadsheet, rows, qualityRowsByGroup, session) {
@@ -5575,9 +5599,36 @@ function moneyOrBlank_(value) {
   return value ? roundMoney_(value) : '';
 }
 
+function getZupDiagnosticTargets_() {
+  return [
+    { layoutId: 'salary', category: 'Оклад' },
+    { layoutId: 'monthlyPremiums', category: 'Ежемесячные премии' },
+    { layoutId: 'quarterlyPremiums', category: 'Ежеквартальные премии' },
+    { layoutId: 'annualPremiums', category: 'Ежегодные премии' },
+    { layoutId: 'vacation', category: 'Отпуска', vacationBase: true },
+  ];
+}
+
 function writeZupDiagnosticSheet_(spreadsheet, rows) {
   const diagnostics = buildZupDiagnostics_(spreadsheet, rows);
   const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  writeZupDiagnosticRows_(sheet, diagnostics);
+}
+
+function writeZupDiagnosticTargetSheet_(spreadsheet, rows, target, reset) {
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  let existing = [];
+  if (!reset && sheet.getLastRow() >= 2) {
+    existing = sheet
+      .getRange(2, 1, sheet.getLastRow() - 1, ZUP_DIAGNOSTIC_HEADERS.length)
+      .getValues()
+      .filter((row) => row[2] !== target.category);
+  }
+  const diagnostics = existing.concat(buildZupDiagnosticsForTarget_(spreadsheet, rows, target));
+  writeZupDiagnosticRows_(sheet, diagnostics);
+}
+
+function writeZupDiagnosticRows_(sheet, diagnostics) {
   const data = [ZUP_DIAGNOSTIC_HEADERS].concat(diagnostics);
   writeZupSheetData_(sheet, data);
   if (diagnostics.length) {
@@ -5589,87 +5640,84 @@ function writeZupDiagnosticSheet_(spreadsheet, rows) {
 }
 
 function buildZupDiagnostics_(spreadsheet, importRows) {
+  return getZupDiagnosticTargets_().reduce(
+    (diagnostics, target) => diagnostics.concat(
+      buildZupDiagnosticsForTarget_(spreadsheet, importRows, target)
+    ),
+    []
+  );
+}
+
+function buildZupDiagnosticsForTarget_(spreadsheet, importRows, target) {
   const index = buildZupImportAccrualIndex_(importRows);
   const diagnostics = [];
-  const targets = [
-    { layoutId: 'salary', category: 'Оклад' },
-    { layoutId: 'monthlyPremiums', category: 'Ежемесячные премии' },
-    { layoutId: 'quarterlyPremiums', category: 'Ежеквартальные премии' },
-    { layoutId: 'annualPremiums', category: 'Ежегодные премии' },
-    { layoutId: 'vacation', category: 'Отпуска', vacationBase: true },
-  ];
+  const sheet = spreadsheet
+    .getSheets()
+    .find((candidate) =>
+      !isZupGeneratedSheet_(candidate.getName()) &&
+      !isGeneratedSheetName_(candidate.getName()) &&
+      getSheetLayout_(candidate.getName()).id === target.layoutId
+    );
+  if (!sheet) {
+    return [[
+      target.category,
+      '',
+      target.category,
+      '',
+      '',
+      '',
+      '',
+      'Нет листа',
+      `Не найден рабочий лист для шаблона ${target.layoutId}.`,
+    ]];
+  }
 
-  targets.forEach((target) => {
-    const sheet = spreadsheet
-      .getSheets()
-      .find((candidate) =>
-        !isZupGeneratedSheet_(candidate.getName()) &&
-        !isGeneratedSheetName_(candidate.getName()) &&
-        getSheetLayout_(candidate.getName()).id === target.layoutId
-      );
-    if (!sheet) {
-      diagnostics.push([
-        target.category,
-        '',
-        target.category,
-        '',
-        '',
-        '',
-        '',
-        'Нет листа',
-        `Не найден рабочий лист для шаблона ${target.layoutId}.`,
-      ]);
+  const table = findTable_(sheet);
+  const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
+  if (!Number.isInteger(amountColumn)) {
+    return [[
+      sheet.getName(),
+      '',
+      target.category,
+      '',
+      '',
+      '',
+      '',
+      'Нет колонки',
+      'Не найдена колонка с текущим значением для сверки.',
+    ]];
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= table.headerRow) {
+    return diagnostics;
+  }
+
+  const values = sheet
+    .getRange(table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn())
+    .getValues();
+
+  values.forEach((row, rowIndex) => {
+    const spreadsheetValue = parseMoney_(row[amountColumn]);
+    if (spreadsheetValue === null) {
       return;
     }
 
-    const table = findTable_(sheet);
-    const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
-    if (!Number.isInteger(amountColumn)) {
-      diagnostics.push([
-        sheet.getName(),
-        '',
-        target.category,
-        '',
-        '',
-        '',
-        '',
-        'Нет колонки',
-        'Не найдена колонка с текущим значением для сверки.',
-      ]);
-      return;
-    }
+    const imported = target.vacationBase
+      ? getZupImportedVacationBase_(index, row, table)
+      : (target.category === 'Оклад'
+        ? getZupImportedSalaryAccrual_(index, parseRowPeriod_(row, table.columns))
+        : getZupImportedAccrual_(index, target.category, parseRowPeriod_(row, table.columns)));
 
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= table.headerRow) {
-      return;
-    }
-
-    const values = sheet
-      .getRange(table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn())
-      .getValues();
-
-    values.forEach((row, rowIndex) => {
-      const spreadsheetValue = parseMoney_(row[amountColumn]);
-      if (spreadsheetValue === null) {
-        return;
-      }
-
-      const imported = target.vacationBase
-        ? getZupImportedVacationBase_(index, row, table)
-        : (target.category === 'Оклад'
-          ? getZupImportedSalaryAccrual_(index, parseRowPeriod_(row, table.columns))
-          : getZupImportedAccrual_(index, target.category, parseRowPeriod_(row, table.columns)));
-
-      diagnostics.push(buildZupDiagnosticRow_({
-        sheetName: sheet.getName(),
-        rowNumber: table.headerRow + 1 + rowIndex,
-        category: target.category,
-        period: imported.period,
-        spreadsheetValue,
-        importedValue: imported.amount,
-        details: imported.details,
-      }));
-    });
+    diagnostics.push(buildZupDiagnosticRow_({
+      sheetName: sheet.getName(),
+      rowNumber: table.headerRow + 1 + rowIndex,
+      category: target.category,
+      period: imported.period,
+      spreadsheetValue,
+      importedValue: imported.amount,
+      details: imported.details,
+    }));
   });
 
   return diagnostics;
