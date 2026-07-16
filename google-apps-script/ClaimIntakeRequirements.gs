@@ -537,7 +537,15 @@ function findCalculatedAverageEarningsFromDescriptors_(descriptors) {
       descriptor.headerRow + 1, 1, rowCount, sheet.getLastColumn()
     ).getDisplayValues();
     for (let rowIndex = values.length - 1; rowIndex >= 0; rowIndex--) {
-      const amount = parseClaimPositiveAmount_(values[rowIndex][columns.averageDailyEarning]);
+      const annualSalary = Number.isInteger(columns.correctAnnualSalary)
+        ? parseClaimPositiveAmount_(values[rowIndex][columns.correctAnnualSalary])
+        : null;
+      const divisor = Number.isInteger(columns.annualSalaryDivisor)
+        ? parseClaimPositiveAmount_(values[rowIndex][columns.annualSalaryDivisor])
+        : null;
+      const amount = annualSalary !== null && divisor !== null
+        ? roundMoney_(annualSalary / divisor)
+        : parseClaimPositiveAmount_(values[rowIndex][columns.averageDailyEarning]);
       if (amount === null) continue;
       latest = {
         amount,

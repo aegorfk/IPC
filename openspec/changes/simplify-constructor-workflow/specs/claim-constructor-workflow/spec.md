@@ -41,6 +41,13 @@ The system SHALL execute import, reconstruction, Sheets calculation, and Docs ha
 - **THEN** every displayed total is read from the structured result of an existing Sheets calculation or from cells updated by that calculation
 - **AND** the constructor does not maintain an independent parallel formula for the same amount
 
+#### Scenario: Reconstructed average earnings is the default
+- **WHEN** reconstructed payroll cash flows provide the inputs required by the existing average-earnings methodology
+- **THEN** the system recalculates and writes the system average-earnings amount and its period/date context to `Анкета и требования`
+- **AND** uses `Рассчитанный системой` by default for calculations and Docs generation
+- **AND** preserves a user-entered amount as a separate exceptional scenario and uses it only after the user explicitly selects `Заданный вручную`
+- **AND** does not substitute actual bank payments for the reconstructed payroll cash flows
+
 ### Requirement: Automatic resumable continuation
 The system MUST persist constructor run state and automatically continue the workflow after an existing resumable import batch completes, without requiring the normal user to invoke a manual resume command. State transitions MUST enforce a single active run through document locking, active run-id comparison, and expected-phase comparison.
 

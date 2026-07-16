@@ -3946,6 +3946,52 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(questionnaire.getRange(layout.finalAverageScenario.valueCell).getValue(), 'Заданный вручную');
 }
 
+// The real calculation-sheet header must be discovered semantically and its
+// reconstructed cash-flow average must become the default questionnaire value.
+{
+  const harness = createHarness(['Отпуска и расчет']);
+  const source = harness.spreadsheet.getSheetByName('Отпуска и расчет');
+  source.getRange(1, 1, 1, 12).setValues([[
+    'Дата выплаты',
+    'Сумма корректного годового заработка',
+    'Дни, среднемесячное число (06.10.2023)',
+    'Количество дней, подлежащих компенсации',
+    'Среднедневной заработок',
+    '',
+    'Дата выплаты',
+    'Начислено по расчетным листкам',
+    'Корректное начисление (с индексацией)',
+    'Недоплата по выплатам',
+    'Сумма индексации недоплаты на момент подачи иска (20.05.2026)',
+    'Пени за несвоевременную выплату (ст. 236 ТК РФ)',
+  ]]);
+  source.getRange(2, 1, 2, 12).setValues([
+    [
+      '13.02.2024', 2273329.03, 114.13, 1, 19918.77, '',
+      '13.02.2024', 3024.81, 19918.77, 16893.96, 3037.87, 16726.71,
+    ],
+    [
+      '21.04.2026', 4390930.68, 304, 24.33, 2714.63, '',
+      '21.04.2026', 82450.23, 351418.89, 268968.66, 236, 7584.91,
+    ],
+  ]);
+  const questionnaire = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+
+  const descriptors = harness.context.discoverCalculationSheetDescriptors_(harness.spreadsheet);
+  const synced = harness.context.syncCalculatedAverageEarningsFromDescriptors_(
+    harness.spreadsheet, descriptors
+  );
+
+  assert.ok(synced, 'Реальный отпускной лист должен давать рассчитанный сценарий');
+  assert.strictEqual(synced.amount, 14443.85);
+  assert.strictEqual(questionnaire.getRange(layout.calculatedAverage.valueCell).getValue(), 14443.85);
+  assert.strictEqual(
+    questionnaire.getRange(layout.finalAverageScenario.valueCell).getValue(),
+    'Рассчитанный системой'
+  );
+}
+
 {
   const harness = createHarness();
   harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);

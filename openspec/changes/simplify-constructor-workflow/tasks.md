@@ -51,6 +51,7 @@
 - [x] 5.15 Split final diagnostic audit into idempotent family-specific and row-chunk checkpoints so one large calculation sheet cannot restart the whole audit.
 - [x] 5.16 Remove optional cross-sheet diagnostics from the constructor's critical path while preserving the resumable technical diagnostic operation.
 - [x] 5.17 Classify transient Google service failures, release only the current phase lease, and automatically retry the same persisted checkpoint up to a bounded limit before failing the run.
+- [x] 5.18 Recognize the existing vacation/average-earnings sheet semantically, synchronize the reconstructed system average into the questionnaire, and keep manual average earnings as an explicitly selected exception.
 
 ## 6. Sheet Visibility and Menu Simplification
 
