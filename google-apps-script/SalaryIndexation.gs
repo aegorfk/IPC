@@ -23,6 +23,7 @@ const SETTINGS = {
   TOTAL_UNDERPAYMENT_COLUMN: 'L',
   PENALTY_COLUMN: 'M',
   HEADER_SCAN_ROWS: 20,
+  HEADER_SCAN_COLUMNS: 100,
   IPC_FORMAT: '0.0000',
   MONEY_FORMAT: '#,##0.00',
   BACKGROUND_DEFAULT: '#ffffff',
@@ -2797,7 +2798,12 @@ function findTable_(sheet, descriptor) {
     return {
       headerRow: resolvedDescriptor.headerRow,
       headerValues: resolvedDescriptor.headerValues || sheet
-        .getRange(resolvedDescriptor.headerRow, 1, 1, sheet.getLastColumn())
+        .getRange(
+          resolvedDescriptor.headerRow,
+          1,
+          1,
+          Math.min(SETTINGS.HEADER_SCAN_COLUMNS, sheet.getLastColumn())
+        )
         .getDisplayValues()[0],
       layout: resolvedDescriptor.layout,
       columns: Object.assign({}, resolvedDescriptor.semanticColumns),
@@ -2813,7 +2819,7 @@ function findTable_(sheet, descriptor) {
       ? resolvedDescriptor.layout || resolvedDescriptor
       : generatedLayout;
     const headerValues = sheet
-      .getRange(layout.headerRow, 1, 1, sheet.getLastColumn())
+      .getRange(layout.headerRow, 1, 1, Math.min(SETTINGS.HEADER_SCAN_COLUMNS, sheet.getLastColumn()))
       .getDisplayValues()[0];
 
     return {
@@ -2849,7 +2855,7 @@ function findTable_(sheet, descriptor) {
   }
 
   const scanRows = Math.min(SETTINGS.HEADER_SCAN_ROWS, sheet.getLastRow());
-  const lastColumn = sheet.getLastColumn();
+  const lastColumn = Math.min(SETTINGS.HEADER_SCAN_COLUMNS, sheet.getLastColumn());
   const rows = sheet.getRange(1, 1, scanRows, lastColumn).getDisplayValues();
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
@@ -2892,7 +2898,9 @@ function resolveSheetLayout_(sheet) {
   const rowCount = typeof sheet.getLastRow === 'function'
     ? Math.min(SETTINGS.HEADER_SCAN_ROWS, sheet.getLastRow())
     : 0;
-  const columnCount = typeof sheet.getLastColumn === 'function' ? sheet.getLastColumn() : 0;
+  const columnCount = typeof sheet.getLastColumn === 'function'
+    ? Math.min(SETTINGS.HEADER_SCAN_COLUMNS, sheet.getLastColumn())
+    : 0;
   if (rowCount > 0 && columnCount > 0) {
     let rows = [];
     try {
