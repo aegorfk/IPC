@@ -39,6 +39,7 @@ const ZUP_IMPORT_SETTINGS = {
   BATCH_TIME_BUDGET_MS: 210 * 1000,
   BATCH_TIME_MARGIN_MS: 30 * 1000,
   BATCH_MAX_FILES: 2,
+  DIAGNOSTIC_BATCH_ROWS: 200,
   REVIEW_FILL: '#f4b183',
   SOURCE_FILL: '#d9ead3',
 };
@@ -935,9 +936,9 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
   ].concat(diagnosticTargets.map((target, index) => ({
     key: `diagnostic_${target.layoutId}`,
     label: `Формируем диагностику: ${target.category}`,
-    execute: () => {
-      if (!state.dryRun) writeZupDiagnosticTargetSheet_(spreadsheet, rows, target, index === 0);
-    },
+    execute: () => state.dryRun
+      ? { complete: true, checkpoint: {} }
+      : continueZupDiagnosticTargetStep_(spreadsheet, rows, target, state, index === 0),
   })));
   if (state.finalizationStep >= steps.length) {
     return { complete: true, checkpoint: state };
@@ -945,8 +946,11 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
 
   const step = steps[state.finalizationStep];
   const startedAt = now();
-  step.execute();
+  const stepResult = step.execute() || { complete: true, checkpoint: {} };
   const finishedAt = now();
+  Object.keys(stepResult.checkpoint || {}).forEach((key) => {
+    state[key] = stepResult.checkpoint[key];
+  });
   state.currentFinalizationStep = step.label;
   state.finalizationTimings.push({
     step: step.key,
@@ -954,7 +958,13 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
     finishedAt: finishedAt.toISOString(),
     durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
   });
-  state.finalizationStep++;
+  if (stepResult.complete !== false) {
+    state.finalizationStep++;
+    delete state.diagnosticTargetKey;
+    delete state.diagnosticNextRow;
+    delete state.diagnosticOutputRows;
+    delete state.diagnosticBaseRows;
+  }
   return {
     complete: state.finalizationStep >= steps.length,
     checkpoint: state,
@@ -5616,6 +5626,13 @@ function writeZupDiagnosticSheet_(spreadsheet, rows) {
 }
 
 function writeZupDiagnosticTargetSheet_(spreadsheet, rows, target, reset) {
+  const baseRows = prepareZupDiagnosticTargetSheet_(spreadsheet, target, reset);
+  const diagnostics = buildZupDiagnosticsForTarget_(spreadsheet, rows, target);
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  writeZupDiagnosticChunk_(sheet, diagnostics, baseRows + 2);
+}
+
+function prepareZupDiagnosticTargetSheet_(spreadsheet, target, reset) {
   const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
   let existing = [];
   if (!reset && sheet.getLastRow() >= 2) {
@@ -5624,8 +5641,79 @@ function writeZupDiagnosticTargetSheet_(spreadsheet, rows, target, reset) {
       .getValues()
       .filter((row) => row[2] !== target.category);
   }
-  const diagnostics = existing.concat(buildZupDiagnosticsForTarget_(spreadsheet, rows, target));
-  writeZupDiagnosticRows_(sheet, diagnostics);
+  writeZupDiagnosticRows_(sheet, existing);
+  return existing.length;
+}
+
+function writeZupDiagnosticChunk_(sheet, diagnostics, startRow) {
+  if (!diagnostics.length) return;
+  sheet
+    .getRange(startRow, 1, diagnostics.length, ZUP_DIAGNOSTIC_HEADERS.length)
+    .setValues(rectangularizeRows_(diagnostics));
+  sheet.getRange(startRow, 5, diagnostics.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+  highlightZupRows_(sheet, diagnostics, startRow, ZUP_DIAGNOSTIC_HEADERS.length, (row) =>
+    row[7] && row[7] !== 'Сходится'
+  );
+}
+
+function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state, reset) {
+  const sourceSheet = spreadsheet
+    .getSheets()
+    .find((candidate) =>
+      !isZupGeneratedSheet_(candidate.getName()) &&
+      !isGeneratedSheetName_(candidate.getName()) &&
+      getSheetLayout_(candidate.getName()).id === target.layoutId
+    );
+  if (!sourceSheet) {
+    writeZupDiagnosticTargetSheet_(spreadsheet, importRows, target, reset);
+    return { complete: true, checkpoint: {} };
+  }
+
+  const table = findTable_(sourceSheet);
+  const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
+  if (!Number.isInteger(amountColumn)) {
+    writeZupDiagnosticTargetSheet_(spreadsheet, importRows, target, reset);
+    return { complete: true, checkpoint: {} };
+  }
+
+  const sameTarget = state.diagnosticTargetKey === target.layoutId;
+  const nextRow = sameTarget ? Math.max(0, Number(state.diagnosticNextRow) || 0) : 0;
+  const outputRows = sameTarget ? Math.max(0, Number(state.diagnosticOutputRows) || 0) : 0;
+  const totalRows = Math.max(0, sourceSheet.getLastRow() - table.headerRow);
+  const baseRows = sameTarget
+    ? Math.max(0, Number(state.diagnosticBaseRows) || 0)
+    : prepareZupDiagnosticTargetSheet_(spreadsheet, target, reset);
+  if (nextRow >= totalRows) {
+    return { complete: true, checkpoint: {} };
+  }
+
+  const batchRows = Math.max(1, Number(ZUP_IMPORT_SETTINGS.DIAGNOSTIC_BATCH_ROWS) || 200);
+  const rowCount = Math.min(batchRows, totalRows - nextRow);
+  const sourceStartRow = table.headerRow + 1 + nextRow;
+  const values = sourceSheet
+    .getRange(sourceStartRow, 1, rowCount, sourceSheet.getLastColumn())
+    .getValues();
+  const index = buildZupImportAccrualIndex_(importRows);
+  const diagnostics = buildZupDiagnosticRowsFromValues_(
+    index,
+    sourceSheet,
+    table,
+    target,
+    values,
+    sourceStartRow
+  );
+  const diagnosticSheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.DIAGNOSTIC_SHEET_NAME);
+  writeZupDiagnosticChunk_(diagnosticSheet, diagnostics, baseRows + outputRows + 2);
+  const completedRows = nextRow + rowCount;
+  return {
+    complete: completedRows >= totalRows,
+    checkpoint: completedRows >= totalRows ? {} : {
+      diagnosticTargetKey: target.layoutId,
+      diagnosticNextRow: completedRows,
+      diagnosticOutputRows: outputRows + diagnostics.length,
+      diagnosticBaseRows: baseRows,
+    },
+  };
 }
 
 function writeZupDiagnosticRows_(sheet, diagnostics) {
@@ -5697,6 +5785,19 @@ function buildZupDiagnosticsForTarget_(spreadsheet, importRows, target) {
     .getRange(table.headerRow + 1, 1, lastRow - table.headerRow, sheet.getLastColumn())
     .getValues();
 
+  return buildZupDiagnosticRowsFromValues_(
+    index,
+    sheet,
+    table,
+    target,
+    values,
+    table.headerRow + 1
+  );
+}
+
+function buildZupDiagnosticRowsFromValues_(index, sheet, table, target, values, sourceStartRow) {
+  const diagnostics = [];
+  const amountColumn = resolveZupDiagnosticAmountColumn_(table, target);
   values.forEach((row, rowIndex) => {
     const spreadsheetValue = parseMoney_(row[amountColumn]);
     if (spreadsheetValue === null) {
@@ -5711,7 +5812,7 @@ function buildZupDiagnosticsForTarget_(spreadsheet, importRows, target) {
 
     diagnostics.push(buildZupDiagnosticRow_({
       sheetName: sheet.getName(),
-      rowNumber: table.headerRow + 1 + rowIndex,
+      rowNumber: sourceStartRow + rowIndex,
       category: target.category,
       period: imported.period,
       spreadsheetValue,

@@ -48,7 +48,7 @@
 - [x] 5.12 Split recognition completion from derived import-sheet materialization, persist an explicit import stage/finalization checkpoint, and prove a timeout after the last source resumes finalization without recognizing that source again.
 - [x] 5.13 Add a persisted per-target reconstruction checkpoint with step duration/heartbeat reporting, execute one bounded reconstruction target per continuation, and preserve the legacy synchronous wrapper.
 - [x] 5.14 Publish source-level provisional review issues after every durably committed recognition result, reconcile them by stable issue identity during retries/final audit, and test that automatic continuations never duplicate or hide unresolved issues.
-- [x] 5.15 Split final diagnostic audit into idempotent family-specific checkpoints so one slow diagnostic target cannot restart the whole audit.
+- [x] 5.15 Split final diagnostic audit into idempotent family-specific and row-chunk checkpoints so one large calculation sheet cannot restart the whole audit.
 
 ## 6. Sheet Visibility and Menu Simplification
 

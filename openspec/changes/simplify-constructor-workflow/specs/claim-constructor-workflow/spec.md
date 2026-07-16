@@ -72,9 +72,9 @@ The system MUST persist constructor run state and automatically continue the wor
 
 #### Scenario: Diagnostic audit exceeds one execution window
 - **WHEN** the final diagnostic audit must compare several calculation families
-- **THEN** each continuation materializes at most one family-specific diagnostic target
-- **AND** checkpoints the completed target before scheduling the next one
-- **AND** a retry replaces that target's diagnostic rows instead of appending duplicates
+- **THEN** each continuation materializes at most one bounded row chunk inside one family-specific diagnostic target
+- **AND** checkpoints both the completed source-row offset and output-row offset before scheduling the next chunk or target
+- **AND** a retry overwrites the same deterministic diagnostic range instead of appending duplicates
 
 #### Scenario: Reconstruction exceeds one execution window
 - **WHEN** reconstruction contains multiple target sheets or recalculation steps

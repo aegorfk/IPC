@@ -2738,8 +2738,9 @@ function stubBatchSessionStartup(harness) {
   harness.context.writeZupFinalQualityViews_ = () => calls.push('quality');
   harness.context.writeZupSummarySheet_ = () => calls.push('summary');
   harness.context.writeZupPaymentStructureSheet_ = () => calls.push('payment_structure');
-  harness.context.writeZupDiagnosticTargetSheet_ = (spreadsheet, rows, target, reset) => {
+  harness.context.continueZupDiagnosticTargetStep_ = (spreadsheet, rows, target, state, reset) => {
     calls.push(`diagnostic:${target.layoutId}:${reset ? 'reset' : 'append'}`);
+    return { complete: true, checkpoint: {} };
   };
   let checkpoint = { finalizationStep: 0, finalizationTimings: [] };
   const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
@@ -2781,6 +2782,34 @@ function stubBatchSessionStartup(harness) {
   ]);
   assert.strictEqual(checkpoint.finalizationStep, 8);
   assert.strictEqual(checkpoint.finalizationTimings.length, 8);
+}
+
+// A large diagnostic family retains its finalization step until all row chunks finish.
+{
+  const harness = createHarness();
+  let chunks = 0;
+  harness.context.continueZupDiagnosticTargetStep_ = () => {
+    chunks++;
+    return chunks === 1
+      ? { complete: false, checkpoint: { diagnosticNextRow: 200, diagnosticOutputRows: 80 } }
+      : { complete: true, checkpoint: {} };
+  };
+  const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
+  let checkpoint = { finalizationStep: 3, finalizationTimings: [] };
+
+  const partial = harness.context.runNextZupImportFinalizationStep_(
+    harness.spreadsheet, checkpoint, inputs
+  );
+  checkpoint = partial.checkpoint;
+  assert.strictEqual(partial.complete, false);
+  assert.strictEqual(checkpoint.finalizationStep, 3);
+  assert.strictEqual(checkpoint.diagnosticNextRow, 200);
+
+  const completed = harness.context.runNextZupImportFinalizationStep_(
+    harness.spreadsheet, checkpoint, inputs
+  );
+  assert.strictEqual(completed.checkpoint.finalizationStep, 4);
+  assert.strictEqual(chunks, 2);
 }
 
 // Retrying one diagnostic target replaces its rows instead of duplicating them.
