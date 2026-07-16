@@ -91,6 +91,12 @@ The system MUST persist constructor run state and automatically continue the wor
 - **WHEN** a scheduled or manual continuation carries a run id that is not the active run id
 - **THEN** the system performs no calculation or worksheet mutation for that continuation
 
+#### Scenario: Temporary Google service failure is retried automatically
+- **WHEN** Google Sheets, Drive, or Docs returns a transient service, timeout, or rate-limit error during an active post-import phase
+- **THEN** the system clears only that phase's execution lease and schedules the same persisted checkpoint again
+- **AND** retries the phase automatically up to a bounded limit without repeating completed phases or publishing a fatal issue
+- **AND** marks the run failed with a corrective action only after the bounded retry limit is exhausted
+
 #### Scenario: No calculable rows is fatal
 - **WHEN** import completes without any calculable normalized rows
 - **THEN** the run ends as `Ошибка` with retained import diagnostics

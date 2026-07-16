@@ -1659,6 +1659,44 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(issue.suggestedAction, 'Сверить с расчетным листком');
 }
 
+// Temporary Google service failures keep the current checkpoint active and retry
+// automatically instead of converting the whole run into a fatal error.
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-16T19:00:00.000Z'),
+    spreadsheetId: harness.spreadsheet.getId(),
+  });
+  run.phase = 'reconstructing';
+  run.phases.reconstructing = 'running';
+  run.phaseExecutions.reconstructing = { token: 'lease-1', startedAt: run.updatedAt };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const recovered = harness.context.handleClaimConstructorRuntimeError_(
+    run.id,
+    'reconstructing',
+    new Error('Service Spreadsheets failed while accessing document with ID sheet-1.')
+  );
+  assert.strictEqual(recovered.status, 'running');
+  assert.strictEqual(recovered.phase, 'reconstructing');
+  assert.strictEqual(recovered.runtimeRetries.reconstructing, 1);
+  assert.strictEqual(recovered.phaseExecutions.reconstructing, undefined);
+  assert.match(recovered.progressText, /Повторяем автоматически/);
+  assert.strictEqual(recovered.issues.length, 0);
+
+  recovered.runtimeRetries.reconstructing = harness.context.CLAIM_CONSTRUCTOR_SETTINGS
+    ? harness.context.CLAIM_CONSTRUCTOR_SETTINGS.TRANSIENT_RETRY_LIMIT
+    : 3;
+  harness.context.saveClaimConstructorRun_(recovered, harness.scriptProperties);
+  const exhausted = harness.context.handleClaimConstructorRuntimeError_(
+    run.id,
+    'reconstructing',
+    new Error('Service Spreadsheets failed while accessing document with ID sheet-1.')
+  );
+  assert.strictEqual(exhausted.status, 'failed');
+  assert.strictEqual(exhausted.issues.length, 1);
+}
+
 // Source-level recognition issues are visible immediately and keep one stable row
 // while retries and the final audit refine their status.
 {

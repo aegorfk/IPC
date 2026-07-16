@@ -14,6 +14,7 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   WATCHDOG_TRIGGER_FUNCTION: 'watchClaimConstructorPipeline_',
   WATCHDOG_INTERVAL_MINUTES: 5,
   PHASE_EXECUTION_LEASE_MS: 7 * 60 * 1000,
+  TRANSIENT_RETRY_LIMIT: 3,
   RUN_STALE_MS: 6 * 60 * 60 * 1000,
   ISSUE_HEADERS: [
     'Уровень',
@@ -400,6 +401,7 @@ function createClaimConstructorRun_(inputs, options) {
     inputs: Object.assign({}, inputs || {}),
     phases,
     phaseExecutions: {},
+    runtimeRetries: {},
     issues: [],
     results: {},
   };
@@ -456,6 +458,7 @@ function loadClaimConstructorRun_(properties) {
     inputs: {},
     phases,
     phaseExecutions: {},
+    runtimeRetries: {},
     issues: [normalizeClaimConstructorIssue_({
       severity: 'error',
       phase: 'validating',
@@ -1544,11 +1547,11 @@ function continueClaimConstructorPipeline_(runId, options) {
     const failedPhase = run && getClaimConstructorPhaseOrder_().indexOf(run.phase) >= 0
       ? run.phase
       : 'unknown';
-    const failed = failClaimConstructorRuntime_(runId, failedPhase, error);
-    if (failed) {
-      refreshClaimConstructorDashboard_(spreadsheet, failed);
+    const handled = handleClaimConstructorRuntimeError_(runId, failedPhase, error);
+    if (handled) {
+      refreshClaimConstructorDashboard_(spreadsheet, handled);
     }
-    return failed;
+    return handled;
   }
   if (run) {
     refreshClaimConstructorDashboard_(spreadsheet, run);
@@ -1587,6 +1590,54 @@ function buildClaimConstructorCorrectiveDocsIssue_(error, run) {
     knownImpact: 'Google Doc не создан; расчет в Google Sheets завершен',
     suggestedAction: actions[error.code],
   };
+}
+
+function isRetryableClaimConstructorRuntimeError_(error) {
+  const reason = error && error.message ? error.message : String(error || '');
+  return /(Service (?:Spreadsheets|Drive|Documents) failed while accessing|Service unavailable|Internal error|Please try again|timed? out|Timeout|Rate limit|Service invoked too many times|Too many simultaneous invocations|\b(?:408|429|500|502|503|504)\b)/i.test(reason);
+}
+
+function handleClaimConstructorRuntimeError_(runId, failedPhase, error) {
+  if (!isRetryableClaimConstructorRuntimeError_(error)) {
+    return failClaimConstructorRuntime_(runId, failedPhase, error);
+  }
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  let recovered = null;
+  let exhausted = false;
+  try {
+    const run = loadClaimConstructorRun_();
+    if (!run || run.id !== runId || run.status !== 'running'
+      || run.phase !== failedPhase || run.phases[failedPhase] !== 'running') {
+      return null;
+    }
+    run.runtimeRetries = run.runtimeRetries || {};
+    const previousAttempts = Math.max(0, Number(run.runtimeRetries[failedPhase]) || 0);
+    if (previousAttempts >= CLAIM_CONSTRUCTOR_SETTINGS.TRANSIENT_RETRY_LIMIT) {
+      exhausted = true;
+    } else {
+      const attempt = previousAttempts + 1;
+      run.runtimeRetries[failedPhase] = attempt;
+      run.phaseExecutions = run.phaseExecutions || {};
+      delete run.phaseExecutions[failedPhase];
+      run.progressText = `Временная ошибка сервиса Google. Повторяем автоматически (${attempt} из ${CLAIM_CONSTRUCTOR_SETTINGS.TRANSIENT_RETRY_LIMIT}).`;
+      run.updatedAt = new Date().toISOString();
+      saveClaimConstructorRun_(run);
+      recovered = run;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+
+  if (exhausted) {
+    return failClaimConstructorRuntime_(runId, failedPhase, error);
+  }
+  scheduleClaimConstructorContinuation_();
+  ensureClaimConstructorWatchdogTrigger_();
+  return recovered;
 }
 
 function failClaimConstructorRuntime_(runId, failedPhase, error) {
@@ -1640,6 +1691,7 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
     });
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
     delete run.phaseExecutions[expectedPhase];
+    if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
     run.progressText = progressText || run.progressText;
     saveClaimConstructorRun_(run);
@@ -1674,6 +1726,7 @@ function recordClaimConstructorPhaseCheckpoint_(runId, expectedPhase, resultKey,
     run.progressText = value.currentStep || 'Продолжаем реконструкцию';
     run.updatedAt = value.updatedAt || new Date().toISOString();
     delete run.phaseExecutions[expectedPhase];
+    if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     saveClaimConstructorRun_(run);
     return run;
   } finally {
@@ -1702,6 +1755,7 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
     }
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
     delete run.phaseExecutions[expectedPhase];
+    if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
     const hasWarnings = run.issues.length > 0;
     run.status = hasWarnings ? 'complete_with_warnings' : 'complete';
