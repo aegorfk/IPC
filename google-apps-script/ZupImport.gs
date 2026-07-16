@@ -5743,8 +5743,9 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
   const batchRows = Math.max(1, Number(ZUP_IMPORT_SETTINGS.DIAGNOSTIC_BATCH_ROWS) || 200);
   const rowCount = Math.min(batchRows, totalRows - nextRow);
   const sourceStartRow = table.headerRow + 1 + nextRow;
+  const readWidth = resolveZupDiagnosticReadWidth_(sourceSheet, table, amountColumn);
   const values = sourceSheet
-    .getRange(sourceStartRow, 1, rowCount, sourceSheet.getLastColumn())
+    .getRange(sourceStartRow, 1, rowCount, readWidth)
     .getValues();
   const index = buildZupImportAccrualIndex_(importRows);
   const diagnostics = buildZupDiagnosticRowsFromValues_(
@@ -5771,6 +5772,16 @@ function continueZupDiagnosticTargetStep_(spreadsheet, importRows, target, state
       diagnosticCommittedRows: Math.max(0, Number(state.diagnosticCommittedRows) || 0),
     },
   };
+}
+
+function resolveZupDiagnosticReadWidth_(sheet, table, amountColumn) {
+  const candidates = [Number(amountColumn) || 0];
+  Object.keys((table && table.columns) || {}).forEach((key) => {
+    const column = Number(table.columns[key]);
+    if (Number.isInteger(column) && column >= 0) candidates.push(column);
+  });
+  const requiredWidth = Math.max(...candidates) + 2;
+  return Math.max(1, Math.min(sheet.getLastColumn(), requiredWidth));
 }
 
 function writeZupDiagnosticRows_(sheet, diagnostics) {
