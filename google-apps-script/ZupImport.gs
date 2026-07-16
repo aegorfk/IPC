@@ -40,6 +40,7 @@ const ZUP_IMPORT_SETTINGS = {
   BATCH_TIME_MARGIN_MS: 30 * 1000,
   BATCH_MAX_FILES: 2,
   DIAGNOSTIC_BATCH_ROWS: 200,
+  DIAGNOSTIC_IN_IMPORT_FINALIZATION: false,
   REVIEW_FILL: '#f4b183',
   SOURCE_FILL: '#d9ead3',
 };
@@ -917,7 +918,7 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
   const rows = values.rows || [];
   const qualityRowsByGroup = values.qualityRowsByGroup || {};
   const diagnosticTargets = getZupDiagnosticTargets_();
-  const steps = [
+  const coreSteps = [
     {
       key: 'quality',
       label: 'Проверяем качество импорта',
@@ -933,19 +934,23 @@ function runNextZupImportFinalizationStep_(spreadsheet, checkpoint, inputs, opti
       label: 'Собираем структуру выплат',
       execute: () => { if (!state.dryRun) writeZupPaymentStructureSheet_(spreadsheet, rows); },
     },
-  ].concat(diagnosticTargets.map((target, index) => ({
+  ];
+  const includeDiagnostics = settings.includeDiagnostics === true
+    || ZUP_IMPORT_SETTINGS.DIAGNOSTIC_IN_IMPORT_FINALIZATION === true;
+  const diagnosticSteps = includeDiagnostics ? diagnosticTargets.map((target, index) => ({
     key: `diagnostic_${target.layoutId}`,
     label: `Формируем диагностику: ${target.category}`,
     execute: () => state.dryRun
       ? { complete: true, checkpoint: {} }
       : continueZupDiagnosticTargetStep_(spreadsheet, rows, target, state, index === 0),
-  }))).concat([{
+  })).concat([{
     key: 'diagnostic_trim',
     label: 'Завершаем диагностику',
     execute: () => {
       if (!state.dryRun) trimZupDiagnosticSheet_(spreadsheet, state.diagnosticCommittedRows);
     },
-  }]);
+  }]) : [];
+  const steps = coreSteps.concat(diagnosticSteps);
   if (state.finalizationStep >= steps.length) {
     return { complete: true, checkpoint: state };
   }

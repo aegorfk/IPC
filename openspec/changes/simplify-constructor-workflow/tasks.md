@@ -49,6 +49,7 @@
 - [x] 5.13 Add a persisted per-target reconstruction checkpoint with step duration/heartbeat reporting, execute one bounded reconstruction target per continuation, and preserve the legacy synchronous wrapper.
 - [x] 5.14 Publish source-level provisional review issues after every durably committed recognition result, reconcile them by stable issue identity during retries/final audit, and test that automatic continuations never duplicate or hide unresolved issues.
 - [x] 5.15 Split final diagnostic audit into idempotent family-specific and row-chunk checkpoints so one large calculation sheet cannot restart the whole audit.
+- [x] 5.16 Remove optional cross-sheet diagnostics from the constructor's critical path while preserving the resumable technical diagnostic operation.
 
 ## 6. Sheet Visibility and Menu Simplification
 

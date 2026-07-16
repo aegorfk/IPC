@@ -2005,7 +2005,7 @@ function stubReconstructionPipeline(harness) {
   let stepResult = harness.context.continueZupReconstructionStep_(
     harness.spreadsheet,
     checkpoint,
-    { now: () => new Date('2026-07-16T08:00:00.000Z') }
+    { now: () => new Date('2026-07-16T08:00:00.000Z'), includeDiagnostics: true }
   );
   checkpoint = stepResult.checkpoint;
 
@@ -2020,7 +2020,7 @@ function stubReconstructionPipeline(harness) {
     stepResult = harness.context.continueZupReconstructionStep_(
       harness.spreadsheet,
       checkpoint,
-      { now: () => new Date('2026-07-16T08:00:01.000Z') }
+      { now: () => new Date('2026-07-16T08:00:01.000Z'), includeDiagnostics: true }
     );
     checkpoint = stepResult.checkpoint;
   }
@@ -2750,7 +2750,7 @@ function stubBatchSessionStartup(harness) {
     harness.spreadsheet,
     checkpoint,
     inputs,
-    { now: () => new Date('2026-07-16T08:00:00.000Z') }
+    { now: () => new Date('2026-07-16T08:00:00.000Z'), includeDiagnostics: true }
   );
   checkpoint = first.checkpoint;
 
@@ -2765,7 +2765,7 @@ function stubBatchSessionStartup(harness) {
       harness.spreadsheet,
       checkpoint,
       inputs,
-      { now: () => new Date('2026-07-16T08:00:01.000Z') }
+      { now: () => new Date('2026-07-16T08:00:01.000Z'), includeDiagnostics: true }
     );
     checkpoint = next.checkpoint;
     if (next.complete) break;
@@ -2804,7 +2804,7 @@ function stubBatchSessionStartup(harness) {
   let checkpoint = { finalizationStep: 3, finalizationTimings: [] };
 
   const partial = harness.context.runNextZupImportFinalizationStep_(
-    harness.spreadsheet, checkpoint, inputs
+    harness.spreadsheet, checkpoint, inputs, { includeDiagnostics: true }
   );
   checkpoint = partial.checkpoint;
   assert.strictEqual(partial.complete, false);
@@ -2813,11 +2813,23 @@ function stubBatchSessionStartup(harness) {
   assert.match(checkpoint.currentFinalizationStep, /200 из 600/);
 
   const completed = harness.context.runNextZupImportFinalizationStep_(
-    harness.spreadsheet, checkpoint, inputs
+    harness.spreadsheet, checkpoint, inputs, { includeDiagnostics: true }
   );
   assert.strictEqual(completed.checkpoint.finalizationStep, 4);
   assert.strictEqual(completed.checkpoint.diagnosticCommittedRows, 120);
   assert.strictEqual(chunks, 2);
+}
+
+// Heavy cross-sheet diagnostics do not block the constructor's critical path.
+{
+  const harness = createHarness();
+  const result = harness.context.runNextZupImportFinalizationStep_(
+    harness.spreadsheet,
+    { finalizationStep: 3, finalizationTimings: [] },
+    { rows: [], qualityRowsByGroup: {} }
+  );
+  assert.strictEqual(result.complete, true);
+  assert.strictEqual(result.checkpoint.finalizationStep, 3);
 }
 
 // Retrying one diagnostic target replaces its rows instead of duplicating them.

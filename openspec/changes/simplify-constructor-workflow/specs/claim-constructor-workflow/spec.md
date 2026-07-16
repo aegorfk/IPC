@@ -76,6 +76,11 @@ The system MUST persist constructor run state and automatically continue the wor
 - **AND** checkpoints both the completed source-row offset and output-row offset before scheduling the next chunk or target
 - **AND** a retry overwrites the same deterministic diagnostic range instead of appending duplicates
 
+#### Scenario: Diagnostic audit is not required for reconstruction
+- **WHEN** source recognition, quality gates, import summary, and payment structure are complete
+- **THEN** the constructor advances to reconstruction without waiting for the optional cross-sheet diagnostic audit
+- **AND** the diagnostic audit remains callable as a separate resumable technical operation
+
 #### Scenario: Reconstruction exceeds one execution window
 - **WHEN** reconstruction contains multiple target sheets or recalculation steps
 - **THEN** each continuation completes and checkpoints at most one bounded target step
