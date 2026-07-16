@@ -147,6 +147,14 @@ Node `vm` tests will characterize the existing core calls before orchestration e
 
 Concurrency tests will interleave duplicate build requests, matching/stale scheduled continuations, and retry requests against a fake document lock. Reopen tests will call `onOpen()` with persisted run/visibility state and verify that presentation is restored without invoking pipeline work.
 
+### 11. Make recognition finalization and reconstruction independently resumable
+
+Recognition, derived import-sheet materialization, reconstruction-sheet filling, and reconstruction-sheet recalculation SHALL NOT run as one monolithic Apps Script execution. The import session records an explicit stage and checkpoint. Once the last source group is recognized and its normalized rows are durable, derived quality, summary, payment-structure, and diagnostic views are materialized as bounded finalization steps. A timeout after recognition therefore resumes finalization and does not recognize the last source again.
+
+The constructor reconstruction phase uses a persisted step checkpoint. Each continuation fills or recalculates at most one reconstruction target, records the result and duration, clears the execution lease, refreshes the constructor heartbeat, and schedules the next step. Reopening, a one-shot continuation, or the watchdog all join the same checkpoint; none resets completed reconstruction work. The legacy `populateZupReconstructionSheets()` wrapper keeps its synchronous externally observable behavior, while constructor orchestration uses the resumable entry point.
+
+Service-sheet formatting uses batched range operations and avoids repeated per-column resizing during intermediate recognition batches. Expensive presentation work is confined to the corresponding finalization step. The constructor displays the current substep and a monotonic percentage so a long calculation never appears frozen.
+
 ## Risks / Trade-offs
 
 - **Apps Script execution limits interrupt a one-click run** → Persist phase/run state and automatically continue after the existing batch trigger completes.
@@ -157,6 +165,8 @@ Concurrency tests will interleave duplicate build requests, matching/stale sched
 - **Docs generation lacks optional case facts** → Generate available sections, record missing facts as issues, and keep the Sheets result complete.
 - **Re-running after a partial failure duplicates data** → Use run ids and idempotent phase guards; reuse existing incremental import state.
 - **Two executions race on shared state** → Enforce a single active run with document locking, expected-phase compare-and-advance, and stale run-id rejection.
+- **The last recognized file is repeated after a timeout** → Commit recognition progress before derived-view finalization and resume from the persisted import stage.
+- **Five reconstruction sheets exceed one Apps Script execution** → Persist a per-target reconstruction checkpoint and execute one bounded target per continuation.
 - **Future LNA/contract scope leaks into phase one** → Limit phase one to source-kind metadata and vendor-neutral orchestration; no new legal parser.
 
 ## Migration Plan

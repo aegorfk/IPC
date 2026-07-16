@@ -648,7 +648,8 @@ function formatClaimConstructorProgress_(run) {
   }
   if (value.phase === 'importing' && value.progress && Number(value.progress.total)) {
     const progress = normalizeClaimConstructorProgress_(value.progress);
-    return `${buildClaimConstructorProgressBar_(progress.percent)} ${progress.percent}% · ${progress.processed} из ${progress.total}`;
+    const suffix = value.progressText ? ` · ${value.progressText}` : '';
+    return `${buildClaimConstructorProgressBar_(progress.percent)} ${progress.percent}% · ${progress.processed} из ${progress.total}${suffix}`;
   }
   const phasePercents = {
     validating: 5,
@@ -657,7 +658,12 @@ function formatClaimConstructorProgress_(run) {
     calculating: 85,
     writing_doc: 95,
   };
-  const phasePercent = phasePercents[value.phase];
+  const checkpointPercent = value.progress && value.progress.phase === value.phase
+    ? Number(value.progress.percent)
+    : NaN;
+  const phasePercent = Number.isFinite(checkpointPercent)
+    ? checkpointPercent
+    : phasePercents[value.phase];
   if (Number.isFinite(phasePercent)) {
     const suffix = value.progressText ? ` · ${value.progressText}` : '';
     return `${buildClaimConstructorProgressBar_(phasePercent)} ${phasePercent}%${suffix}`;
@@ -702,7 +708,9 @@ function updateClaimConstructorImportProgress_(session) {
       processed: value.nextIndex,
       total: value.total,
     });
-    run.progressText = 'Распознаём расчётные листки; продолжение выполняется автоматически.';
+    run.progressText = value.stage === 'finalizing'
+      ? (value.currentFinalizationStep || 'Завершаем импорт')
+      : '';
     run.updatedAt = value.updatedAt || new Date().toISOString();
     saveClaimConstructorRun_(run);
   } finally {
@@ -1311,18 +1319,31 @@ function continueClaimConstructorPipeline_(runId, options) {
       if (!executionToken) {
         return loadClaimConstructorRun_();
       }
-      const reconstruction = runZupReconstruction_(spreadsheet);
-      run = recordClaimConstructorPhaseResult_(
-        runId,
-        'reconstructing',
-        'calculating',
-        'reconstruction',
-        reconstruction,
-        'Реконструкция завершена. Пересчитываем требования.',
-        null,
-        null,
-        executionToken
+      const reconstructionStep = continueZupReconstructionStep_(
+        spreadsheet,
+        run.results.reconstructionCheckpoint || null
       );
+      if (!reconstructionStep.complete) {
+        run = recordClaimConstructorPhaseCheckpoint_(
+          runId,
+          'reconstructing',
+          'reconstructionCheckpoint',
+          reconstructionStep.checkpoint,
+          executionToken
+        );
+      } else {
+        run = recordClaimConstructorPhaseResult_(
+          runId,
+          'reconstructing',
+          'calculating',
+          'reconstruction',
+          reconstructionStep.result,
+          'Реконструкция завершена. Пересчитываем требования.',
+          { reconstructionCheckpoint: undefined },
+          null,
+          executionToken
+        );
+      }
     }
     else if (run && run.phase === 'calculating' && run.phases.calculating === 'running') {
       const executionToken = claimClaimConstructorPhaseExecution_(runId, 'calculating');
@@ -1514,6 +1535,38 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
     delete run.phaseExecutions[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
     run.progressText = progressText || run.progressText;
+    saveClaimConstructorRun_(run);
+    return run;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function recordClaimConstructorPhaseCheckpoint_(runId, expectedPhase, resultKey, checkpoint, executionToken) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    return null;
+  }
+  try {
+    const run = loadClaimConstructorRun_();
+    const execution = run && run.phaseExecutions && run.phaseExecutions[expectedPhase];
+    if (!run || run.id !== runId || run.phase !== expectedPhase || run.phases[expectedPhase] !== 'running'
+      || !execution || execution.token !== executionToken) {
+      return null;
+    }
+    const value = checkpoint || {};
+    run.results[resultKey] = value;
+    const totalSteps = Math.max(1, Number(value.totalSteps) || 1);
+    const completedSteps = Math.max(0, Math.min(totalSteps, Number(value.nextStep) || 0));
+    run.progress = {
+      phase: expectedPhase,
+      processed: completedSteps,
+      total: totalSteps,
+      percent: Math.min(84, 70 + Math.round(completedSteps / totalSteps * 15)),
+    };
+    run.progressText = value.currentStep || 'Продолжаем реконструкцию';
+    run.updatedAt = value.updatedAt || new Date().toISOString();
+    delete run.phaseExecutions[expectedPhase];
     saveClaimConstructorRun_(run);
     return run;
   } finally {

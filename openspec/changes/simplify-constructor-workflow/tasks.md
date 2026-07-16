@@ -45,6 +45,8 @@
 - [x] 5.9 Test retry behavior separately for validation/import, reconstruction, calculation, and Docs failures, proving completed phases and durable results are not repeated or cleared.
 - [x] 5.10 Test repeated build, trigger, retry, and manual continuation interleavings to prove locking, run-id rejection, phase idempotency, and absence of duplicate output.
 - [x] 5.11 Add and test a deduplicated five-minute watchdog that resumes the same persisted import/post-import run when a one-shot trigger is lost and removes itself after terminal completion.
+- [x] 5.12 Split recognition completion from derived import-sheet materialization, persist an explicit import stage/finalization checkpoint, and prove a timeout after the last source resumes finalization without recognizing that source again.
+- [x] 5.13 Add a persisted per-target reconstruction checkpoint with step duration/heartbeat reporting, execute one bounded reconstruction target per continuation, and preserve the legacy synchronous wrapper.
 
 ## 6. Sheet Visibility and Menu Simplification
 

@@ -390,6 +390,22 @@ class FakeSheet {
   isSheetHidden() { return this.hidden; }
   setFrozenRows(count) { this.frozenRows = count; return this; }
   setColumnWidth(column, width) { this.columnWidths.set(column, width); return this; }
+  clear() {
+    this.getStateStores().forEach((store) => store.clear());
+    this.spreadsheet.serviceCalls.clears = (this.spreadsheet.serviceCalls.clears || 0) + 1;
+    return this;
+  }
+  autoResizeColumn() {
+    this.spreadsheet.serviceCalls.singleColumnResizes =
+      (this.spreadsheet.serviceCalls.singleColumnResizes || 0) + 1;
+    return this;
+  }
+  autoResizeColumns(startColumn, count) {
+    this.spreadsheet.serviceCalls.batchedColumnResizes =
+      (this.spreadsheet.serviceCalls.batchedColumnResizes || 0) + 1;
+    this.spreadsheet.serviceCalls.lastBatchedColumnResize = { startColumn, count };
+    return this;
+  }
   hideColumns(column, count) {
     const size = count || 1;
     for (let offset = 0; offset < size; offset++) this.hiddenColumns.add(column + offset);
@@ -1839,6 +1855,11 @@ function stubReconstructionPipeline(harness) {
   harness.context.fillZupPremiumReconstruction_ = (spreadsheet, sheetName) => ({ sheet: sheetName, rows: 1 });
   harness.context.fillZupVacationReconstruction_ = () => ({ sheet: 'Из_1С_Отпуска', rows: 1 });
   harness.context.markZupReconstructionCompany_ = () => {};
+  harness.context.updateZupReconstructionIndexationSheet_ = (spreadsheet, sheetName) => ({
+    sheetName,
+    calculated: sheetName === 'Из_1С_Оклад' ? 2 : 1,
+    skipped: 0,
+  });
   harness.context.updateZupReconstructionIndexationSheets_ = () => [
     { sheetName: 'Из_1С_Оклад', calculated: 2, skipped: 0 },
   ];
@@ -1867,10 +1888,66 @@ function stubReconstructionPipeline(harness) {
   const result = harness.context.runZupReconstruction_(harness.spreadsheet);
 
   assert.strictEqual(result.fillResults.length, 5);
-  assert.strictEqual(result.calculationResults.length, 1);
+  assert.strictEqual(result.calculationResults.length, 5);
   assert.strictEqual(result.company, 'ООО Тест');
   assert.strictEqual(result.quality, model.quality);
   assert.deepStrictEqual(messages, []);
+}
+
+// Constructor reconstruction is resumable: one target is mutated per checkpoint.
+{
+  const harness = createHarness();
+  const model = stubReconstructionPipeline(harness);
+  const calls = [];
+  harness.context.fillZupSalaryReconstruction_ = () => {
+    calls.push('fill:salary');
+    return { sheet: 'Из_1С_Оклад', rows: 2 };
+  };
+  harness.context.fillZupPremiumReconstruction_ = (spreadsheet, sheetName) => {
+    calls.push(`fill:${sheetName}`);
+    return { sheet: sheetName, rows: 1 };
+  };
+  harness.context.fillZupVacationReconstruction_ = () => {
+    calls.push('fill:vacation');
+    return { sheet: 'Из_1С_Отпуска', rows: 1 };
+  };
+  harness.context.markZupReconstructionCompany_ = () => calls.push('mark:company');
+  harness.context.updateZupReconstructionIndexationSheet_ = (spreadsheet, sheetName) => {
+    calls.push(`calculate:${sheetName}`);
+    return { sheetName, calculated: 1, skipped: 0 };
+  };
+
+  let checkpoint = null;
+  let stepResult = harness.context.continueZupReconstructionStep_(
+    harness.spreadsheet,
+    checkpoint,
+    { now: () => new Date('2026-07-16T08:00:00.000Z') }
+  );
+  checkpoint = stepResult.checkpoint;
+
+  assert.strictEqual(stepResult.complete, false);
+  assert.strictEqual(checkpoint.nextStep, 1);
+  assert.strictEqual(checkpoint.fillResults.length, 1);
+  assert.strictEqual(checkpoint.calculationResults.length, 0);
+  assert.strictEqual(checkpoint.currentStep, 'Заполняем оклад');
+  assert.deepStrictEqual(calls, ['fill:salary']);
+
+  while (!stepResult.complete) {
+    stepResult = harness.context.continueZupReconstructionStep_(
+      harness.spreadsheet,
+      checkpoint,
+      { now: () => new Date('2026-07-16T08:00:01.000Z') }
+    );
+    checkpoint = stepResult.checkpoint;
+  }
+
+  assert.strictEqual(checkpoint.fillResults.length, 5);
+  assert.strictEqual(checkpoint.calculationResults.length, 5);
+  assert.strictEqual(checkpoint.company, 'ООО Тест');
+  assert.strictEqual(checkpoint.quality, model.quality);
+  assert.strictEqual(checkpoint.stepTimings.length, 10);
+  assert.strictEqual(calls.filter((call) => call === 'mark:company').length, 1);
+  assert.strictEqual(calls.length, 11);
 }
 
 function stubAllSheetsCalculation(harness) {
@@ -2505,6 +2582,130 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(session.constructorNextPhase, 'reconstructing');
 }
 
+// The last recognized source is checkpointed before derived import views are materialized.
+{
+  const harness = createHarness();
+  harness.driveFolders.set('folder-1', { id: 'folder-1' });
+  harness.context.listZupFilesRecursively_ = () => [{ id: 'source-1' }];
+  harness.context.selectZupImportFileGroups_ = () => [{ key: 'group-1' }];
+  harness.context.readZupImportState_ = () => ({});
+  harness.context.readExistingZupRowsByFile_ = () => ({});
+  harness.context.readExistingZupSkippedFiles_ = () => [];
+  harness.context.readExistingZupQualityRowsByGroup_ = () => ({});
+  harness.context.readExistingZupStateRowsByGroup_ = () => ({});
+  harness.context.readExistingZupVlmRows_ = () => [];
+  harness.context.writeZupBatchImportOutputs_ = () => {};
+  let recognized = 0;
+  harness.context.processZupImportGroup_ = () => {
+    recognized++;
+    return {
+      fileName: 'листок.pdf',
+      rows: [['листок.pdf']],
+      skippedFiles: [],
+      qualityRow: ['group-1'],
+      stateRow: ['group-1'],
+      vlmRows: [],
+      read: true,
+    };
+  };
+  let finalized = 0;
+  harness.context.continueZupImportFinalization_ = (spreadsheet, session) => {
+    finalized++;
+    return { complete: false, stage: session.stage, processed: session.nextIndex };
+  };
+  harness.context.saveZupBatchImportSession_({
+    spreadsheetId: harness.spreadsheet.getId(),
+    folderId: 'folder-1',
+    source: 'Конструктор!B4',
+    force: false,
+    dryRun: false,
+    stage: 'recognizing',
+    nextIndex: 0,
+    total: 0,
+    filesRead: 0,
+    rowsRecognized: 0,
+    skippedCount: 0,
+    startedAt: '2026-07-16T08:00:00.000Z',
+    updatedAt: '2026-07-16T08:00:00.000Z',
+  });
+
+  const recognizedResult = harness.context.continueZupFolderImportBatch_();
+  const checkpoint = harness.context.loadZupBatchImportSession_();
+
+  assert.strictEqual(recognizedResult.complete, false);
+  assert.strictEqual(recognizedResult.recognitionComplete, true);
+  assert.strictEqual(checkpoint.stage, 'finalizing');
+  assert.strictEqual(checkpoint.nextIndex, 1);
+  assert.strictEqual(checkpoint.finalizationStep, 0);
+  assert.strictEqual(checkpoint.recognitionTimings.length, 1);
+  assert.strictEqual(checkpoint.recognitionTimings[0].groupKey, 'group-1');
+  assert.strictEqual(recognized, 1);
+
+  harness.context.continueZupFolderImportBatch_();
+
+  assert.strictEqual(recognized, 1);
+  assert.strictEqual(finalized, 1);
+}
+
+// Import finalization materializes one derived view and one duration checkpoint per call.
+{
+  const harness = createHarness();
+  const calls = [];
+  harness.context.writeZupFinalQualityViews_ = () => calls.push('quality');
+  harness.context.writeZupSummarySheet_ = () => calls.push('summary');
+  harness.context.writeZupPaymentStructureSheet_ = () => calls.push('payment_structure');
+  harness.context.writeZupDiagnosticSheet_ = () => calls.push('diagnostic');
+  let checkpoint = { finalizationStep: 0, finalizationTimings: [] };
+  const inputs = { rows: [['листок.pdf']], qualityRowsByGroup: {} };
+
+  const first = harness.context.runNextZupImportFinalizationStep_(
+    harness.spreadsheet,
+    checkpoint,
+    inputs,
+    { now: () => new Date('2026-07-16T08:00:00.000Z') }
+  );
+  checkpoint = first.checkpoint;
+
+  assert.strictEqual(first.complete, false);
+  assert.strictEqual(checkpoint.finalizationStep, 1);
+  assert.strictEqual(checkpoint.finalizationTimings.length, 1);
+  assert.strictEqual(checkpoint.currentFinalizationStep, 'Проверяем качество импорта');
+  assert.deepStrictEqual(calls, ['quality']);
+
+  while (!first.complete && checkpoint.finalizationStep < 4) {
+    const next = harness.context.runNextZupImportFinalizationStep_(
+      harness.spreadsheet,
+      checkpoint,
+      inputs,
+      { now: () => new Date('2026-07-16T08:00:01.000Z') }
+    );
+    checkpoint = next.checkpoint;
+    if (next.complete) break;
+  }
+
+  assert.deepStrictEqual(calls, ['quality', 'summary', 'payment_structure', 'diagnostic']);
+  assert.strictEqual(checkpoint.finalizationStep, 4);
+  assert.strictEqual(checkpoint.finalizationTimings.length, 4);
+}
+
+// Technical-sheet presentation batches column resizing into one service call.
+{
+  const harness = createHarness(['Импорт_1С_Тест']);
+  const sheet = harness.spreadsheet.getSheetByName('Импорт_1С_Тест');
+
+  harness.context.writeZupSheetData_(sheet, [
+    ['Колонка 1', 'Колонка 2', 'Колонка 3'],
+    ['a', 'b', 'c'],
+  ]);
+
+  assert.strictEqual(harness.spreadsheet.serviceCalls.singleColumnResizes || 0, 0);
+  assert.strictEqual(harness.spreadsheet.serviceCalls.batchedColumnResizes, 1);
+  assert.deepStrictEqual(
+    harness.spreadsheet.serviceCalls.lastBatchedColumnResize,
+    { startColumn: 1, count: 3 }
+  );
+}
+
 {
   const harness = createHarness();
   const run = harness.context.createClaimConstructorRun_({}, {
@@ -2578,9 +2779,12 @@ function stubBatchSessionStartup(harness) {
   harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date('2026-07-11T09:02:00.000Z'));
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   const order = [];
-  harness.context.runZupReconstruction_ = () => {
+  harness.context.continueZupReconstructionStep_ = () => {
     order.push('reconstructing');
-    return { fillResults: [{ sheet: 'Из_1С_Оклад', rows: 1 }], calculationResults: [] };
+    return {
+      complete: true,
+      result: { fillResults: [{ sheet: 'Из_1С_Оклад', rows: 1 }], calculationResults: [] },
+    };
   };
   harness.context.runAllSheetsIndexation_ = () => {
     order.push('calculating');
@@ -2621,6 +2825,73 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(legacyCalls, 0);
 }
 
+// An incomplete reconstruction step persists a heartbeat and releases the phase lease.
+{
+  const harness = createHarness(['Конструктор']);
+  const run = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-16T08:00:00.000Z'),
+  });
+  harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date('2026-07-16T08:00:01.000Z'));
+  harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date('2026-07-16T08:00:02.000Z'));
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  let calls = 0;
+  harness.context.continueZupReconstructionStep_ = (spreadsheet, checkpoint) => {
+    calls++;
+    if (!checkpoint) {
+      return {
+        complete: false,
+        checkpoint: {
+          nextStep: 1,
+          totalSteps: 10,
+          currentStep: 'Заполняем оклад',
+          fillResults: [{ sheet: 'Из_1С_Оклад', rows: 2 }],
+          calculationResults: [],
+          stepTimings: [{ step: 'fill_salary', durationMs: 1250 }],
+        },
+      };
+    }
+    return {
+      complete: true,
+      checkpoint: Object.assign({}, checkpoint, {
+        nextStep: 10,
+        currentStep: 'Реконструкция завершена',
+      }),
+      result: {
+        fillResults: checkpoint.fillResults,
+        calculationResults: [],
+        company: 'ООО Тест',
+        quality: {},
+        stepTimings: checkpoint.stepTimings,
+      },
+    };
+  };
+  let calculations = 0;
+  harness.context.runAllSheetsIndexation_ = () => { calculations++; return []; };
+
+  const checkpointed = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+
+  assert.strictEqual(checkpointed.phase, 'reconstructing');
+  assert.strictEqual(checkpointed.results.reconstructionCheckpoint.nextStep, 1);
+  assert.strictEqual(checkpointed.phaseExecutions.reconstructing, undefined);
+  assert.ok(checkpointed.progressText.includes('Заполняем оклад'));
+  assert.strictEqual(checkpointed.progress.percent, 72);
+  assert.strictEqual(calculations, 0);
+  assert.strictEqual(harness.triggers.length, 1);
+
+  const advanced = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(advanced.phase, 'calculating');
+  assert.strictEqual(advanced.phases.reconstructing, 'done');
+  assert.strictEqual(advanced.results.reconstruction.fillResults.length, 1);
+  assert.strictEqual(advanced.results.reconstructionCheckpoint, undefined);
+  assert.strictEqual(calculations, 0);
+}
+
 {
   const harness = createHarness();
   const run = harness.context.createClaimConstructorRun_({ docUrl: 'https://docs.google.com/document/d/doc-1/edit' }, {
@@ -2632,7 +2903,10 @@ function stubBatchSessionStartup(harness) {
     phase: 'importing', sourceKind: 'payroll_slips', source: 'спорный.pdf', reason: 'Нужна сверка',
   }));
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
-  harness.context.runZupReconstruction_ = () => ({ fillResults: [], calculationResults: [] });
+  harness.context.continueZupReconstructionStep_ = () => ({
+    complete: true,
+    result: { fillResults: [], calculationResults: [] },
+  });
   harness.context.runAllSheetsIndexation_ = () => [{ sheetName: 'Оклад', calculated: 1, skipped: 0 }];
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({ startDate: new Date(), endDate: new Date() });
@@ -2747,7 +3021,10 @@ function stubBatchSessionStartup(harness) {
   harness.context.completeClaimConstructorPhase_(run, 'validating', 'importing', new Date('2026-07-11T09:01:00.000Z'));
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   const downstreamCalls = [];
-  harness.context.runZupReconstruction_ = () => downstreamCalls.push('reconstructing');
+  harness.context.continueZupReconstructionStep_ = () => {
+    downstreamCalls.push('reconstructing');
+    return { complete: true, result: { fillResults: [], calculationResults: [] } };
+  };
   harness.context.runAllSheetsIndexation_ = () => downstreamCalls.push('calculating');
   harness.context.writeSelectedClaimDocument = () => downstreamCalls.push('writing_doc');
 
@@ -2939,7 +3216,10 @@ function stubBatchSessionStartup(harness) {
   };
   harness.context.saveClaimConstructorRun_(previous, harness.scriptProperties);
   const calls = [];
-  harness.context.runZupReconstruction_ = () => { calls.push('reconstructing'); return { fillResults: [] }; };
+  harness.context.continueZupReconstructionStep_ = () => {
+    calls.push('reconstructing');
+    return { complete: true, result: { fillResults: [], calculationResults: [] } };
+  };
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
@@ -3018,7 +3298,10 @@ function stubBatchSessionStartup(harness) {
   harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   const calls = [];
-  harness.context.runZupReconstruction_ = () => { calls.push('reconstructing'); return { fillResults: [] }; };
+  harness.context.continueZupReconstructionStep_ = () => {
+    calls.push('reconstructing');
+    return { complete: true, result: { fillResults: [], calculationResults: [] } };
+  };
   harness.context.runAllSheetsIndexation_ = () => { calls.push('calculating'); return []; };
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
   harness.context.readClaimCalculationParams_ = () => ({});
@@ -3107,12 +3390,12 @@ function stubBatchSessionStartup(harness) {
   harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   let reconstructionCalls = 0;
-  harness.context.runZupReconstruction_ = () => {
+  harness.context.continueZupReconstructionStep_ = () => {
     reconstructionCalls++;
     if (reconstructionCalls === 1) {
       harness.context.continueClaimConstructorPipeline_(run.id, { spreadsheet: harness.spreadsheet });
     }
-    return { fillResults: [] };
+    return { complete: true, result: { fillResults: [], calculationResults: [] } };
   };
   harness.context.runAllSheetsIndexation_ = () => [];
   harness.context.runClaimSheetCalculation_ = () => ({ ready: true, written: 3, result: {}, params: {}, issues: [] });
@@ -3164,7 +3447,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.completeClaimConstructorPhase_(run, 'importing', 'reconstructing', new Date());
   harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
   const downstream = [];
-  harness.context.runZupReconstruction_ = () => { throw new Error('Сбой реконструкции'); };
+  harness.context.continueZupReconstructionStep_ = () => { throw new Error('Сбой реконструкции'); };
   harness.context.runAllSheetsIndexation_ = () => downstream.push('calculating');
   harness.context.writeSelectedClaimDocument = () => downstream.push('writing_doc');
 

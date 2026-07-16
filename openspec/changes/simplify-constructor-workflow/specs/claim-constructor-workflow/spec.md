@@ -65,6 +65,17 @@ The system MUST persist constructor run state and automatically continue the wor
 - **THEN** the system automatically advances the same constructor run to reconstruction and calculation
 - **AND** completed phases are not executed twice
 
+#### Scenario: Recognition completes before derived views
+- **WHEN** the last source group has been recognized but import summaries or diagnostics still require materialization
+- **THEN** the session persists the recognized group count and enters a resumable finalization stage
+- **AND** a later continuation resumes the pending derived view instead of recognizing the last source again
+
+#### Scenario: Reconstruction exceeds one execution window
+- **WHEN** reconstruction contains multiple target sheets or recalculation steps
+- **THEN** each continuation completes and checkpoints at most one bounded target step
+- **AND** the next continuation resumes from the first incomplete step without clearing completed target results
+- **AND** the legacy synchronous reconstruction command remains callable outside constructor orchestration
+
 #### Scenario: Stale continuation is ignored
 - **WHEN** a scheduled or manual continuation carries a run id that is not the active run id
 - **THEN** the system performs no calculation or worksheet mutation for that continuation
@@ -118,6 +129,11 @@ The system SHALL present durable run progress on the constructor sheet and SHALL
 - **WHEN** the final import batch advances the run to reconstruction
 - **THEN** the status reads `Импорт завершен. Реконструкция начислений и выплат`
 - **AND** the progress row switches from source counts to an overall pipeline progress bar
+
+#### Scenario: Long post-import work remains visibly alive
+- **WHEN** import finalization or reconstruction advances by a bounded step
+- **THEN** the constructor persists the current substep, its duration, and a monotonic overall percentage
+- **AND** refreshes the progress row and last-update time before scheduling the next continuation
 
 #### Scenario: Liability total is displayed
 - **WHEN** the constructor renders the amount calculated under the project methodology for Article 236 of the Labor Code
