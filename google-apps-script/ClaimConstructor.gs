@@ -1597,6 +1597,17 @@ function isRetryableClaimConstructorRuntimeError_(error) {
   return /(Service (?:Spreadsheets|Drive|Documents) failed while accessing|Service unavailable|Internal error|Please try again|timed? out|Timeout|Rate limit|Service invoked too many times|Too many simultaneous invocations|\b(?:408|429|500|502|503|504)\b)/i.test(reason);
 }
 
+function pruneResolvedTransientRuntimeIssues_(issues, successfulPhase, phases) {
+  return (issues || []).filter((issue) => {
+    const resolvedPhase = issue.phase === successfulPhase
+      || (phases && phases[issue.phase] === 'done');
+    const transientRuntimeIssue = issue.sourceKind === 'system'
+      && issue.reviewStatus === 'фатальная ошибка'
+      && isRetryableClaimConstructorRuntimeError_(issue.reason);
+    return !(resolvedPhase && transientRuntimeIssue);
+  });
+}
+
 function handleClaimConstructorRuntimeError_(runId, failedPhase, error) {
   if (!isRetryableClaimConstructorRuntimeError_(error)) {
     return failClaimConstructorRuntime_(runId, failedPhase, error);
@@ -1690,6 +1701,7 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
       run.results[key] = additionalResults[key];
     });
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
+    run.issues = pruneResolvedTransientRuntimeIssues_(run.issues, expectedPhase, run.phases);
     delete run.phaseExecutions[expectedPhase];
     if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, nextPhase, new Date());
@@ -1725,6 +1737,7 @@ function recordClaimConstructorPhaseCheckpoint_(runId, expectedPhase, resultKey,
     };
     run.progressText = value.currentStep || 'Продолжаем реконструкцию';
     run.updatedAt = value.updatedAt || new Date().toISOString();
+    run.issues = pruneResolvedTransientRuntimeIssues_(run.issues, expectedPhase, run.phases);
     delete run.phaseExecutions[expectedPhase];
     if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     saveClaimConstructorRun_(run);
@@ -1754,6 +1767,7 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
       run.inputs.docUrl = result.url;
     }
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
+    run.issues = pruneResolvedTransientRuntimeIssues_(run.issues, expectedPhase, run.phases);
     delete run.phaseExecutions[expectedPhase];
     if (run.runtimeRetries) delete run.runtimeRetries[expectedPhase];
     completeClaimConstructorPhase_(run, expectedPhase, null, new Date());
@@ -2002,7 +2016,11 @@ function createClaimConstructorRetryRun_(previousRun, options) {
   });
   run.phase = phaseOrder[restartIndex];
   run.progressText = `Повторяем этап: ${getClaimConstructorLayout_().phaseLabels[run.phase] || run.phase}.`;
-  run.issues = JSON.parse(JSON.stringify(previousRun.issues || []));
+  run.issues = pruneResolvedTransientRuntimeIssues_(
+    JSON.parse(JSON.stringify(previousRun.issues || [])),
+    previousRun.failedPhase,
+    previousRun.phases
+  );
   run.results = {};
   const resultKeysByPhase = {
     importing: ['import'],

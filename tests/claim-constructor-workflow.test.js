@@ -1695,6 +1695,27 @@ function createHarness(sheetNames = ['Оклад']) {
   );
   assert.strictEqual(exhausted.status, 'failed');
   assert.strictEqual(exhausted.issues.length, 1);
+
+  const successor = harness.context.createClaimConstructorRetryRun_(exhausted, {
+    now: new Date('2026-07-16T19:10:00.000Z'),
+  });
+  assert.strictEqual(successor.issues.length, 0);
+
+  // Runs created by an older deployment may already contain the obsolete issue.
+  successor.issues = exhausted.issues;
+  successor.phaseExecutions.reconstructing = {
+    token: 'lease-2',
+    startedAt: successor.updatedAt,
+  };
+  harness.context.saveClaimConstructorRun_(successor, harness.scriptProperties);
+  const checkpointed = harness.context.recordClaimConstructorPhaseCheckpoint_(
+    successor.id,
+    'reconstructing',
+    'reconstructionCheckpoint',
+    { nextStep: 1, totalSteps: 10, currentStep: 'Заполняем оклад' },
+    'lease-2'
+  );
+  assert.strictEqual(checkpointed.issues.length, 0);
 }
 
 // Source-level recognition issues are visible immediately and keep one stable row
