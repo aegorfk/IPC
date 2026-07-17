@@ -1,6 +1,6 @@
 ## Context
 
-The bound Google Sheets workbook is both the calculation system of record and the current user interface. Its normal view exposes 16 tabs: five primary calculation tabs, five `Из_1С_*` reconstruction tabs, and multiple `Импорт_1С_*` audit/diagnostic tabs. `onOpen()` also exposes two menus whose commands mirror internal implementation steps.
+The bound Google Sheets workbook is both the calculation system of record and the current user interface. Its normal view exposes 16 tabs: five primary calculation tabs, five `Реконструкция_*` reconstruction tabs, and multiple `Расчетные_листы_*` audit/diagnostic tabs. `onOpen()` also exposes two menus whose commands mirror internal implementation steps.
 
 The existing implementation already contains the required domain pipeline:
 
@@ -96,7 +96,7 @@ The orchestrator aggregates existing quality-gate, VLM, diagnostic, and skipped-
 
 ### 5. Keep Sheets as the calculation system of record
 
-The orchestrator SHALL first write normalized/reconstructed data to the existing `Из_1С_*` and calculation structures and then call the current recalculation functions. Dashboard totals are read from structured calculation results or the already updated worksheets. They are not independently recomputed in the constructor sheet.
+The orchestrator SHALL first write normalized/reconstructed data to the existing `Реконструкция_*` and calculation structures and then call the current recalculation functions. Dashboard totals are read from structured calculation results or the already updated worksheets. They are not independently recomputed in the constructor sheet.
 
 Google Docs generation runs only after Sheets calculations complete. It updates only the bounded auto-generated block. If a Docs subsection cannot be generated because optional legal facts are missing, that subsection becomes a review issue while other calculated content remains available.
 
@@ -104,7 +104,7 @@ Google Docs generation runs only after Sheets calculations complete. It updates 
 
 - **Normal mode:** only `Конструктор` is visible.
 - **Calculation detail mode:** `Конструктор` plus the five primary calculation sheets are visible.
-- **Technical mode:** all sheets are visible, including `Из_1С_*` and `Импорт_1С_*` audit sheets.
+- **Technical mode:** all sheets are visible, including `Реконструкция_*` and `Расчетные_листы_*` audit sheets.
 
 Visibility changes call `hideSheet()`/`showSheet()` only. They MUST NOT delete, clear, reorder, or recreate existing calculation/service sheets. The constructor sheet is shown before any hide operation so the workbook always retains at least one visible sheet. The selected mode is stored as a document-level property and re-applied only when needed.
 
@@ -128,7 +128,7 @@ The constructor orchestrates normalized facts and calculation capabilities, not 
 
 The minimal adapter result contract contains `sourceKind`, normalized row/result references, quality issues, and import completion/continuation status. A payroll adapter wraps the existing 1C:ZUP incremental import and is the only registered implementation. The orchestrator consumes this contract rather than reading 1C service-sheet presentation names directly.
 
-No speculative contract/LNA parser interface is added until a concrete adapter is implemented; the current design only avoids coupling the orchestrator to `Импорт_1С_*` presentation names where a normalized return value is available.
+No speculative contract/LNA parser interface is added until a concrete adapter is implemented; the current design only avoids coupling the orchestrator to `Расчетные_листы_*` presentation names where a normalized return value is available.
 
 ### 9. Define retry as a successor run
 

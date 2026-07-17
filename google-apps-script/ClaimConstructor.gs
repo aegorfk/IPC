@@ -88,6 +88,9 @@ function getClaimConstructorLayout_() {
 }
 
 function ensureClaimConstructorSheet_(spreadsheet) {
+  if (typeof migrateLegacyPayrollSheetNames_ === 'function') {
+    migrateLegacyPayrollSheetNames_(spreadsheet);
+  }
   const layout = getClaimConstructorLayout_();
   let sheet = spreadsheet.getSheetByName(layout.sheetName);
   const created = !sheet;
@@ -1849,14 +1852,14 @@ function buildClaimConstructorDashboardResult_(spreadsheet, calculationResults, 
 }
 
 function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult, calculationResults) {
-  const qualityRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_Качество');
-  const qualityGateRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_QG')
+  const qualityRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Расчетные_листы_Качество');
+  const qualityGateRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Расчетные_листы_Проверки')
     .filter((row) => String(row[1] || '').toLowerCase() !== 'инфо');
-  const vlmRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_VLM');
-  const diagnosticIssues = readClaimConstructorIssueSheetRows_(spreadsheet, 'Импорт_1С_Диагностика')
+  const vlmRows = readClaimConstructorIssueSheetRows_(spreadsheet, 'Расчетные_листы_VLM');
+  const diagnosticIssues = readClaimConstructorIssueSheetRows_(spreadsheet, 'Расчетные_листы_Диагностика')
     .filter((row) => /(ошиб|предуп|не распоз|пропущ|не найден)/i.test(row.join(' ')))
     .map((row, index) => ({
-      source: `Импорт_1С_Диагностика!${index + 2}`,
+      source: `Расчетные_листы_Диагностика!${index + 2}`,
       reason: row.join(' | '),
     }));
   const reconstructionIssues = buildClaimConstructorReconstructionIssues_(reconstructionResult);
@@ -2094,10 +2097,10 @@ function classifyClaimConstructorSheet_(sheet) {
   if (/^(оклад|ежемесячные|ежеквартальные|ежегодные|отпуска(?: и расчет)?)$/.test(normalized)) {
     return 'primary_calculation';
   }
-  if (/^из_/i.test(name)) {
+  if (/^(?:реконструкция_|из_)/i.test(name)) {
     return 'reconstruction';
   }
-  if (/^импорт_/i.test(name) || /(диагност|качество|\bvlm\b|\bqg\b|состояние|структура выплат|аудит)/i.test(name)) {
+  if (/^расчетные_листы(?:_|$)/i.test(name) || /(диагност|качество|\bvlm\b|проверки|состояние|структура выплат|аудит)/i.test(name)) {
     return 'technical';
   }
   return 'other';

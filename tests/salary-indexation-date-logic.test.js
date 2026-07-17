@@ -95,13 +95,18 @@ const calendar = {
     layout: context.getSheetLayout_('Оклад'),
     columns: {
       paymentDate: 2,
+      legalDueDate: 5,
       year: 3,
       month: 4,
     },
   };
   const due = context.getRowPenaltyDueDate_(row, table, calendar);
-  assert.strictEqual(context.formatDate_(due.date), '15.02.2024');
-  assert.strictEqual(due.source, 'колонка C');
+  assert.strictEqual(due.date, null);
+  assert.match(due.source, /нормативный срок/i);
+  row[5] = '05.02.2024';
+  const explicitDue = context.getRowPenaltyDueDate_(row, table, calendar);
+  assert.strictEqual(context.formatDate_(explicitDue.date), '05.02.2024');
+  assert.strictEqual(explicitDue.source, 'колонка F');
 }
 
 {
@@ -118,8 +123,8 @@ const calendar = {
     },
   };
   const due = context.getRowPenaltyDueDate_(row, table, calendar);
-  assert.strictEqual(context.formatDate_(due.date), '15.02.2024');
-  assert.strictEqual(due.source, 'колонка C, последняя из 2 дат ведомостей');
+  assert.strictEqual(due.date, null);
+  assert.match(due.source, /фактическ/i);
 }
 
 {
@@ -127,6 +132,22 @@ const calendar = {
   assert.strictEqual(parsed.count, 2);
   assert.strictEqual(context.formatDate_(parsed.dates[0]), '19.01.2024');
   assert.strictEqual(context.formatDate_(parsed.dates[1]), '05.02.2024');
+}
+
+{
+  const row = ['15.02.2024', '05.02.2024'];
+  const separated = context.resolveArticle236DateFacts_(row, {
+    paymentDate: 0,
+    legalDueDate: 1,
+  });
+  assert.strictEqual(context.formatDate_(separated.actualPaymentDate), '15.02.2024');
+  assert.strictEqual(context.formatDate_(separated.legalDueDate), '05.02.2024');
+  const withoutDue = context.resolveArticle236DateFacts_(['15.02.2024', ''], {
+    paymentDate: 0,
+    legalDueDate: 1,
+  });
+  assert.strictEqual(context.formatDate_(withoutDue.actualPaymentDate), '15.02.2024');
+  assert.strictEqual(withoutDue.legalDueDate, null);
 }
 
 {
@@ -155,6 +176,10 @@ const calendar = {
     principal: 1700,
     totalUnderpayment: 1700,
     correctAmount: 17000,
+    inferredPaymentSchedule: {
+      firstHalf: { day: 20, monthOffset: 0, matches: 3, observations: 3 },
+      secondHalf: { day: 5, monthOffset: 1, matches: 3, observations: 3 },
+    },
   });
   assert.strictEqual(schedule.slices.length, 2);
   assert.strictEqual(schedule.slices[0].workDays, 8);
@@ -201,7 +226,7 @@ const calendar = {
     totalUnderpayment: 800,
     correctAmount: 8000,
     inferredPaymentSchedule: {
-      firstHalf: { day: 20, monthOffset: 1, matches: 2, observations: 2 },
+      firstHalf: { day: 20, monthOffset: 0, matches: 2, observations: 2 },
       secondHalf: { day: 5, monthOffset: 1, matches: 2, observations: 2 },
     },
   });
@@ -211,6 +236,38 @@ const calendar = {
   assert.strictEqual(schedule.slices[0].correctAmount, 8000);
   assert.strictEqual(schedule.slices[0].underpaymentAmount, 800);
   assert.strictEqual(context.formatDate_(schedule.slices[0].dueDate), '19.01.2024');
+}
+
+{
+  const row = [];
+  row[0] = 17;
+  row[1] = 17;
+  row[3] = 2024;
+  row[4] = 'янв';
+  row[7] = 17000;
+  row[9] = 1700;
+  row[17] = '25.01.2024\n10.02.2024';
+  const table = {
+    layout: context.getSheetLayout_('Оклад'),
+    columns: {
+      workedDays: 0, workDays: 1, year: 3, month: 4,
+      correctAmount: 7, unpaidSalary: 9, totalUnderpayment: 9, paymentDate: 17,
+    },
+  };
+  const schedule = context.buildSalaryDebtSchedule_(row, table, calendar, {
+    principal: 1700,
+    totalUnderpayment: 1700,
+    correctAmount: 17000,
+    inferredPaymentSchedule: {
+      firstHalf: { day: 20, monthOffset: 0, matches: 3, observations: 3 },
+      secondHalf: { day: 5, monthOffset: 1, matches: 3, observations: 3 },
+    },
+  });
+  assert.strictEqual(context.formatDate_(schedule.slices[0].dueDate), '19.01.2024');
+  assert.strictEqual(context.formatDate_(schedule.slices[0].actualPaymentDate), '25.01.2024');
+  assert.strictEqual(context.formatDate_(schedule.slices[1].dueDate), '05.02.2024');
+  assert.strictEqual(context.formatDate_(schedule.slices[1].actualPaymentDate), '10.02.2024');
+  assert.match(schedule.slices[0].dateSource, /восстановлено/);
 }
 
 {
@@ -402,7 +459,7 @@ const calendar = {
     [20, 20, '', 2024, 'фев', '', '', 20000, '', 2000, '', '', '', '', '', '', '', '20.02.2024\n05.03.2024'],
   ];
   const importedSheet = {
-    getName: () => 'Из_1С_Оклад',
+    getName: () => 'Реконструкция_Оклад',
     getLastRow: () => 2 + rows.length,
     getLastColumn: () => header.length,
     getRange(row, column, rowCount, columnCount) {
@@ -422,7 +479,7 @@ const calendar = {
   };
   const spreadsheet = {
     getSheetByName(name) {
-      return name === 'Из_1С_Оклад' ? importedSheet : null;
+      return name === 'Реконструкция_Оклад' ? importedSheet : null;
     },
   };
   const table = {
@@ -500,11 +557,11 @@ const calendar = {
   assert.strictEqual(context.indexToColumnLetter_(0), 'A');
   assert.strictEqual(context.indexToColumnLetter_(27), 'AB');
   assert.strictEqual(context.isGeneratedSheetName_('Методология'), true);
-  assert.strictEqual(context.isGeneratedSheetName_('Из_1С_Оклад'), true);
+  assert.strictEqual(context.isGeneratedSheetName_('Реконструкция_Оклад'), true);
   assert.strictEqual(context.isGeneratedSheetName_('Проверка'), false);
   assert.strictEqual(context.isGeneratedSheetName_('Оклад'), false);
-  assert.strictEqual(context.getSheetLayout_('Из_1С_Ежемесячные').id, 'monthlyPremiums');
-  assert.strictEqual(context.getSheetLayout_('Из_1С_Отпуска').id, 'vacation');
+  assert.strictEqual(context.getSheetLayout_('Реконструкция_Ежемесячные').id, 'monthlyPremiums');
+  assert.strictEqual(context.getSheetLayout_('Реконструкция_Отпуска').id, 'vacation');
 }
 
 {
@@ -527,7 +584,7 @@ const calendar = {
 
 {
   const vacationConfig = context.getZupReconstructionConfigs_().find((config) =>
-    config.targetSheetName === 'Из_1С_Отпуска'
+    config.targetSheetName === 'Реконструкция_Отпуска'
   );
   assert.strictEqual(vacationConfig.sourceSheetName, 'Отпуска и расчет');
 }
@@ -945,6 +1002,8 @@ const calendar = {
   assert.strictEqual(context.detectZupCategory_('премия ежемесячная 12000'), 'Ежемесячные премии');
   assert.strictEqual(context.detectZupCategory_('премия квартальная 15000'), 'Ежеквартальные премии');
   assert.strictEqual(context.detectZupCategory_('премия годовая 30000'), 'Ежегодные премии');
+  assert.strictEqual(context.detectZupCategory_('Зарплата за месяц', 'Выплачено'), 'Выплаты');
+  assert.strictEqual(context.detectZupCategory_('За первую половину месяца', 'Выплачено'), 'Выплаты');
   assert.strictEqual(context.detectZupSection_('Начислено'), 'Начислено');
   assert.strictEqual(context.detectCsvDelimiter_('a;b;c'), ';');
   assert.strictEqual(context.extractLastMoneyFromRow_(['Оплата по окладу', '21', '89 100,00']), 89100);
@@ -1115,7 +1174,7 @@ const calendar = {
   assert.strictEqual(equalNameDifferentFolders.length, 2);
   assert.strictEqual(
     vm.runInContext('ZUP_IMPORT_SETTINGS.PARSER_VERSION', context),
-    'zup-import-v15-source-isolation-headers'
+    'payroll-import-v16-legal-ledger'
   );
 
   assert.strictEqual(
@@ -1141,11 +1200,11 @@ const calendar = {
     ]),
     ''
   );
-  assert.strictEqual(context.isZupGeneratedSheet_('Из_1С_Оклад'), true);
+  assert.strictEqual(context.isZupGeneratedSheet_('Реконструкция_Оклад'), true);
   const reconstructionConfigs = context.getZupReconstructionConfigs_();
   assert.strictEqual(reconstructionConfigs.length, 5);
   assert.deepStrictEqual(
-    Array.from(reconstructionConfigs.find((config) => config.targetSheetName === 'Из_1С_Оклад').clearColumns),
+    Array.from(reconstructionConfigs.find((config) => config.targetSheetName === 'Реконструкция_Оклад').clearColumns),
     ['A', 'B', 'D', 'E', 'F', 'I', 'K', 'L', 'Q', 'R']
   );
   assert.strictEqual(typeof context.createSingleZupReconstructionSheet_, 'function');
@@ -1211,11 +1270,11 @@ const calendar = {
 
   const dryRun = context.importZupFolderCore_(fakeSpreadsheet, 'folder-id', { dryRun: true });
   assert.strictEqual(dryRun.rows.length, 1);
-  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Качество']), true);
-  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_QG']), true);
-  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_ЗУП']), false);
-  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Свод']), false);
-  assert.strictEqual(Boolean(sheetWrites['Импорт_1С_Диагностика']), false);
+  assert.strictEqual(Boolean(sheetWrites['Расчетные_листы_Качество']), true);
+  assert.strictEqual(Boolean(sheetWrites['Расчетные_листы_Проверки']), true);
+  assert.strictEqual(Boolean(sheetWrites['Расчетные_листы']), false);
+  assert.strictEqual(Boolean(sheetWrites['Расчетные_листы_Свод']), false);
+  assert.strictEqual(Boolean(sheetWrites['Расчетные_листы_Диагностика']), false);
 }
 
 {
@@ -1908,6 +1967,172 @@ const calendar = {
     context.formatMoneyWordsRu_(25140.01),
     'двадцать пять тысяч сто сорок рублей 01 копейка'
   );
+}
+
+{
+  const columns = {
+    file: 0, period: 4, accrualDate: 5, paymentDate: 10, section: 13, sourceRow: 19,
+  };
+  const makeRow = ({ file, period, accrualDate, paymentDate, section, sourceRow }) => {
+    const row = new Array(23).fill('');
+    row[columns.file] = file;
+    row[columns.period] = period;
+    row[columns.accrualDate] = accrualDate;
+    row[columns.paymentDate] = paymentDate;
+    row[columns.section] = section;
+    row[columns.sourceRow] = sourceRow;
+    return row;
+  };
+  const rows = [
+    makeRow({ file: 'b', period: '11.2023', accrualDate: '', paymentDate: '', section: 'Начислено', sourceRow: '3' }),
+    makeRow({ file: 'a', period: '10.2023', accrualDate: '', paymentDate: '', section: 'Начислено', sourceRow: '2' }),
+    makeRow({ file: 'a', period: '10.2023', accrualDate: '', paymentDate: '20.10.2023', section: 'Выплачено', sourceRow: '4' }),
+    makeRow({ file: 'a', period: '10.2023', accrualDate: '15.10.2023', paymentDate: '', section: 'Начислено', sourceRow: '1' }),
+  ];
+  const sorted = context.sortZupImportRowsChronologically_(rows);
+  assert.deepStrictEqual(
+    Array.from(sorted, (row) => `${row[columns.period]}|${row[columns.sourceRow]}`),
+    ['10.2023|1', '10.2023|4', '10.2023|2', '11.2023|3']
+  );
+}
+
+{
+  const payment = context.resolveZupLegalClassification_({
+    section: 'Выплачено',
+    category: 'Оклад',
+    kind: 'Зарплата за месяц',
+    sourceRow: 'Зарплата за месяц (Банк, вед. № 1)',
+  });
+  assert.strictEqual(payment.calculationCategory, 'Выплаты');
+  assert.strictEqual(payment.legalCategory, 'Смешанная выплата — состав не раскрыт');
+  assert.strictEqual(payment.status, 'требует проверки состава');
+
+  const premium = context.resolveZupLegalClassification_({
+    section: 'Начислено',
+    category: 'Ежеквартальные премии',
+    kind: 'Премия за I квартал',
+  });
+  assert.strictEqual(premium.legalCategory, 'Премия/поощрение — требуются документы');
+  assert.strictEqual(premium.legalSource, 'статьи 129, 135 и 191 ТК РФ');
+  assert.strictEqual(premium.needsDocuments, true);
+}
+
+{
+  const removed = [];
+  const created = [];
+  const sheet = {
+    filter: { remove() { removed.push(true); } },
+    getFilter() { return this.filter; },
+    getRange(row, column, rows, columns) {
+      return {
+        createFilter() {
+          created.push({ row, column, rows, columns });
+          sheet.filter = { remove() { removed.push(true); } };
+          return sheet.filter;
+        },
+      };
+    },
+  };
+  context.applyZupTableFilter_(sheet, 4, 23);
+  assert.strictEqual(removed.length, 1);
+  assert.deepStrictEqual(created, [{ row: 1, column: 1, rows: 5, columns: 23 }]);
+}
+
+{
+  const rows = [
+    ['a', '', 'ООО Альфа', 'Иванов', '10.2023', '', 2023, 10, '', '', '', '', '', 'Начислено', 'Оклад', 'Оклад', 100, '', '', ''],
+    ['b', '', 'ООО Бета', 'Иванов', '11.2023', '', 2023, 11, '', '', '', '', '', 'Начислено', 'Оклад', 'Оклад', 100, '', '', ''],
+  ];
+  const issues = context.buildZupQualityGateRows_(rows, []);
+  const companyIssue = issues.find((row) => row[0] === 'Организация' && /Найдены разные организации/.test(row[8]));
+  assert.ok(companyIssue);
+  assert.match(companyIssue[8], /расчет продолжен как для одной организации/i);
+  assert.match(companyIssue[9], /разделить расчет по работодателям/i);
+}
+
+{
+  assert.strictEqual(context.getZupWorkingDaysForPeriod_({ year: 2023, month: 10 }, calendar), 22);
+  const issues = context.buildZupWorkdayCalendarIssues_([
+    {
+      file: 'октябрь.pdf', period: { year: 2023, month: 10 }, section: 'Начислено',
+      category: 'Оклад', kind: 'Оклад', workDays: 18, paidDays: 18,
+    },
+  ], calendar);
+  assert.strictEqual(issues.length, 1);
+  assert.match(issues[0][8], /22 рабочих дня/);
+  assert.match(issues[0][8], /18/);
+  const partialIssues = context.buildZupWorkdayCalendarIssues_([
+    {
+      file: 'октябрь.pdf', period: { year: 2023, month: 10 }, section: 'Начислено',
+      category: 'Оклад', kind: 'Неполный месяц после приема', workDays: 18, paidDays: 18,
+    },
+  ], calendar);
+  assert.strictEqual(partialIssues.length, 0);
+  const parts = context.buildZupSalaryDiscreteRowsForPeriod_(
+    { year: 2023, month: 10 },
+    {
+      period: { year: 2023, month: 10 }, hasWorkDays: true, workDays: 18,
+      hasPaidDays: true, paidDays: 18, amount: 100000,
+      statements: {}, statementDates: {}, statementEntries: [], files: { 'октябрь.pdf': true },
+    },
+    calendar,
+    null
+  );
+  assert.strictEqual(parts.reduce((sum, item) => sum + item.workDays, 0), 22);
+}
+
+{
+  const late = context.buildZupVacationTimingAudit_({
+    vacationStartDate: new Date(2024, 6, 8),
+    paymentDate: new Date(2024, 6, 6),
+    entitledAmount: 30000,
+    paidAmount: 30000,
+    calculationEndDate: new Date(2024, 6, 10),
+  });
+  assert.strictEqual(late.status, 'late_paid');
+  assert.strictEqual(context.formatDate_(late.dueDate), '05.07.2024');
+  assert.strictEqual(late.delayDays, 1);
+  assert.strictEqual(late.outstandingPrincipal, 0);
+
+  const timely = context.buildZupVacationTimingAudit_({
+    vacationStartDate: new Date(2024, 6, 8),
+    paymentDate: new Date(2024, 6, 5),
+    entitledAmount: 30000,
+    paidAmount: 30000,
+  });
+  assert.strictEqual(timely.status, 'on_time');
+
+  const missing = context.buildZupVacationTimingAudit_({
+    vacationStartDate: null,
+    paymentDate: new Date(2024, 6, 5),
+    entitledAmount: 30000,
+    paidAmount: 30000,
+  });
+  assert.strictEqual(missing.status, 'cannot_verify');
+  assert.strictEqual(
+    context.formatDate_(context.extractZupVacationStartDate_('08.07.2024-21.07.2024')),
+    '08.07.2024'
+  );
+}
+
+{
+  const row = ['06.07.2024', '08.07.2024', 30000, '07.2024'];
+  const facts = context.buildVacationPaymentDelayFacts_({
+    rows: [row],
+    table: {
+      headerRow: 1,
+      layout: { id: 'vacation' },
+      columns: { paymentDate: 0, vacationStartDate: 1, vacationPaidAmount: 2, period: 3 },
+    },
+    sheetName: 'Реконструкция_Отпуска',
+    compensationRates: [{ date: new Date(2024, 0, 1), rate: 16 }],
+  });
+  assert.strictEqual(facts.length, 1);
+  assert.strictEqual(facts[0].family, 'vacation_payment_delay');
+  assert.strictEqual(facts[0].calculationItem, 'article_236');
+  assert.strictEqual(facts[0].disputed, true);
+  assert.ok(facts[0].amount > 0);
+  assert.strictEqual(facts[0].baseKind, 'vacation_payment');
 }
 
 console.log('date logic ok');

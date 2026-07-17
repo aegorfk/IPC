@@ -353,6 +353,7 @@ class FakeSheet {
   }
 
   getName() { return this.name; }
+  setName(name) { this.name = name; return this; }
   getParent() { return this.spreadsheet; }
   getSheetId() { return this.id; }
   getRange(row, column, rowCount, columnCount) {
@@ -1812,8 +1813,8 @@ function createHarness(sheetNames = ['Оклад']) {
     vlmRows: [[
       'листок.pdf', 'application/pdf', 'gemini', 'VLM', 4, 0, 0, 0, 0, '', 'Низкая уверенность', '{}',
     ]],
-    diagnosticIssues: [{ source: 'Импорт_1С_Диагностика!A2', reason: 'Не найдена дата выплаты' }],
-    reconstructionIssues: [{ source: 'Из_1С_Оклад!A7', reason: 'Строка не сопоставлена' }],
+    diagnosticIssues: [{ source: 'Расчетные_листы_Диагностика!A2', reason: 'Не найдена дата выплаты' }],
+    reconstructionIssues: [{ source: 'Реконструкция_Оклад!A7', reason: 'Строка не сопоставлена' }],
     skippedCalculationIssues: [{ source: 'Оклад!A10', reason: 'Строка пропущена при расчете' }],
   };
   const snapshot = JSON.stringify(signals);
@@ -1994,17 +1995,17 @@ function stubReconstructionPipeline(harness) {
   harness.context.getZupReconstructionConfigs_ = () => [];
   harness.context.buildZupReconstructionModel_ = () => model;
   harness.context.loadProductionCalendarSafely_ = () => ({ calendar: true });
-  harness.context.fillZupSalaryReconstruction_ = () => ({ sheet: 'Из_1С_Оклад', rows: 2 });
+  harness.context.fillZupSalaryReconstruction_ = () => ({ sheet: 'Реконструкция_Оклад', rows: 2 });
   harness.context.fillZupPremiumReconstruction_ = (spreadsheet, sheetName) => ({ sheet: sheetName, rows: 1 });
-  harness.context.fillZupVacationReconstruction_ = () => ({ sheet: 'Из_1С_Отпуска', rows: 1 });
+  harness.context.fillZupVacationReconstruction_ = () => ({ sheet: 'Реконструкция_Отпуска', rows: 1 });
   harness.context.markZupReconstructionCompany_ = () => {};
   harness.context.updateZupReconstructionIndexationSheet_ = (spreadsheet, sheetName) => ({
     sheetName,
-    calculated: sheetName === 'Из_1С_Оклад' ? 2 : 1,
+    calculated: sheetName === 'Реконструкция_Оклад' ? 2 : 1,
     skipped: 0,
   });
   harness.context.updateZupReconstructionIndexationSheets_ = () => [
-    { sheetName: 'Из_1С_Оклад', calculated: 2, skipped: 0 },
+    { sheetName: 'Реконструкция_Оклад', calculated: 2, skipped: 0 },
   ];
   return model;
 }
@@ -2018,8 +2019,8 @@ function stubReconstructionPipeline(harness) {
   harness.context.populateZupReconstructionSheets();
 
   assert.strictEqual(messages.length, 1);
-  assert.ok(messages[0].includes('Вкладки Из_1С заполнены'));
-  assert.ok(messages[0].includes('Пересчет Из_1С выполнен'));
+  assert.ok(messages[0].includes('Вкладки реконструкции заполнены'));
+  assert.ok(messages[0].includes('Пересчет реконструкции выполнен'));
 }
 
 {
@@ -2044,7 +2045,7 @@ function stubReconstructionPipeline(harness) {
   const calls = [];
   harness.context.fillZupSalaryReconstruction_ = () => {
     calls.push('fill:salary');
-    return { sheet: 'Из_1С_Оклад', rows: 2 };
+    return { sheet: 'Реконструкция_Оклад', rows: 2 };
   };
   harness.context.fillZupPremiumReconstruction_ = (spreadsheet, sheetName) => {
     calls.push(`fill:${sheetName}`);
@@ -2052,7 +2053,7 @@ function stubReconstructionPipeline(harness) {
   };
   harness.context.fillZupVacationReconstruction_ = () => {
     calls.push('fill:vacation');
-    return { sheet: 'Из_1С_Отпуска', rows: 1 };
+    return { sheet: 'Реконструкция_Отпуска', rows: 1 };
   };
   harness.context.markZupReconstructionCompany_ = () => calls.push('mark:company');
   harness.context.updateZupReconstructionIndexationSheet_ = (spreadsheet, sheetName) => {
@@ -2525,12 +2526,12 @@ function stubDocsHandoff(harness, ready = true) {
   importRow[13] = 'Начислено';
   importRow[14] = 'Оклад';
   importRow[16] = 100;
-  const importSheet = harness.spreadsheet.insertSheet('Импорт_1С_ЗУП');
+  const importSheet = harness.spreadsheet.insertSheet('Расчетные_листы');
   importSheet.getRange(1, 1, 2, 20).setValues([
     Array.from({ length: 20 }, (_, index) => `H${index + 1}`),
     importRow,
   ]);
-  const stateSheet = harness.spreadsheet.insertSheet('Импорт_1С_Состояние');
+  const stateSheet = harness.spreadsheet.insertSheet('Расчетные_листы_Состояние');
   stateSheet.getRange(1, 1, 3, 11).setValues([
     Array.from({ length: 11 }, (_, index) => `S${index + 1}`),
     ['folder::листок-1.png', 'file-1', 'листок-1.png', 'image/png', '', '', 'parser', 'sig-1', 1, 'Не изменился', '15.07.2026'],
@@ -2567,7 +2568,7 @@ function stubDocsHandoff(harness, ready = true) {
   stale.progress = { processed: 30, total: 31 };
   stale.updatedAt = '2026-07-14T18:48:00.000Z';
   harness.context.saveClaimConstructorRun_(stale, harness.scriptProperties);
-  const importSheet = harness.spreadsheet.insertSheet('Импорт_1С_ЗУП');
+  const importSheet = harness.spreadsheet.insertSheet('Расчетные_листы');
   const importRow = Array(20).fill('');
   importRow[0] = 'листок-31.png';
   importRow[13] = 'Начислено';
@@ -2577,7 +2578,7 @@ function stubDocsHandoff(harness, ready = true) {
     Array.from({ length: 20 }, (_, index) => `H${index + 1}`),
     importRow,
   ]);
-  const stateSheet = harness.spreadsheet.insertSheet('Импорт_1С_Состояние');
+  const stateSheet = harness.spreadsheet.insertSheet('Расчетные_листы_Состояние');
   stateSheet.getRange(1, 1, 32, 11).setValues([
     Array.from({ length: 11 }, (_, index) => `S${index + 1}`),
   ].concat(Array.from({ length: 31 }, (_, index) => [
@@ -2632,7 +2633,7 @@ function stubDocsHandoff(harness, ready = true) {
     startedAt: '2026-07-11T08:00:00.000Z',
     updatedAt: '2026-07-14T18:48:00.000Z',
   }));
-  const importSheet = harness.spreadsheet.insertSheet('Импорт_1С_ЗУП');
+  const importSheet = harness.spreadsheet.insertSheet('Расчетные_листы');
   const importRow = Array(20).fill('');
   importRow[0] = 'листок-31.png';
   importRow[13] = 'Начислено';
@@ -2642,7 +2643,7 @@ function stubDocsHandoff(harness, ready = true) {
     Array.from({ length: 20 }, (_, index) => `H${index + 1}`),
     importRow,
   ]);
-  const stateSheet = harness.spreadsheet.insertSheet('Импорт_1С_Состояние');
+  const stateSheet = harness.spreadsheet.insertSheet('Расчетные_листы_Состояние');
   stateSheet.getRange(1, 1, 32, 11).setValues([
     Array.from({ length: 11 }, (_, index) => `S${index + 1}`),
   ].concat(Array.from({ length: 31 }, (_, index) => [
@@ -2893,7 +2894,7 @@ function stubBatchSessionStartup(harness) {
 
 // Retrying one diagnostic target replaces its rows instead of duplicating them.
 {
-  const harness = createHarness(['Импорт_1С_Диагностика']);
+  const harness = createHarness(['Расчетные_листы_Диагностика']);
   const target = { layoutId: 'salary', category: 'Оклад' };
   let revision = 0;
   harness.context.buildZupDiagnosticsForTarget_ = () => [[
@@ -2903,7 +2904,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.writeZupDiagnosticTargetSheet_(harness.spreadsheet, [], target, true);
   harness.context.writeZupDiagnosticTargetSheet_(harness.spreadsheet, [], target, false);
 
-  const sheet = harness.spreadsheet.getSheetByName('Импорт_1С_Диагностика');
+  const sheet = harness.spreadsheet.getSheetByName('Расчетные_листы_Диагностика');
   assert.strictEqual(sheet.getLastRow(), 2);
   assert.strictEqual(sheet.getRange(2, 3).getValue(), 'Оклад');
   assert.strictEqual(sheet.getRange(2, 7).getValue(), 1);
@@ -2911,8 +2912,8 @@ function stubBatchSessionStartup(harness) {
 
 // Technical-sheet presentation batches column resizing into one service call.
 {
-  const harness = createHarness(['Импорт_1С_Тест']);
-  const sheet = harness.spreadsheet.getSheetByName('Импорт_1С_Тест');
+  const harness = createHarness(['Расчетные_листы_Тест']);
+  const sheet = harness.spreadsheet.getSheetByName('Расчетные_листы_Тест');
 
   harness.context.writeZupSheetData_(sheet, [
     ['Колонка 1', 'Колонка 2', 'Колонка 3'],
@@ -3004,7 +3005,7 @@ function stubBatchSessionStartup(harness) {
     order.push('reconstructing');
     return {
       complete: true,
-      result: { fillResults: [{ sheet: 'Из_1С_Оклад', rows: 1 }], calculationResults: [] },
+      result: { fillResults: [{ sheet: 'Реконструкция_Оклад', rows: 1 }], calculationResults: [] },
     };
   };
   harness.context.runAllSheetsIndexation_ = () => {
@@ -3065,7 +3066,7 @@ function stubBatchSessionStartup(harness) {
           nextStep: 1,
           totalSteps: 10,
           currentStep: 'Заполняем оклад',
-          fillResults: [{ sheet: 'Из_1С_Оклад', rows: 2 }],
+          fillResults: [{ sheet: 'Реконструкция_Оклад', rows: 2 }],
           calculationResults: [],
           stepTimings: [{ step: 'fill_salary', durationMs: 1250 }],
         },
@@ -3206,13 +3207,13 @@ function stubBatchSessionStartup(harness) {
 }
 
 {
-  const harness = createHarness(['Оклад', 'Импорт_1С_QG', 'Импорт_1С_VLM']);
-  const qg = harness.spreadsheet.getSheetByName('Импорт_1С_QG');
+  const harness = createHarness(['Оклад', 'Расчетные_листы_Проверки', 'Расчетные_листы_VLM']);
+  const qg = harness.spreadsheet.getSheetByName('Расчетные_листы_Проверки');
   ['Проверка', 'Серьезность', 'Статус', 'Файл', 'Период', 'Организация', 'Сотрудник', 'Лист/ячейка', 'Проблема', 'Что проверить']
     .forEach((value, index) => qg.seed(1, index + 1, value));
   ['Сотрудник', 'Предупреждение', 'На проверке', 'листок.pdf', '06.2026', '', '', 'A2', 'ФИО различается', 'Сверить']
     .forEach((value, index) => qg.seed(2, index + 1, value));
-  const vlm = harness.spreadsheet.getSheetByName('Импорт_1С_VLM');
+  const vlm = harness.spreadsheet.getSheetByName('Расчетные_листы_VLM');
   Array.from({ length: 12 }, (_, index) => `H${index}`).forEach((value, index) => vlm.seed(1, index + 1, value));
   ['листок.pdf', 'pdf', 'model', 'VLM', 1, 0, 0, 0, 0, '', 'Низкая уверенность', '{}']
     .forEach((value, index) => vlm.seed(2, index + 1, value));
@@ -3692,9 +3693,9 @@ function stubBatchSessionStartup(harness) {
     'Оклад',
     'Ежемесячные',
     'Отпуска и расчет',
-    'Из_1С_Оклад',
+    'Реконструкция_Оклад',
     'Из_ДругойСистемы_Оклад',
-    'Импорт_1С_QG',
+    'Расчетные_листы_Проверки',
     'Диагностика распознавания',
     'Заметки',
   ]);
@@ -3707,9 +3708,9 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(classify('Оклад'), 'primary_calculation');
   assert.strictEqual(classify('Ежемесячные'), 'primary_calculation');
   assert.strictEqual(classify('Отпуска и расчет'), 'primary_calculation');
-  assert.strictEqual(classify('Из_1С_Оклад'), 'reconstruction');
+  assert.strictEqual(classify('Реконструкция_Оклад'), 'reconstruction');
   assert.strictEqual(classify('Из_ДругойСистемы_Оклад'), 'reconstruction');
-  assert.strictEqual(classify('Импорт_1С_QG'), 'technical');
+  assert.strictEqual(classify('Расчетные_листы_Проверки'), 'technical');
   assert.strictEqual(classify('Диагностика распознавания'), 'technical');
   assert.strictEqual(classify('Заметки'), 'other');
 }
@@ -3717,7 +3718,7 @@ function stubBatchSessionStartup(harness) {
 {
   const names = [
     'Конструктор', 'Анкета и требования', 'Оклад', 'Ежемесячные', 'Ежеквартальные', 'Ежегодные', 'Отпуска и расчет',
-    'Из_1С_Оклад', 'Импорт_1С_QG', 'Заметки',
+    'Реконструкция_Оклад', 'Расчетные_листы_Проверки', 'Заметки',
   ];
   const harness = createHarness(names);
   harness.spreadsheet.getSheets().forEach((sheet, index) => {
@@ -3786,14 +3787,14 @@ function stubBatchSessionStartup(harness) {
 }
 
 {
-  const harness = createHarness(['Конструктор', 'Оклад', 'Импорт_1С_QG']);
+  const harness = createHarness(['Конструктор', 'Оклад', 'Расчетные_листы_Проверки']);
   harness.documentProperties.setProperty('CLAIM_CONSTRUCTOR_VISIBILITY_MODE', 'detail');
 
   harness.context.onOpen();
 
   assert.strictEqual(harness.spreadsheet.getSheetByName('Конструктор').isSheetHidden(), false);
   assert.strictEqual(harness.spreadsheet.getSheetByName('Оклад').isSheetHidden(), false);
-  assert.strictEqual(harness.spreadsheet.getSheetByName('Импорт_1С_QG').isSheetHidden(), true);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Расчетные_листы_Проверки').isSheetHidden(), true);
 }
 
 {
@@ -7810,6 +7811,53 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
       .getNumRows(),
     2
   );
+}
+
+{
+  const harness = createHarness([
+    'Импорт_1С_ЗУП',
+    'Импорт_1С_QG',
+    'Из_1С_Оклад',
+  ]);
+  const legacyLedger = harness.spreadsheet.getSheetByName('Импорт_1С_ЗУП');
+  const legacyChecks = harness.spreadsheet.getSheetByName('Импорт_1С_QG');
+  const legacyReconstruction = harness.spreadsheet.getSheetByName('Из_1С_Оклад');
+  const ids = [legacyLedger, legacyChecks, legacyReconstruction].map((sheet) => sheet.getSheetId());
+  legacyLedger.getRange('A2').setValue('сохранить');
+  legacyChecks.getRange('B2').setFormula('=1+1');
+
+  const migrated = harness.context.migrateLegacyPayrollSheetNames_(harness.spreadsheet);
+  assert.strictEqual(migrated.length, 3);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Расчетные_листы').getSheetId(), ids[0]);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Расчетные_листы_Проверки').getSheetId(), ids[1]);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Реконструкция_Оклад').getSheetId(), ids[2]);
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Расчетные_листы').getRange('A2').getValue(), 'сохранить');
+  assert.strictEqual(harness.spreadsheet.getSheetByName('Расчетные_листы_Проверки').getRange('B2').getFormula(), '=1+1');
+  assert.deepStrictEqual(
+    harness.spreadsheet.getSheets().slice(0, 3).map((sheet) => sheet.getSheetId()), ids
+  );
+}
+
+{
+  const harness = createHarness(['Анкета и требования']);
+  const fact = {
+    family: 'vacation_payment_delay',
+    layoutId: 'vacation',
+    baseKind: 'vacation_payment',
+    baseLabel: 'Просрочка выплаты отпускных',
+    periodKey: '2024-07',
+    periodLabel: '07.2024',
+    calculationItem: 'article_236',
+    amount: 96,
+    disputed: true,
+    sourceRef: 'Реконструкция_Отпуска!2',
+  };
+  const model = harness.context.buildClaimAuditModel_([fact]);
+  assert.strictEqual(model.groups.length, 1);
+  assert.strictEqual(model.groups[0].label, 'Нарушение срока выплаты отпускных');
+  assert.strictEqual(model.groups[0].items[0].selected, true);
+  assert.strictEqual(model.groups[0].items[0].badge, 'спорное');
+  assert.strictEqual(model.groups[0].items[0].key.split('|').length, 5);
 }
 
 console.log('claim constructor characterization ok');

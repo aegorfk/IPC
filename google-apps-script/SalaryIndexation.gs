@@ -155,6 +155,7 @@ const HEADER_ALIASES = {
   period: ['период', 'период премии', 'расчетный период', 'расчётный период',
     'месяц, год расчета', 'месяц год расчета', 'месяц, год расчёта'],
   paymentDate: ['дата выплаты', 'дата выплаты премии', 'дата выплаты отпуск', 'дата выплаты отпуска', 'дата ведомости выплат'],
+  legalDueDate: ['срок выплаты', 'установленная дата выплаты', 'дата, когда выплата должна быть произведена'],
   paymentStatement: ['ведомости выплат', 'ведомость выплаты', 'ведомость'],
   unpaidSalary: [
     'недоплата по окладу',
@@ -179,6 +180,7 @@ const HEADER_ALIASES = {
   actualDerivativeAmount: ['начислено по расчетным листкам', 'фактически начислено', 'фактически выплачено'],
   correctDerivativeAmount: ['корректное начисление', 'надлежащее начисление отпускных'],
   vacationStartDate: ['дата начала отпуска', 'начало отпуска', 'дата начала периода отпуска'],
+  vacationPaidAmount: ['фактически выплачено отпускных', 'выплачено отпускных'],
   annualPremiumYear: ['за какой год премия', 'год премии', 'год расчета премии', 'год расчёта премии'],
   penalty: ['пени ст. 236', 'пени по ст. 236', 'материальная ответственность', 'ст. 236 тк рф'],
 };
@@ -296,22 +298,22 @@ function onOpen() {
     .addItem('Продолжить пакетный импорт', 'resumeZupFolderImport')
     .addItem('Остановить пакетный импорт', 'cancelZupFolderImport')
     .addItem('Проверить VLM настройки', 'showZupVlmSettings')
-    .addItem('Создать все вкладки структуры из 1С', 'createZupReconstructionSheets')
+    .addItem('Создать все вкладки структуры расчетных листов', 'createZupReconstructionSheets')
     .addSeparator()
-    .addItem('Создать Из_1С_Оклад', 'createZupSalaryReconstructionSheet')
-    .addItem('Создать Из_1С_Ежемесячные', 'createZupMonthlyReconstructionSheet')
-    .addItem('Создать Из_1С_Ежеквартальные', 'createZupQuarterlyReconstructionSheet')
-    .addItem('Создать Из_1С_Ежегодные', 'createZupAnnualReconstructionSheet')
-    .addItem('Создать Из_1С_Отпуска', 'createZupVacationReconstructionSheet')
+    .addItem('Создать Реконструкция_Оклад', 'createZupSalaryReconstructionSheet')
+    .addItem('Создать Реконструкция_Ежемесячные', 'createZupMonthlyReconstructionSheet')
+    .addItem('Создать Реконструкция_Ежеквартальные', 'createZupQuarterlyReconstructionSheet')
+    .addItem('Создать Реконструкция_Ежегодные', 'createZupAnnualReconstructionSheet')
+    .addItem('Создать Реконструкция_Отпуска', 'createZupVacationReconstructionSheet')
     .addSeparator()
-    .addItem('Заполнить вкладки Из_1С из импорта', 'populateZupReconstructionSheets')
-    .addItem('Пересчитать вкладки Из_1С', 'updateZupReconstructionIndexation')
+    .addItem('Заполнить вкладки реконструкции из импорта', 'populateZupReconstructionSheets')
+    .addItem('Пересчитать вкладки реконструкции', 'updateZupReconstructionIndexation')
     .addSeparator()
     .addItem('Обновить все расчетные листы', 'updateAllSheetsIndexation')
     .addItem('Заполнить Docs "Расчет требований"', 'fillClaimCalculationDocs')
     .addItem('Пересчитать вынужденный прогул, ст. 236 и отпуска', 'recalculateForcedAbsenceLiabilityAndVacations')
     .addSeparator()
-    .addItem('Очистить импорт 1С', 'clearZupImportSheets');
+    .addItem('Очистить импорт расчетных листов', 'clearZupImportSheets');
 
   ui.createMenu('Конструктор требований')
     .addItem('Открыть конструктор', 'openClaimConstructor')
@@ -1270,7 +1272,7 @@ function deleteLegacyGeneratedSheets_(spreadsheet) {
 
 function isGeneratedSheetName_(sheetName) {
   return sheetName === SETTINGS.METHODOLOGY_SHEET_NAME ||
-    /^Из_1С_/i.test(String(sheetName || ''));
+    /^Реконструкция_/i.test(String(sheetName || ''));
 }
 
 function updateUnpaidSalaryIndexationCore_(params) {
@@ -1472,14 +1474,19 @@ function updateUnpaidSalaryIndexationCore_(params) {
       penaltyNotes.push([buildSalarySchedulePenaltyNote_(penaltyResult, schedule, penaltyEnd, totalUnderpayment, table.layout)]);
     } else {
       const penaltyDue = getRowPenaltyDueDate_(row, table, productionCalendar);
-      const penaltyResult = calculateSalaryCompensation_(
-        totalUnderpayment,
-        penaltyDue.date,
-        penaltyEnd.date,
-        compensationRates
-      );
-      penaltyValues.push([penaltyResult.amount]);
-      penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+      if (!penaltyDue.date) {
+        penaltyValues.push(['']);
+        penaltyNotes.push([`Материальная ответственность не рассчитана: ${penaltyDue.source}. Укажите самостоятельный нормативный срок, не подменяя его фактической датой выплаты.`]);
+      } else {
+        const penaltyResult = calculateSalaryCompensation_(
+          totalUnderpayment,
+          penaltyDue.date,
+          penaltyEnd.date,
+          compensationRates
+        );
+        penaltyValues.push([penaltyResult.amount]);
+        penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+      }
     }
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
     calculated++;
@@ -1579,14 +1586,19 @@ function updateUnpaidSalaryIndexationCore_(params) {
       penaltyValues.push([penaltyResult.amount]);
       penaltyNotes.push([buildSalarySchedulePenaltyNote_(penaltyResult, schedule, penaltyEnd, totalUnderpayment, table.layout)]);
     } else {
-      const penaltyResult = calculateSalaryCompensation_(
-        totalUnderpayment,
-        penaltyDue.date,
-        penaltyEnd.date,
-        compensationRates
-      );
-      penaltyValues.push([penaltyResult.amount]);
-      penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+      if (!penaltyDue.date) {
+        penaltyValues.push(['']);
+        penaltyNotes.push([`Материальная ответственность не рассчитана: ${penaltyDue.source}. Укажите самостоятельный нормативный срок, не подменяя его фактической датой выплаты.`]);
+      } else {
+        const penaltyResult = calculateSalaryCompensation_(
+          totalUnderpayment,
+          penaltyDue.date,
+          penaltyEnd.date,
+          compensationRates
+        );
+        penaltyValues.push([penaltyResult.amount]);
+        penaltyNotes.push([buildPenaltyNote_(penaltyResult, penaltyDue.date, penaltyEnd, totalUnderpayment, table.layout, penaltyDue.source)]);
+      }
     }
     penaltyBackgrounds.push([SETTINGS.BACKGROUND_DEFAULT]);
   });
@@ -1631,6 +1643,14 @@ function updateUnpaidSalaryIndexationCore_(params) {
       inferredPaymentSchedule
     ),
   });
+  if (table.layout.id === 'vacation') {
+    Array.prototype.push.apply(claimFacts, buildVacationPaymentDelayFacts_({
+      sheetName: sheet.getName(),
+      table,
+      rows: values,
+      compensationRates,
+    }));
+  }
 
   return {
     sheetName: sheet.getName(),
@@ -1656,7 +1676,10 @@ function buildClaimFactSourceMetadata_(
     const principalColumn = table.columns.totalUnderpayment + 1;
     const liabilityColumn = table.columns.penalty + 1;
     const indexationColumn = table.columns.target + 1;
-    const due = getRowPenaltyDueDate_(row, table, productionCalendar);
+    const dateFacts = resolveArticle236DateFacts_(row, table.columns);
+    const due = dateFacts.legalDueDate
+      ? { date: dateFacts.legalDueDate, source: dateFacts.dueDateSource }
+      : getRowPenaltyDueDate_(row, table, productionCalendar);
     const liabilitySchedule = table.layout.liabilityTiming === 'salary_schedule'
       ? buildSalaryDebtSchedule_(row, table, productionCalendar, {
           totalUnderpayment: parseMoney_(row[table.columns.totalUnderpayment]),
@@ -1670,6 +1693,7 @@ function buildClaimFactSourceMetadata_(
           id: slice.id,
           label: slice.label,
           dueDate: new Date(slice.dueDate),
+          actualPaymentDate: slice.actualPaymentDate ? new Date(slice.actualPaymentDate) : null,
           principal: roundMoney_(slice.underpaymentAmount),
         }))
       : null;
@@ -1686,6 +1710,10 @@ function buildClaimFactSourceMetadata_(
         },
       },
       dueDate: due && due.date,
+      actualPaymentDate: dateFacts.actualPaymentDate,
+      dueDateSource: due && due.date
+        ? (dateFacts.legalDueDate ? 'explicit_legal_due_date' : 'methodology_inference')
+        : 'requires_due_date',
       liabilitySchedule,
       liabilityTiming: table.layout.liabilityTiming,
       calculationEndDate: calculationEndDate && new Date(calculationEndDate),
@@ -1759,7 +1787,7 @@ function rescanCalculationResultFromSheet_(spreadsheet, result, cachedTable, cac
       previous = candidates.shift();
     }
     if (!previous) return;
-    ['source', 'dueDate', 'liabilitySchedule', 'liabilityTiming', 'calculationEndDate', 'destinations'].forEach((field) => {
+    ['source', 'dueDate', 'actualPaymentDate', 'dueDateSource', 'liabilitySchedule', 'liabilityTiming', 'calculationEndDate', 'destinations'].forEach((field) => {
       if (previous[field] !== undefined) fact[field] = previous[field];
     });
   });
@@ -1832,6 +1860,8 @@ function buildClaimFactsFromCalculationRows_(params) {
     if (sourceMetadata) {
       common.source = sourceMetadata.source;
       common.dueDate = sourceMetadata.dueDate;
+      common.actualPaymentDate = sourceMetadata.actualPaymentDate;
+      common.dueDateSource = sourceMetadata.dueDateSource;
       common.liabilitySchedule = sourceMetadata.liabilitySchedule;
       common.liabilityTiming = sourceMetadata.liabilityTiming;
       common.calculationEndDate = sourceMetadata.calculationEndDate;
@@ -1849,6 +1879,56 @@ function buildClaimFactsFromCalculationRows_(params) {
       readClaimFactAmount_(settings.liabilityValues, rowIndex));
   });
   return facts;
+}
+
+function buildVacationPaymentDelayFacts_(params) {
+  const settings = params || {};
+  const rows = settings.rows || [];
+  const table = settings.table || {};
+  const columns = table.columns || {};
+  if ((table.layout && table.layout.id) !== 'vacation'
+    || !Number.isInteger(columns.paymentDate)
+    || !Number.isInteger(columns.vacationStartDate)
+    || !Number.isInteger(columns.vacationPaidAmount)) return [];
+
+  return rows.reduce((facts, row, rowIndex) => {
+    const paymentDate = parseDateValue_(row[columns.paymentDate]);
+    const vacationStartDate = parseDateValue_(row[columns.vacationStartDate]);
+    const paidAmount = parseMoney_(row[columns.vacationPaidAmount]);
+    const timing = buildZupVacationTimingAudit_({
+      vacationStartDate,
+      paymentDate,
+      entitledAmount: paidAmount,
+      paidAmount,
+    });
+    if (timing.status !== 'late_paid' || !paidAmount || paidAmount <= 0) return facts;
+    const compensation = calculateSalaryCompensation_(
+      paidAmount,
+      timing.dueDate,
+      timing.paymentDate,
+      settings.compensationRates || []
+    );
+    if (!compensation.amount || compensation.amount <= 0) return facts;
+    const period = parseRowPeriod_(row, columns) || {
+      year: vacationStartDate.getFullYear(), month: vacationStartDate.getMonth() + 1,
+    };
+    facts.push({
+      family: 'vacation_payment_delay',
+      layoutId: 'vacation',
+      baseKind: 'vacation_payment',
+      baseLabel: 'Просрочка выплаты отпускных',
+      periodKey: `${period.year}-${pad2_(period.month)}`,
+      periodLabel: `${pad2_(period.month)}.${period.year}`,
+      calculationItem: 'article_236',
+      amount: roundMoney_(compensation.amount),
+      disputed: true,
+      sourceRef: `${settings.sheetName || 'Отпуска'}!${Number(table.headerRow || 0) + rowIndex + 1}`,
+      dueDate: timing.dueDate,
+      actualPaymentDate: timing.paymentDate,
+      delayDays: timing.delayDays,
+    });
+    return facts;
+  }, []);
 }
 
 function getClaimFactBase_(layoutId) {
@@ -1892,6 +1972,8 @@ function appendClaimFactIfPositive_(facts, common, family, calculationItem, amou
   };
   if (common.source) fact.source = common.source;
   if (common.dueDate) fact.dueDate = common.dueDate;
+  if (common.actualPaymentDate) fact.actualPaymentDate = common.actualPaymentDate;
+  if (common.dueDateSource) fact.dueDateSource = common.dueDateSource;
   if (common.liabilitySchedule) fact.liabilitySchedule = common.liabilitySchedule;
   if (common.liabilityTiming) fact.liabilityTiming = common.liabilityTiming;
   if (common.calculationEndDate) fact.calculationEndDate = common.calculationEndDate;
@@ -2821,7 +2903,7 @@ function findTable_(sheet, descriptor) {
       descriptor: resolvedDescriptor,
     };
   }
-  const generatedLayout = /^Из_1С_/i.test(String(sheet.getName() || ''))
+  const generatedLayout = /^Реконструкция_/i.test(String(sheet.getName() || ''))
     ? getSheetLayout_(sheet.getName()) : null;
   const generatedAdapterFallback = generatedLayout
     && hasRecognizedFixedAdapterHeader_(sheet, generatedLayout);
@@ -2855,7 +2937,9 @@ function findTable_(sheet, descriptor) {
         derivativeIndexation: layout.derivativeIndexationColumn ? columnLetterToIndex_(layout.derivativeIndexationColumn) : null,
         derivativeLiability: layout.derivativeLiabilityColumn ? columnLetterToIndex_(layout.derivativeLiabilityColumn) : null,
         vacationStartDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationStartDate),
+        vacationPaidAmount: resolveOptionalColumn_(headerValues, HEADER_ALIASES.vacationPaidAmount),
         paymentDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentDate),
+        legalDueDate: resolveOptionalColumn_(headerValues, HEADER_ALIASES.legalDueDate),
         paymentStatement: resolveOptionalColumn_(headerValues, HEADER_ALIASES.paymentStatement),
         annualPremiumYear: resolveOptionalColumn_(headerValues, HEADER_ALIASES.annualPremiumYear),
         target: columnLetterToIndex_(layout.targetColumn),
@@ -2870,7 +2954,7 @@ function findTable_(sheet, descriptor) {
   const rows = sheet.getRange(1, 1, scanRows, lastColumn).getDisplayValues();
 
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-    const columns = resolveColumns_(rows[rowIndex]);
+      const columns = resolveColumns_(rows[rowIndex]);
     if (columns) {
       return {
         headerRow: rowIndex + 1,
@@ -2898,7 +2982,7 @@ function hasRecognizedFixedAdapterHeader_(sheet, layout) {
 }
 
 function getSheetLayout_(sheetName) {
-  const normalizedName = normalizeText_(String(sheetName || '').replace(/^Из_1С_/i, ''));
+  const normalizedName = normalizeText_(String(sheetName || '').replace(/^Реконструкция_/i, ''));
   return SETTINGS.SHEET_LAYOUTS.find((layout) =>
     new RegExp(layout.namePattern, 'i').test(normalizedName)
   ) || getDefaultSheetLayout_();
@@ -2919,7 +3003,7 @@ function resolveSheetLayout_(sheet) {
     } catch (error) {
       rows = [];
     }
-    const normalizedName = normalizeText_(String(sheet.getName() || '').replace(/^Из_1С_/i, ''));
+    const normalizedName = normalizeText_(String(sheet.getName() || '').replace(/^Реконструкция_/i, ''));
     const nameHint = SETTINGS.SHEET_LAYOUTS.find((layout) =>
       new RegExp(layout.namePattern, 'i').test(normalizedName)
     );
@@ -3414,17 +3498,27 @@ function buildSalaryDebtSchedule_(row, table, productionCalendar, options) {
 
   let partData;
   if (paymentDates.length >= 2) {
-    partData = SALARY_PAYMENT_PARTS.map((part, index) => ({
-      part,
-      dueDate: chooseSalaryStatementDate_(paymentDates, period, index),
-      dateSource: `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
-    }));
+    partData = SALARY_PAYMENT_PARTS.map((part, index) => {
+      const inferred = getInferredSalaryPaymentDate_(
+        inferredPaymentSchedule, period, part.id, productionCalendar
+      );
+      return {
+        part,
+        dueDate: inferred ? inferred.date : null,
+        dateSource: inferred ? inferred.source : '',
+        actualPaymentDate: chooseSalaryStatementDate_(paymentDates, period, index),
+      };
+    });
   } else if (paymentDates.length === 1) {
     const part = classifySalaryPaymentPart_(paymentDates[0], period, inferredPaymentSchedule) || SALARY_PAYMENT_PARTS[1];
+    const inferred = getInferredSalaryPaymentDate_(
+      inferredPaymentSchedule, period, part.id, productionCalendar
+    );
     partData = [{
       part,
-      dueDate: paymentDates[0],
-      dateSource: `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
+      dueDate: inferred ? inferred.date : null,
+      dateSource: inferred ? inferred.source : '',
+      actualPaymentDate: paymentDates[0],
     }];
   } else {
     partData = SALARY_PAYMENT_PARTS.map((part) => {
@@ -3452,6 +3546,7 @@ function buildSalaryDebtSchedule_(row, table, productionCalendar, options) {
       label: item.part.label,
       dueDate: item.dueDate,
       dateSource: item.dateSource,
+      actualPaymentDate: item.actualPaymentDate || null,
       workDays: rawWorkDays[index] || roundNumber_((fallbackWorkDays || 0) * shares[index], 4),
       workedDays: workedParts[index],
       correctAmount: correctParts[index],
@@ -3508,7 +3603,7 @@ function buildSalarySchedulePenaltyNote_(result, schedule, penaltyEnd, principal
   (result.parts || []).forEach((part) => {
     const slice = part.slice;
     lines.push(
-      `${slice.label}: долг ${slice.underpaymentAmount || 0}, дата выплаты ${slice.dueDate ? formatDate_(slice.dueDate) : 'не установлена'} (${slice.dateSource || 'нет источника'}), пени ${part.result.amount}.`
+      `${slice.label}: долг ${slice.underpaymentAmount || 0}, нормативный срок ${slice.dueDate ? formatDate_(slice.dueDate) : 'не установлен'} (${slice.dateSource || 'нет источника'}), фактическая дата ${slice.actualPaymentDate ? formatDate_(slice.actualPaymentDate) : 'не установлена'}, пени ${part.result.amount}.`
     );
   });
   return lines.join('\n');
@@ -3516,7 +3611,7 @@ function buildSalarySchedulePenaltyNote_(result, schedule, penaltyEnd, principal
 
 function inferSalaryPaymentScheduleForSheet_(spreadsheet, rows, table, productionCalendar) {
   const importedSheet = spreadsheet && spreadsheet.getSheetByName
-    ? spreadsheet.getSheetByName('Из_1С_Оклад')
+    ? spreadsheet.getSheetByName('Реконструкция_Оклад')
     : null;
   if (importedSheet) {
     try {
@@ -4663,23 +4758,52 @@ function getRowStartDate_(row, columns, layout, productionCalendar) {
   return period ? getIndexationStartDate_(period.year, period.month, productionCalendar) : null;
 }
 
+function resolveArticle236DateFacts_(row, columns) {
+  const mapping = columns || {};
+  const actualPaymentDate = Number.isInteger(mapping.paymentDate)
+    ? parsePaymentDateCell_(row[mapping.paymentDate]).date
+    : null;
+  const legalDueDate = Number.isInteger(mapping.legalDueDate)
+    ? parseDateValue_(row[mapping.legalDueDate])
+    : null;
+  return {
+    legalDueDate: legalDueDate || null,
+    actualPaymentDate: actualPaymentDate || null,
+    dueDateSource: legalDueDate ? `колонка ${indexToColumnLetter_(mapping.legalDueDate)}` : '',
+    paymentDateSource: actualPaymentDate ? `колонка ${indexToColumnLetter_(mapping.paymentDate)}` : '',
+  };
+}
+
 function getRowPenaltyDueDate_(row, table, productionCalendar) {
-  if (Number.isInteger(table.columns.paymentDate)) {
-    const parsed = parsePaymentDateCell_(row[table.columns.paymentDate]);
-    if (parsed.date) {
+  if (Number.isInteger(table.columns.legalDueDate)) {
+    const legalDueDate = parseDateValue_(row[table.columns.legalDueDate]);
+    if (legalDueDate) {
       return {
-        date: parsed.date,
-        source: parsed.count > 1
-          ? `колонка ${indexToColumnLetter_(table.columns.paymentDate)}, последняя из ${parsed.count} дат ведомостей`
-          : `колонка ${indexToColumnLetter_(table.columns.paymentDate)}`,
+        date: legalDueDate,
+        source: `колонка ${indexToColumnLetter_(table.columns.legalDueDate)}`,
       };
     }
   }
 
-  const date = getRowStartDate_(row, table.columns, table.layout, productionCalendar);
+  if (table.layout && table.layout.id === 'vacation'
+    && Number.isInteger(table.columns.vacationStartDate)) {
+    const vacationStartDate = parseDateValue_(row[table.columns.vacationStartDate]);
+    if (vacationStartDate) {
+      return {
+        date: addDays_(vacationStartDate, -3),
+        source: `три календарных дня до начала отпуска, колонка ${indexToColumnLetter_(table.columns.vacationStartDate)}`,
+      };
+    }
+  }
+
+  const actualPayment = Number.isInteger(table.columns.paymentDate)
+    ? parsePaymentDateCell_(row[table.columns.paymentDate])
+    : { date: null, count: 0 };
   return {
-    date,
-    source: 'период строки, 5-е число следующего месяца с переносом на рабочий день',
+    date: null,
+    source: actualPayment.date
+      ? 'фактическая дата выплаты сохранена отдельно; нормативный срок выплаты не установлен'
+      : 'нормативный срок выплаты не установлен',
   };
 }
 

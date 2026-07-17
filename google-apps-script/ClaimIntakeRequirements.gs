@@ -204,6 +204,7 @@ function buildClaimAuditModel_(claimFacts) {
   const familyDefinitions = [
     { family: 'underpayment', label: 'Взыскать недоплату' },
     { family: 'material_liability', label: 'Материальная ответственность' },
+    { family: 'vacation_payment_delay', label: 'Нарушение срока выплаты отпускных' },
     { family: 'salary_indexation', label: 'Индексация заработной платы' },
     { family: 'underpayment_indexation', label: 'Индексация недоплаты' },
     { family: 'unallocated_recovery', label: 'Нераспределенные погашения', excludedFromClaimTotals: true },
