@@ -11,6 +11,8 @@ The workbook exposes its internal import, reconstruction, quality, and calculati
 - Hide calculation, reconstruction, import, VLM, and diagnostic sheets during normal use. Provide separate `Показать детализацию` and `Технический режим` actions for reversible access without deleting or rebuilding the sheets.
 - Replace the two implementation-oriented menus with one concise `Конструктор требований` menu. Keep legacy entry points callable for compatibility and expose diagnostic operations only in technical mode.
 - Replace intermediate technical alerts with persistent status on `Конструктор` and lightweight progress notifications. Reserve a compact completion/error message for the end of a run.
+- Persist long constructor runs through a small atomic manifest and bounded Script Property chunks so detailed issues and phase checkpoints cannot exceed Google's per-property value limit.
+- Reconcile provisional recognition signals by source so one payroll slip does not produce duplicate `Предупреждение` and `OK` rows for the same underlying observation.
 - Design source classification and orchestration around the normalized internal model rather than 1C-specific sheet names, retaining 1C:ZUP as the priority payroll-slip adapter.
 - Leave extension points for later adapters that read employment contracts and local normative acts and for later generation of a draft statement of claim; those legal-document capabilities are not implemented in this change.
 

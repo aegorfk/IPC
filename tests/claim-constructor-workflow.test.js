@@ -1363,6 +1363,83 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(harness.context.parseClaimConstructorRun_('{bad json'), null);
 }
 
+// Detailed constructor state must remain below the Apps Script per-property
+// quota without dropping issues, results, or checkpoints.
+{
+  const harness = createHarness();
+  const run = harness.context.createClaimConstructorRun_({
+    folderId: 'folder-1',
+    docId: 'doc-1',
+  }, { now: new Date('2026-07-18T07:00:00.000Z') });
+  run.phase = 'calculating';
+  run.phases.validating = 'done';
+  run.phases.importing = 'done';
+  run.phases.reconstructing = 'done';
+  run.phases.calculating = 'running';
+  run.results.reconstructionCheckpoint = {
+    nextStep: 7,
+    totalSteps: 10,
+    currentStep: 'Пересчитываем производные выплаты',
+    quality: { notes: 'Подробная диагностика '.repeat(200) },
+  };
+  run.issues = Array.from({ length: 63 }, (_, index) => ({
+    key: `importing|source|листок-${index + 1}.pdf`,
+    provisional: true,
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: `Расчётный листок № ${index + 1}.pdf`,
+    reason: `Требуется сверка распознавания ${index + 1}: ${'детальное замечание '.repeat(18)}`,
+    reviewStatus: 'предварительно · VLM',
+    knownImpact: 'не определено',
+    suggestedAction: 'Сверить строку с исходным расчётным листком.',
+  }));
+
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+  const stored = harness.scriptProperties.getProperties();
+  const manifest = JSON.parse(stored.CLAIM_CONSTRUCTOR_RUN_STATE);
+
+  assert.strictEqual(manifest.storageVersion, 2);
+  assert.ok(manifest.chunkCount > 1);
+  Object.values(stored).forEach((value) => {
+    assert.ok(Buffer.byteLength(value, 'utf8') <= 8000);
+  });
+  assert.strictEqual(
+    harness.context.serializeClaimConstructorRun_(
+      harness.context.loadClaimConstructorRun_(harness.scriptProperties)
+    ),
+    harness.context.serializeClaimConstructorRun_(run)
+  );
+
+  const committedManifest = stored.CLAIM_CONSTRUCTOR_RUN_STATE;
+  const updated = JSON.parse(harness.context.serializeClaimConstructorRun_(run));
+  updated.progressText = 'Новая версия, запись которой оборвалась.';
+  harness.scriptProperties.failSetPropertiesOnce = true;
+  assert.throws(
+    () => harness.context.saveClaimConstructorRun_(updated, harness.scriptProperties),
+    /injected property set failure/
+  );
+  assert.strictEqual(
+    harness.scriptProperties.getProperty('CLAIM_CONSTRUCTOR_RUN_STATE'),
+    committedManifest
+  );
+  assert.strictEqual(
+    harness.context.loadClaimConstructorRun_(harness.scriptProperties).progressText,
+    run.progressText
+  );
+
+  const smallRun = harness.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-18T07:10:00.000Z'),
+  });
+  harness.context.saveClaimConstructorRun_(smallRun, harness.scriptProperties);
+  assert.strictEqual(
+    JSON.parse(harness.scriptProperties.getProperty('CLAIM_CONSTRUCTOR_RUN_STATE')).id,
+    smallRun.id
+  );
+  assert.ok(Object.keys(harness.scriptProperties.getProperties()).every(
+    (key) => !key.startsWith('CLAIM_CONSTRUCTOR_RUN_STATE_CHUNK_')
+  ));
+}
+
 {
   const harness = createHarness();
   const run = harness.context.createClaimConstructorRun_({}, {
@@ -1789,13 +1866,16 @@ function createHarness(sheetNames = ['Оклад']) {
     vlmRows: [vlmRow],
     skippedFiles: [['листок.pdf', 'application/pdf', 'Временная ошибка чтения']],
   });
-  assert.strictEqual(live.length, 2);
+  assert.strictEqual(live.length, 1);
   assert.ok(live.every((issue) => issue.provisional));
+  assert.strictEqual(live[0].severity, 'error');
+  assert.strictEqual(live[0].reason, 'Временная ошибка чтения');
 
   const finalIssues = harness.context.aggregateClaimConstructorIssues_({
     qualityRows: [qualityRow],
     vlmRows: [vlmRow],
   });
+  assert.strictEqual(finalIssues.length, 1);
   assert.deepStrictEqual(
     finalIssues.map((issue) => issue.key).sort(),
     live.map((issue) => issue.key).sort()

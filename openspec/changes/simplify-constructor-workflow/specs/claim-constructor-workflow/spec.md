@@ -51,6 +51,13 @@ The system SHALL execute import, reconstruction, Sheets calculation, and Docs ha
 ### Requirement: Automatic resumable continuation
 The system MUST persist constructor run state and automatically continue the workflow after an existing resumable import batch completes, without requiring the normal user to invoke a manual resume command. State transitions MUST enforce a single active run through document locking, active run-id comparison, and expected-phase comparison.
 
+#### Scenario: Detailed state exceeds one property value
+- **WHEN** serialized run state with issues, results, or checkpoints exceeds the safe size of one Script Property value
+- **THEN** the system writes bounded generation-specific UTF-8 chunks before atomically publishing a versioned manifest
+- **AND** every stored property value remains below the configured per-value safety limit
+- **AND** loading reconstructs the complete run without dropping issues, results, or phase checkpoints
+- **AND** an interrupted chunk write leaves the previously committed manifest readable
+
 #### Scenario: Second build request joins active run
 - **WHEN** the user invokes `Собрать расчет` while a fresh constructor run is active
 - **THEN** the system keeps the existing run id and displays its current phase
@@ -132,6 +139,11 @@ The system SHALL aggregate existing import quality, VLM, diagnostic, reconstruct
 - **AND** persists the same issue across later automatic continuations without waiting for import finalization
 - **AND** a retry or final audit updates the same stable issue instead of appending a duplicate
 - **AND** the final audit may resolve, confirm, or replace the provisional status without hiding unresolved issues
+
+#### Scenario: Technical success does not duplicate a source warning
+- **WHEN** one source has a quality warning or error and a VLM technical row with status `OK`
+- **THEN** the constructor shows one source-level issue with the warning/error reason and VLM provenance
+- **AND** a skipped-file error for the same source replaces the lower-severity provisional observation instead of appending another row
 
 #### Scenario: Issue contains actionable context
 - **WHEN** the system publishes a disputed item

@@ -8,6 +8,10 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   OUTPUT_DOC_LABEL: 'Расписанный расчет:',
   OUTPUT_DOC_NAMED_RANGE: 'CLAIM_CONSTRUCTOR_OUTPUT_DOC',
   RUN_STATE_PROPERTY: 'CLAIM_CONSTRUCTOR_RUN_STATE',
+  RUN_STATE_CHUNK_PREFIX: 'CLAIM_CONSTRUCTOR_RUN_STATE_CHUNK_',
+  RUN_STATE_STORAGE_VERSION: 2,
+  RUN_STATE_VALUE_MAX_BYTES: 8000,
+  RUN_STATE_TOTAL_MAX_BYTES: 384000,
   VISIBILITY_MODE_PROPERTY: 'CLAIM_CONSTRUCTOR_VISIBILITY_MODE',
   CONTINUATION_TRIGGER_FUNCTION: 'resumeClaimConstructorPipeline_',
   CONTINUATION_TRIGGER_DELAY_MS: 60 * 1000,
@@ -414,6 +418,116 @@ function serializeClaimConstructorRun_(run) {
   return JSON.stringify(run);
 }
 
+function getClaimConstructorUtf8ByteLength_(value) {
+  const text = String(value || '');
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xD800 && code <= 0xDBFF
+      && index + 1 < text.length
+      && text.charCodeAt(index + 1) >= 0xDC00
+      && text.charCodeAt(index + 1) <= 0xDFFF) {
+      bytes += 4;
+      index++;
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+function splitClaimConstructorStateChunks_(value, maxBytes) {
+  const text = String(value || '');
+  const limit = Math.max(1, Number(maxBytes) || CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_VALUE_MAX_BYTES);
+  const chunks = [];
+  let start = 0;
+  let bytes = 0;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    let charBytes = code < 0x80 ? 1 : (code < 0x800 ? 2 : 3);
+    let width = 1;
+    if (code >= 0xD800 && code <= 0xDBFF
+      && index + 1 < text.length
+      && text.charCodeAt(index + 1) >= 0xDC00
+      && text.charCodeAt(index + 1) <= 0xDFFF) {
+      charBytes = 4;
+      width = 2;
+    }
+    if (bytes && bytes + charBytes > limit) {
+      chunks.push(text.slice(start, index));
+      start = index;
+      bytes = 0;
+    }
+    bytes += charBytes;
+    if (width === 2) index++;
+  }
+  if (start < text.length || !chunks.length) {
+    chunks.push(text.slice(start));
+  }
+  return chunks;
+}
+
+function hashClaimConstructorState_(value) {
+  const text = String(value || '');
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getClaimConstructorStateChunkKey_(generation, index) {
+  return `${CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_CHUNK_PREFIX}${generation}_${index}`;
+}
+
+function cleanupClaimConstructorStateChunks_(store, retainedKeys) {
+  const retained = retainedKeys || {};
+  const properties = store.getProperties ? store.getProperties() : {};
+  Object.keys(properties).forEach((key) => {
+    if (key.indexOf(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_CHUNK_PREFIX) !== 0 || retained[key]) return;
+    try {
+      store.deleteProperty(key);
+    } catch (error) {
+      // Orphaned chunks are harmless because the committed manifest never references them.
+    }
+  });
+}
+
+function parseClaimConstructorStateManifest_(value) {
+  try {
+    const manifest = JSON.parse(value);
+    return manifest
+      && manifest.storageVersion === CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_STORAGE_VERSION
+      && manifest.generation
+      && Number.isInteger(manifest.chunkCount)
+      && manifest.chunkCount > 0
+      ? manifest
+      : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function loadChunkedClaimConstructorState_(store, manifest) {
+  const chunks = [];
+  for (let index = 0; index < manifest.chunkCount; index++) {
+    const chunk = store.getProperty(getClaimConstructorStateChunkKey_(manifest.generation, index));
+    if (chunk === null || chunk === undefined) return null;
+    chunks.push(chunk);
+  }
+  const serialized = chunks.join('');
+  if (getClaimConstructorUtf8ByteLength_(serialized) !== Number(manifest.byteLength)
+    || hashClaimConstructorState_(serialized) !== manifest.checksum) {
+    return null;
+  }
+  return serialized;
+}
+
 function parseClaimConstructorRun_(value) {
   if (!value) {
     return null;
@@ -428,7 +542,45 @@ function parseClaimConstructorRun_(value) {
 
 function saveClaimConstructorRun_(run, properties) {
   const store = properties || PropertiesService.getScriptProperties();
-  store.setProperty(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY, serializeClaimConstructorRun_(run));
+  const serialized = serializeClaimConstructorRun_(run);
+  const byteLength = getClaimConstructorUtf8ByteLength_(serialized);
+  if (byteLength > CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_TOTAL_MAX_BYTES) {
+    throw new Error(
+      `Состояние конструктора превышает безопасный общий лимит: ${byteLength} байт. `
+      + 'Подробные диагностические данные необходимо вынести в технические листы.'
+    );
+  }
+  if (byteLength <= CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_VALUE_MAX_BYTES) {
+    store.setProperty(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY, serialized);
+    cleanupClaimConstructorStateChunks_(store, {});
+    return run;
+  }
+
+  const chunks = splitClaimConstructorStateChunks_(
+    serialized,
+    CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_VALUE_MAX_BYTES
+  );
+  const generation = `${hashClaimConstructorState_(serialized)}-${byteLength}-${chunks.length}`;
+  const chunkProperties = {};
+  const retainedKeys = {};
+  chunks.forEach((chunk, index) => {
+    const key = getClaimConstructorStateChunkKey_(generation, index);
+    chunkProperties[key] = chunk;
+    retainedKeys[key] = true;
+  });
+  store.setProperties(chunkProperties, false);
+  const manifest = {
+    storageVersion: CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_STORAGE_VERSION,
+    generation,
+    chunkCount: chunks.length,
+    byteLength,
+    checksum: hashClaimConstructorState_(serialized),
+  };
+  store.setProperty(
+    CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY,
+    JSON.stringify(manifest)
+  );
+  cleanupClaimConstructorStateChunks_(store, retainedKeys);
   return run;
 }
 
@@ -438,7 +590,9 @@ function loadClaimConstructorRun_(properties) {
   if (!raw) {
     return null;
   }
-  const parsed = parseClaimConstructorRun_(raw);
+  const manifest = parseClaimConstructorStateManifest_(raw);
+  const serialized = manifest ? loadChunkedClaimConstructorState_(store, manifest) : raw;
+  const parsed = parseClaimConstructorRun_(serialized);
   if (parsed) {
     return parsed;
   }
@@ -827,29 +981,42 @@ function mergeClaimConstructorIssues_(existingIssues, incomingIssues) {
   return merged;
 }
 
+function buildClaimConstructorRecognitionSourceKey_(source, fallback) {
+  const identity = String(source || fallback || 'unknown').trim().toLowerCase();
+  return `importing|source|${identity}`;
+}
+
 function buildClaimConstructorRecognitionIssues_(processed) {
   const value = processed || {};
   const issues = [];
   const qualityRow = value.qualityRow || [];
   const qualityStatus = String(qualityRow[4] || '');
   const groupKey = qualityRow[0] || qualityRow[1] || value.fileName || '';
+  const qualitySource = qualityRow[1] || value.fileName || '';
+  const vlmSources = {};
+  (value.vlmRows || []).forEach((row) => {
+    vlmSources[String(row[0] || value.fileName || '').trim().toLowerCase()] = true;
+  });
   if (/(предуп|ошиб|пропущ|не распоз)/i.test(qualityStatus)) {
     issues.push({
-      key: `importing|quality|${groupKey}`,
+      key: buildClaimConstructorRecognitionSourceKey_(qualitySource, groupKey),
       provisional: true,
       severity: /ошиб/i.test(qualityStatus) ? 'error' : 'warning',
       phase: 'importing',
       sourceKind: 'payroll_slips',
-      source: qualityRow[1] || value.fileName || '',
+      source: qualitySource,
       reason: qualityRow[15] || `Статус распознавания: ${qualityStatus}.`,
-      reviewStatus: `предварительно · ${qualityStatus || 'требует проверки'}`,
+      reviewStatus: `предварительно · ${qualityStatus || 'требует проверки'}`
+        + (vlmSources[String(qualitySource).trim().toLowerCase()] ? ' · VLM' : ''),
       suggestedAction: 'Сверить распознанные значения с исходным расчетным листком.',
     });
   }
   (value.vlmRows || []).forEach((row) => {
     const source = row[0] || value.fileName || '';
+    if (qualitySource && String(source).trim().toLowerCase() === String(qualitySource).trim().toLowerCase()
+      && /(предуп|ошиб|пропущ|не распоз)/i.test(qualityStatus)) return;
     issues.push({
-      key: `importing|vlm|${source}`,
+      key: buildClaimConstructorRecognitionSourceKey_(source, groupKey),
       provisional: true,
       phase: 'importing',
       sourceKind: 'payroll_slips',
@@ -862,7 +1029,7 @@ function buildClaimConstructorRecognitionIssues_(processed) {
   (value.skippedFiles || []).forEach((row) => {
     const source = row[0] || value.fileName || '';
     issues.push({
-      key: groupKey ? `importing|quality|${groupKey}` : `importing|skipped|${source}`,
+      key: buildClaimConstructorRecognitionSourceKey_(source, groupKey),
       provisional: true,
       severity: 'error',
       phase: 'importing',
@@ -879,18 +1046,26 @@ function buildClaimConstructorRecognitionIssues_(processed) {
 function aggregateClaimConstructorIssues_(signals) {
   const values = signals || {};
   const issues = [];
+  const warnedSources = {};
+  const vlmSources = {};
+  (values.vlmRows || []).forEach((row) => {
+    vlmSources[String(row[0] || '').trim().toLowerCase()] = true;
+  });
   (values.qualityRows || []).forEach((row) => {
     const status = String(row[4] || '');
     if (!/(предуп|ошиб|пропущ|не распоз)/i.test(status)) return;
     const groupKey = row[0] || row[1] || '';
+    const source = row[1] || '';
+    warnedSources[String(source).trim().toLowerCase()] = true;
     issues.push(normalizeClaimConstructorIssue_({
-      key: `importing|quality|${groupKey}`,
+      key: buildClaimConstructorRecognitionSourceKey_(source, groupKey),
       severity: /ошиб/i.test(status) ? 'error' : 'warning',
       phase: 'importing',
       sourceKind: 'payroll_slips',
-      source: row[1] || '',
+      source,
       reason: row[15] || `Статус распознавания: ${status}.`,
-      reviewStatus: status || 'требует проверки',
+      reviewStatus: (status || 'требует проверки')
+        + (vlmSources[String(source).trim().toLowerCase()] ? ' · VLM' : ''),
       suggestedAction: 'Сверить распознанные значения с исходным расчетным листком.',
     }));
   });
@@ -906,11 +1081,13 @@ function aggregateClaimConstructorIssues_(signals) {
     }));
   });
   (values.vlmRows || []).forEach((row) => {
+    const source = row[0] || '';
+    if (warnedSources[String(source).trim().toLowerCase()]) return;
     issues.push(normalizeClaimConstructorIssue_({
-      key: `importing|vlm|${row[0] || ''}`,
+      key: buildClaimConstructorRecognitionSourceKey_(source, ''),
       phase: 'importing',
       sourceKind: 'payroll_slips',
-      source: row[0] || '',
+      source,
       reason: row[10] || 'Строки распознаны с помощью VLM.',
       reviewStatus: row[3] || 'VLM',
       suggestedAction: 'Сверить распознанные значения с исходным файлом.',

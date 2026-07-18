@@ -73,3 +73,11 @@
 - [x] 7.6 Verify calculation-detail and technical visibility modes against the Drive backup and confirm no sheet data, order, or identifiers changed.
 - [ ] 7.7 Verify Docs content outside the managed markers is unchanged and record any unavailable optional claim facts as constructor issues.
 - [ ] 7.8 Prepare the final report with backup URL, tests, deployed commit, workflow behavior, known warnings, and rollback instructions.
+
+## 8. Property-safe constructor state
+
+- [x] 8.1 Add RED tests that reproduce a run with dozens of Russian-language recognition issues and results whose JSON exceeds one Script Property value.
+- [x] 8.2 Implement UTF-8-aware bounded chunks, a versioned atomic manifest, exact load/round-trip verification, and cleanup of obsolete generations while retaining direct storage for small states.
+- [x] 8.3 Add regression coverage proving an interrupted large-state write does not replace the previously committed state and every stored value remains below the safety limit.
+- [x] 8.4 Reconcile quality/VLM/skipped-file observations by stable source identity so a technical `OK` row cannot duplicate a source warning.
+- [ ] 8.5 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.

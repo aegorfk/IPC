@@ -57,7 +57,7 @@ The constructor will use explicit phases:
 6. `complete` or `complete_with_warnings`
 7. `failed` only for fatal infrastructure/input failures
 
-Run state contains a run id, timestamps, current phase, progress text, structured batch progress (`processed`, `total`, and percentage), source references, and accumulated issues. State is persisted in Script Properties so scheduled batch continuations can resume without user action. The dashboard renders structured progress as a compact text-and-block bar and is a presentation of that state, not the only state store.
+Run state contains a run id, timestamps, current phase, progress text, structured batch progress (`processed`, `total`, and percentage), source references, accumulated issues, results, and resumable checkpoints. State is persisted in Script Properties so scheduled batch continuations can resume without user action. A small value is stored directly. A larger value is split on UTF-8 boundaries into bounded generation-specific chunks; the canonical property stores only a versioned manifest written after all chunks. Loading verifies the manifest and reconstructs the exact JSON. Old generations are removed only after the manifest commit. This avoids the 9 KB per-value quota without discarding detailed issues or resumable results. The dashboard renders structured progress as a compact text-and-block bar and is a presentation of that state, not the only state store.
 
 Only one constructor run may be active for a spreadsheet. Start, retry, manual continuation, and scheduled continuation acquire `LockService.getDocumentLock()` and perform compare-and-advance updates against the active run id and expected phase. A second `Собрать расчет` invocation while the active run is fresh returns that run and displays its current status; it MUST NOT create another run or repeat a phase. A continuation carrying an old run id is a no-op.
 
@@ -93,6 +93,8 @@ Issues use one normalized shape:
 - suggested user action.
 
 The orchestrator aggregates existing quality-gate, VLM, diagnostic, and skipped-row signals rather than inventing a second recognition-quality system.
+
+Recognition signals use a stable identity per source observation. If a quality row already reports a warning/error for a source, a technical VLM `OK` row for the same source enriches provenance but MUST NOT create a second constructor issue. A skipped-file error supersedes a lower-severity provisional issue for the same source.
 
 ### 5. Keep Sheets as the calculation system of record
 
@@ -165,6 +167,7 @@ Service-sheet formatting uses batched range operations and avoids repeated per-c
 - **Docs generation lacks optional case facts** → Generate available sections, record missing facts as issues, and keep the Sheets result complete.
 - **Re-running after a partial failure duplicates data** → Use run ids and idempotent phase guards; reuse existing incremental import state.
 - **Two executions race on shared state** → Enforce a single active run with document locking, expected-phase compare-and-advance, and stale run-id rejection.
+- **Detailed issues exceed one Script Property value** → Store large state behind an atomic manifest in bounded UTF-8 chunks and verify round-trip integrity before advancing the pipeline.
 - **The last recognized file is repeated after a timeout** → Commit recognition progress before derived-view finalization and resume from the persisted import stage.
 - **Five reconstruction sheets exceed one Apps Script execution** → Persist a per-target reconstruction checkpoint and execute one bounded target per continuation.
 - **Future LNA/contract scope leaks into phase one** → Limit phase one to source-kind metadata and vendor-neutral orchestration; no new legal parser.
