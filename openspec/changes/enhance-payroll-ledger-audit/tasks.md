@@ -50,7 +50,7 @@
 - [x] 7.2 Run strict OpenSpec validation for `enhance-payroll-ledger-audit` and review the diff for unintended methodology changes.
 - [x] 7.3 Push the verified Apps Script with `clasp`, migrate the working workbook, and verify sheet ids/order/formulas/filters against the Drive backup.
 - [ ] 7.4 Run a constructor smoke calculation and verify chronological rows, employer warning, legal categories, October 2023 workdays, vacation timing, detailed audit checkboxes, and Docs preservation.
-- [ ] 7.5 Record deployed Git commit, workbook/backup links, known disputed items, rollback instructions, and follow-up premium/LNA change.
+- [x] 7.5 Record deployed Git commit, workbook/backup links, known disputed items, rollback instructions, and follow-up premium/LNA change.
 
 ## 8. Raw Normalized Summary Ledger
 
