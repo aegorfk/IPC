@@ -1852,6 +1852,38 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(audited[0].reviewStatus, 'подтверждено аудитом');
 }
 
+// Final source-level audit replaces legacy provisional observations even when
+// an older deployment used a different technical key for the same source.
+{
+  const harness = createHarness();
+  const merged = harness.context.mergeClaimConstructorIssues_([{
+    key: 'importing|quality|legacy-group',
+    provisional: true,
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Предварительное предупреждение quality gate.',
+  }, {
+    key: 'importing|vlm|листок.pdf',
+    provisional: true,
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Предварительный технический VLM OK.',
+  }], [{
+    key: 'importing|source|листок.pdf',
+    phase: 'importing',
+    sourceKind: 'payroll_slips',
+    source: 'листок.pdf',
+    reason: 'Итоговая сверка источника.',
+    reviewStatus: 'подтверждено аудитом',
+  }]);
+
+  assert.strictEqual(merged.length, 1);
+  assert.strictEqual(merged[0].key, 'importing|source|листок.pdf');
+  assert.strictEqual(Boolean(merged[0].provisional), false);
+}
+
 {
   const harness = createHarness();
   const qualityRow = [

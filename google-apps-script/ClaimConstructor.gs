@@ -959,17 +959,26 @@ function buildClaimConstructorIssueKey_(issue) {
   return `issue:${(hash >>> 0).toString(36)}`;
 }
 
+function buildClaimConstructorIssueSourceIdentity_(issue) {
+  const value = issue || {};
+  return [value.phase, value.sourceKind, value.source]
+    .map((part) => String(part || '').trim().toLowerCase())
+    .join('|');
+}
+
 function mergeClaimConstructorIssues_(existingIssues, incomingIssues) {
-  const merged = (existingIssues || []).map((issue) => normalizeClaimConstructorIssue_(issue));
-  const indexByKey = {};
-  merged.forEach((issue, index) => {
-    indexByKey[issue.key] = index;
-  });
+  let merged = (existingIssues || []).map((issue) => normalizeClaimConstructorIssue_(issue));
   (incomingIssues || []).forEach((incoming) => {
     const issue = normalizeClaimConstructorIssue_(incoming);
-    const existingIndex = indexByKey[issue.key];
-    if (existingIndex === undefined) {
-      indexByKey[issue.key] = merged.length;
+    if (!issue.provisional) {
+      const sourceIdentity = buildClaimConstructorIssueSourceIdentity_(issue);
+      merged = merged.filter((existing) => !(
+        existing.provisional
+        && buildClaimConstructorIssueSourceIdentity_(existing) === sourceIdentity
+      ));
+    }
+    const existingIndex = merged.findIndex((existing) => existing.key === issue.key);
+    if (existingIndex < 0) {
       merged.push(issue);
       return;
     }
@@ -2164,6 +2173,36 @@ function collectClaimConstructorIssueSignals_(spreadsheet, reconstructionResult,
     reconstructionIssues,
     skippedCalculationIssues,
     calculationEffectIssues,
+  };
+}
+
+function refreshClaimConstructorReviewIssues() {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) return null;
+  let run;
+  let spreadsheet;
+  try {
+    run = loadClaimConstructorRun_();
+    if (!run) return null;
+    spreadsheet = SpreadsheetApp.openById(run.spreadsheetId);
+    const finalIssues = aggregateClaimConstructorIssues_(
+      collectClaimConstructorIssueSignals_(
+        spreadsheet,
+        run.results && run.results.reconstruction,
+        run.results && run.results.calculations
+      )
+    );
+    run.issues = mergeClaimConstructorIssues_(run.issues, finalIssues);
+    run.updatedAt = new Date().toISOString();
+    saveClaimConstructorRun_(run);
+  } finally {
+    lock.releaseLock();
+  }
+  refreshClaimConstructorDashboard_(spreadsheet, run);
+  return {
+    runId: run.id,
+    status: run.status,
+    issueCount: run.issues.length,
   };
 }
 
