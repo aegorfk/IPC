@@ -1794,6 +1794,14 @@ function createHarness(sheetNames = ['Оклад']) {
     'lease-2'
   );
   assert.strictEqual(checkpointed.issues.length, 0);
+
+  const resolvedReconciliationIssue = harness.context.pruneResolvedTransientRuntimeIssues_([{
+    phase: 'reconstructing',
+    sourceKind: 'system',
+    reviewStatus: 'фатальная ошибка',
+    reason: 'Не удалось определить период для положительной расчетной суммы.',
+  }], 'writing_doc', { reconstructing: 'done', writing_doc: 'done' });
+  assert.strictEqual(resolvedReconciliationIssue.length, 0);
 }
 
 // Source-level recognition issues are visible immediately and keep one stable row
@@ -3364,8 +3372,8 @@ function stubBatchSessionStartup(harness) {
 
   assert.deepStrictEqual(order, ['sheets', 'claim_sheet', 'docs']);
   assert.strictEqual(completed.results.claimCalculation.written, 3);
-  assert.strictEqual(completed.results.dashboard.totals.underpayment, 125);
-  assert.strictEqual(completed.results.dashboard.totals.liability, 11);
+  assert.strictEqual(completed.results.dashboard.totals.underpayment, 5);
+  assert.strictEqual(completed.results.dashboard.totals.liability, 1);
 }
 
 {
@@ -5129,7 +5137,7 @@ function stubBatchSessionStartup(harness) {
   assert.deepStrictEqual(Array.from(model.groups, (group) => group.total), [1300, 50, 200, 20]);
   assert.deepStrictEqual(
     Array.from(model.groups[0].items, (item) => item.label),
-    ['Оклад — 01.2026', 'Ежемесячная премия — 02.2026']
+    ['Недоплата по окладу — 01.2026', 'Недоплата по ежемесячной премии — 02.2026']
   );
   assert.strictEqual(model.groups[0].items[1].selected, true);
   assert.strictEqual(model.groups[0].items[1].badge, 'спорное');
@@ -5143,6 +5151,114 @@ function stubBatchSessionStartup(harness) {
   );
   assert.strictEqual(merged[0].selected, false);
   assert.strictEqual(merged[1].selected, true);
+}
+
+// Constructor totals come only from normalized claim facts, never from subtotal rows.
+{
+  const harness = createHarness();
+  const facts = [
+    {
+      family: 'underpayment', layoutId: 'salary', baseKind: 'salary',
+      periodKey: '2026-01', calculationItem: 'principal', amount: 100,
+    },
+    {
+      family: 'underpayment_indexation', layoutId: 'salary', baseKind: 'salary',
+      periodKey: '2026-01', calculationItem: 'inflation_indexation', amount: 10,
+    },
+    {
+      family: 'material_liability', layoutId: 'salary', baseKind: 'salary',
+      periodKey: '2026-01', calculationItem: 'article_236', amount: 5,
+    },
+  ];
+  assert.deepStrictEqual(
+    { ...harness.context.summarizeClaimFactsForConstructor_(facts) },
+    { underpayment: 100, indexation: 10, liability: 5 }
+  );
+  assert.doesNotThrow(() => harness.context.assertClaimConstructorAuditReconciles_([
+    { totals: { underpayment: 100, indexation: 10, liability: 5 }, claimFacts: facts },
+  ], facts));
+  assert.throws(() => harness.context.assertClaimConstructorAuditReconciles_([
+    { totals: { underpayment: 200, indexation: 10, liability: 5 }, claimFacts: facts },
+  ], facts), /не сходится с детальной разбивкой/i);
+
+  const table = {
+    headerRow: 1,
+    columns: { period: 0 },
+  };
+  const rows = [
+    ['Январь 2026'],
+    ['ИТОГО, руб.'],
+    ['ВСЕГО, руб.'],
+    ['ЦЕНА ИСКА'],
+  ];
+  assert.doesNotThrow(() => harness.context.validateClaimFactCoverage_({
+    sheetName: 'Проверка', table, rows,
+    underpaymentValues: [[100], [100], [100], [115]],
+    indexationValues: [[10], [10], [10], ['']],
+    liabilityValues: [[5], [5], [5], ['']],
+  }));
+  assert.throws(() => harness.context.validateClaimFactCoverage_({
+    sheetName: 'Проверка', table, rows: [['неизвестный период']],
+    underpaymentValues: [[100]], indexationValues: [['']], liabilityValues: [['']],
+  }), /не удалось определить период/i);
+}
+
+// Compound quarterly/annual headers and values normalize to their payment month.
+{
+  const harness = createHarness();
+  const quarterlyLayout = harness.context.getSheetLayout_('Ежеквартальные');
+  const quarterlyColumns = harness.context.resolveSemanticColumnsForLayout_([
+    'Надлежащая премия', 'Квартал расчета и месяц выплаты',
+    'Недоплата ежеквартальных премий', 'Сумма индексации недоплаты',
+    'Материальная ответственность (ст. 236 ТК РФ)',
+  ], quarterlyLayout);
+  assert.strictEqual(quarterlyColumns.period, 1);
+  assert.deepStrictEqual(
+    { ...harness.context.parseRowPeriod_([
+      100, '4 квартал 2023 (октябрь — декабрь)\nДекабрь 2023', 50, 5, 1,
+    ], quarterlyColumns) },
+    { year: 2023, month: 12 }
+  );
+  const quarterlyFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Источник квартальных премий',
+    table: { headerRow: 1, layout: quarterlyLayout, columns: quarterlyColumns },
+    rows: [[100, '4 квартал 2023 (октябрь — декабрь)\nДекабрь 2023', 50, 5, 1]],
+    underpaymentValues: [[50]], indexationValues: [[5]], liabilityValues: [[1]],
+  });
+  assert.deepStrictEqual(Array.from(quarterlyFacts, (fact) => [
+    fact.family, fact.periodKey, fact.baseKind, fact.amount,
+  ]), [
+    ['underpayment', '2023-12', 'quarterly_premium', 50],
+    ['underpayment_indexation', '2023-12', 'quarterly_premium', 5],
+    ['material_liability', '2023-12', 'quarterly_premium', 1],
+  ]);
+
+  const annualLayout = harness.context.getSheetLayout_('Ежегодные');
+  const annualColumns = harness.context.resolveSemanticColumnsForLayout_([
+    'Надлежащая премия', 'Год расчета и месяц выплаты',
+    'Недоплата ежегодных премий', 'Сумма индексации недоплаты',
+    'Материальная ответственность (ст. 236 ТК РФ)',
+  ], annualLayout);
+  assert.strictEqual(annualColumns.period, 1);
+  assert.deepStrictEqual(
+    { ...harness.context.parseRowPeriod_([
+      100, '2025 год\nДекабрь 2025', 50, 5, 1,
+    ], annualColumns) },
+    { year: 2025, month: 12 }
+  );
+  const annualFacts = harness.context.buildClaimFactsFromCalculationRows_({
+    sheetName: 'Источник годовых премий',
+    table: { headerRow: 1, layout: annualLayout, columns: annualColumns },
+    rows: [[100, '2025 год\nДекабрь 2025', 50, 5, 1]],
+    underpaymentValues: [[50]], indexationValues: [[5]], liabilityValues: [[1]],
+  });
+  assert.deepStrictEqual(Array.from(annualFacts, (fact) => [
+    fact.family, fact.periodKey, fact.baseKind, fact.amount,
+  ]), [
+    ['underpayment', '2025-12', 'annual_premium', 50],
+    ['underpayment_indexation', '2025-12', 'annual_premium', 5],
+    ['material_liability', '2025-12', 'annual_premium', 1],
+  ]);
 }
 
 {
@@ -5169,18 +5285,22 @@ function stubBatchSessionStartup(harness) {
   const rendered = harness.spreadsheet
     .getRangeByName(layout.claimSelections.namedRange)
     .getValues();
-  const itemRows = rendered.filter((row) => row[4]);
+  const itemRows = rendered.filter((row) => row[5]);
   assert.strictEqual(sheet.getRange(layout.claimSelections.titleCell).getValue(), 'Аудит и требования');
   assert.strictEqual(itemRows.length, 2);
   assert.strictEqual(itemRows[0][0], true);
-  assert.strictEqual(itemRows[0][2], 'спорное');
+  assert.strictEqual(itemRows[0][1], 'Недоплата по окладу');
+  assert.strictEqual(itemRows[0][2], '01.2026');
+  assert.strictEqual(itemRows[0][4], 'спорное');
   assert.ok(rendered.some((row) => String(row[1]).includes('Материальная ответственность — 50,00')));
   assert.strictEqual(rendered.filter((row) => /Общий подытог/.test(String(row[1]))).length, 0);
-  assert.strictEqual(rendered.filter((row) => /Материальная ответственность/.test(String(row[1]))).length, 1);
+  assert.strictEqual(rendered.filter((row) =>
+    !row[5] && /Материальная ответственность/.test(String(row[1]))
+  ).length, 1);
   assert.ok(!rendered.flat().join(' ').includes('Все позиции включены по умолчанию'));
   assert.ok(!rendered.flat().join(' ').includes('6 оснований'));
   assert.ok(!rendered.flat().join(' ').includes('по базам'));
-  assert.strictEqual(sheet.isColumnHiddenByUser(5), true);
+  assert.strictEqual(sheet.isColumnHiddenByUser(6), true);
 
   sheet.getRange(layout.claimSelections.firstRow + 1, 1).setValue(false);
   harness.context.renderClaimAudit_(sheet, facts.concat({
@@ -5191,9 +5311,9 @@ function stubBatchSessionStartup(harness) {
   const rerendered = harness.spreadsheet
     .getRangeByName(layout.claimSelections.namedRange)
     .getValues()
-    .filter((row) => row[4]);
-  assert.strictEqual(rerendered.find((row) => row[4] === itemRows[0][4])[0], false);
-  assert.strictEqual(rerendered.find((row) => row[4] !== itemRows[0][4] && row[4] !== itemRows[1][4])[0], true);
+    .filter((row) => row[5]);
+  assert.strictEqual(rerendered.find((row) => row[5] === itemRows[0][5])[0], false);
+  assert.strictEqual(rerendered.find((row) => row[5] !== itemRows[0][5] && row[5] !== itemRows[1][5])[0], true);
   assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
   assert.deepStrictEqual(
     sheet.getRange(layout.docsHistory.firstRow, layout.docsHistory.firstColumn, 1, 3).getValues()[0],
@@ -5205,7 +5325,7 @@ function stubBatchSessionStartup(harness) {
     .getRangeByName(layout.claimSelections.namedRange)
     .getValues();
   assert.strictEqual(empty[0][1], 'Расчетные позиции пока не найдены');
-  assert.strictEqual(empty.filter((row) => row[4]).length, 0);
+  assert.strictEqual(empty.filter((row) => row[5]).length, 0);
   assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Частная организация');
 }
 
@@ -5250,7 +5370,7 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(layout.claimSelections.titleCell, 'A62');
   assert.strictEqual(layout.claimSelections.firstRow, 63);
   assert.strictEqual(rows.length, 28, '6 periods x 4 families plus four headings');
-  assert.ok(rows[27][4], 'last stable key is rendered');
+  assert.ok(rows[27][5], 'last stable key is rendered');
   assert.strictEqual(named.getRow(), layout.claimSelections.firstRow);
   assert.strictEqual(named.getNumRows(), 28);
   assert.ok(sheet.getMaxRows() >= 90, 'sheet grows only when audit needs more rows');
@@ -5258,8 +5378,8 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(sheet.getRange(layout.employerSector.valueCell).getValue(), 'Бюджетный сектор / публичный должник');
   assert.strictEqual(sheet.getRange(layout.partialRecoveries.firstRow, 3).getValue(), 125);
 
-  const uncheckedRow = rows.findIndex((row) => row[4]) + layout.claimSelections.firstRow;
-  const uncheckedKey = sheet.getRange(uncheckedRow, 5).getValue();
+  const uncheckedRow = rows.findIndex((row) => row[5]) + layout.claimSelections.firstRow;
+  const uncheckedKey = sheet.getRange(uncheckedRow, 6).getValue();
   sheet.getRange(uncheckedRow, 1).setValue(false);
   harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
   assert.strictEqual(
@@ -5272,17 +5392,17 @@ function stubBatchSessionStartup(harness) {
   const smaller = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange);
   assert.strictEqual(smaller.getNumRows(), 3);
   assert.strictEqual(
-    smaller.getValues().find((row) => row[4] === uncheckedKey)[0],
+    smaller.getValues().find((row) => row[5] === uncheckedKey)[0],
     false,
     'unchecked selection persists'
   );
-  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 3, 5).getValue(), '', 'stale tail cleared');
+  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 3, 6).getValue(), '', 'stale tail cleared');
 
   harness.context.renderClaimAudit_(sheet, []);
   const empty = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange);
   assert.strictEqual(empty.getNumRows(), 1);
   assert.strictEqual(empty.getValues()[0][1], 'Расчетные позиции пока не найдены');
-  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 1, 5).getValue(), '');
+  assert.strictEqual(sheet.getRange(layout.claimSelections.firstRow + 1, 6).getValue(), '');
   assert.strictEqual(sheet.getRange(layout.docsHistory.firstRow, layout.docsHistory.firstColumn + 1).getValue(), 'https://docs.google.com/document/d/keep/edit');
 }
 
@@ -5387,22 +5507,22 @@ function stubBatchSessionStartup(harness) {
 
   harness.context.renderClaimAudit_(sheet, [original]);
   const firstRows = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getValues();
-  const originalOffset = firstRows.findIndex((row) => row[4] === originalKey);
+  const originalOffset = firstRows.findIndex((row) => row[5] === originalKey);
   sheet.getRange(layout.claimSelections.firstRow + originalOffset, 1).setValue(false);
   harness.context.renderClaimAudit_(sheet, []);
   harness.context.renderClaimAudit_(sheet, [original, newItem]);
 
   const restored = harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange).getValues();
-  assert.strictEqual(restored.find((row) => row[4] === originalKey)[0], false);
-  assert.strictEqual(restored.find((row) => row[4] === newKey)[0], true);
+  assert.strictEqual(restored.find((row) => row[5] === originalKey)[0], false);
+  assert.strictEqual(restored.find((row) => row[5] === newKey)[0], true);
 
-  const restoredOffset = restored.findIndex((row) => row[4] === originalKey);
+  const restoredOffset = restored.findIndex((row) => row[5] === originalKey);
   sheet.getRange(layout.claimSelections.firstRow + restoredOffset, 1).setValue(true);
   harness.context.renderClaimAudit_(sheet, []);
   harness.context.renderClaimAudit_(sheet, [original]);
   assert.strictEqual(
     harness.spreadsheet.getRangeByName(layout.claimSelections.namedRange)
-      .getValues().find((row) => row[4] === originalKey)[0],
+      .getValues().find((row) => row[5] === originalKey)[0],
     true,
     'explicitly rechecked key is removed from durable unchecked registry'
   );
@@ -5433,8 +5553,8 @@ function stubBatchSessionStartup(harness) {
   const rendered = harness.spreadsheet
     .getRangeByName(layout.claimSelections.namedRange)
     .getValues();
-  assert.strictEqual(rendered.filter((row) => row[4]).length, 1);
-  assert.strictEqual(rendered.find((row) => row[4])[4], harness.context.buildStableClaimKey_(claimFact));
+  assert.strictEqual(rendered.filter((row) => row[5]).length, 1);
+  assert.strictEqual(rendered.find((row) => row[5])[5], harness.context.buildStableClaimKey_(claimFact));
 }
 
 {
@@ -5670,7 +5790,7 @@ function stubBatchSessionStartup(harness) {
   const auditRows = harness.spreadsheet
     .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange)
     .getValues();
-  assert.strictEqual(auditRows.find((row) => row[4] === key)[3], 600, 'audit consumes rescanned Sheets fact');
+  assert.strictEqual(auditRows.find((row) => row[5] === key)[3], 600, 'audit consumes rescanned Sheets fact');
   assert.strictEqual(results.calculationEffects.unallocated.length, 0);
 }
 
@@ -5791,8 +5911,10 @@ function stubBatchSessionStartup(harness) {
   const rows = harness.spreadsheet
     .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange)
     .getValues();
-  const rendered = rows.find((row) => row[4] === harness.context.buildStableClaimKey_(fact));
-  assert.deepStrictEqual(Array.from(rendered.slice(0, 4)), [true, fact.baseLabel + ' — 15.02.2026', 'спорное', 250]);
+  const rendered = rows.find((row) => row[5] === harness.context.buildStableClaimKey_(fact));
+  assert.deepStrictEqual(Array.from(rendered.slice(0, 5)), [
+    true, 'Нераспределенное частичное погашение', '15.02.2026', 250, 'спорное',
+  ]);
 }
 
 // Formula replacement authority comes only from the layout adapter.
@@ -6244,7 +6366,7 @@ function stubBatchSessionStartup(harness) {
   harness.context.renderClaimAudit_(intake, rescanned.claimFacts);
   const auditRows = harness.spreadsheet
     .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange).getValues();
-  assert.strictEqual(auditRows.find((row) => row[4] === harness.context.buildStableClaimKey_(principal))[3], 190);
+  assert.strictEqual(auditRows.find((row) => row[5] === harness.context.buildStableClaimKey_(principal))[3], 190);
 
   const second = harness.context.updateUnpaidSalaryIndexationCore_({ sheet: vacation });
   assert.strictEqual(second.claimFacts.find((fact) => fact.family === 'underpayment').amount, 190);
@@ -6260,7 +6382,7 @@ function stubBatchSessionStartup(harness) {
   const pipelineAuditRows = harness.spreadsheet
     .getRangeByName(harness.context.getClaimIntakeLayout_().claimSelections.namedRange).getValues();
   assert.strictEqual(
-    pipelineAuditRows.find((row) => row[4] === harness.context.buildStableClaimKey_(principal))[3],
+    pipelineAuditRows.find((row) => row[5] === harness.context.buildStableClaimKey_(principal))[3],
     190
   );
 }
@@ -6433,10 +6555,10 @@ function stubBatchSessionStartup(harness) {
     ['Период', 'Недоплата по ежемесячной премии', 'Сумма индексации недоплаты', 'Пени ст. 236'],
     ['01.2026', 100, 7, 8],
   ]);
-  intake.getRange(auditLayout.firstRow, 1, 1, 5)
-    .setValues([['old', 'audit', '', 55, 'old|key|x|y|z']]);
+  intake.getRange(auditLayout.firstRow, 1, 1, 6)
+    .setValues([['old', 'audit', '', 55, '', 'old|key|x|y|z']]);
   harness.spreadsheet.setNamedRange(
-    auditLayout.namedRange, intake.getRange(auditLayout.firstRow, 1, 1, 5)
+    auditLayout.namedRange, intake.getRange(auditLayout.firstRow, 1, 1, 6)
   );
   harness.documentProperties.setProperty('before', 'yes');
   const descriptor = {
@@ -6677,10 +6799,10 @@ function stubBatchSessionStartup(harness) {
   const futureRow = audit.firstRow + 3;
   const checkboxRow = futureRow - 1;
   const customValidation = { type: 'custom', formula: '=LEN(B66)>0' };
-  intake.getRange(audit.firstRow, 1, 1, 5)
-    .setValues([[false, 'old audit', '', 1, 'old|layout|base|period|item']]);
+  intake.getRange(audit.firstRow, 1, 1, 6)
+    .setValues([[false, 'old audit', '', 1, '', 'old|layout|base|period|item']]);
   harness.spreadsheet.setNamedRange(
-    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 5)
+    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 6)
   );
   intake.getRange(checkboxRow, 1).insertCheckboxes().setValue(false);
   intake.getRange(futureRow, 1).setValue('future value').setDataValidation(customValidation);
@@ -6732,8 +6854,8 @@ function stubBatchSessionStartup(harness) {
   const audit = harness.context.getClaimIntakeLayout_().claimSelections;
   const futureRow = audit.firstRow + 2;
   intake.getRange(audit.titleCell).setValue('custom title');
-  intake.getRange(audit.firstRow, 1, 1, 5)
-    .setValues([['custom', 'preexisting audit cell', '', 9, 'custom|layout|base|period|item']]);
+  intake.getRange(audit.firstRow, 1, 1, 6)
+    .setValues([['custom', 'preexisting audit cell', '', 9, '', 'custom|layout|base|period|item']]);
   intake.getRange(futureRow, 2).setValue('future custom').setNote('keep note')
     .setBackground('#654321').setNumberFormat('keep-format');
   harness.documentProperties.setProperty('KEEP_PROPERTY', 'keep-value');
@@ -6767,8 +6889,8 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(harness.spreadsheet.getRangeByName(audit.namedRange), null);
   assert.strictEqual(intake.getRange(audit.titleCell).getValue(), 'custom title');
   assert.deepStrictEqual(Array.from(
-    intake.getRange(audit.firstRow, 1, 1, 5).getValues()[0]
-  ), ['custom', 'preexisting audit cell', '', 9, 'custom|layout|base|period|item']);
+    intake.getRange(audit.firstRow, 1, 1, 6).getValues()[0]
+  ), ['custom', 'preexisting audit cell', '', 9, '', 'custom|layout|base|period|item']);
   assert.strictEqual(intake.getRange(futureRow, 2).getValue(), 'future custom');
   assert.strictEqual(intake.getRange(futureRow, 2).getNote(), 'keep note');
   assert.strictEqual(intake.getRange(futureRow, 2).getBackground(), '#654321');
@@ -6820,10 +6942,10 @@ function assertRollbackPreflightFailurePreservesRunState(configureFailure, expec
   const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
   const audit = harness.context.getClaimIntakeLayout_().claimSelections;
   source.getRange(2, 2).setValue(100).setNote('financial-before');
-  intake.getRange(audit.firstRow, 1, 1, 5)
-    .setValues([['audit-before', 'keep', '', 17, 'stable|audit|key|before|run']]);
+  intake.getRange(audit.firstRow, 1, 1, 6)
+    .setValues([['audit-before', 'keep', '', 17, '', 'stable|audit|key|before|run']]);
   harness.spreadsheet.setNamedRange(
-    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 5)
+    audit.namedRange, intake.getRange(audit.firstRow, 1, 1, 6)
   );
   harness.documentProperties.setProperty('PREFLIGHT_SENTINEL', 'unchanged');
   const descriptor = {
@@ -7219,18 +7341,19 @@ assertRollbackPreflightFailurePreservesRunState(
   const uncheckedKey = 'salary_indexation|salary|salary|2026-02|indexation';
   const disputedKey = 'material_liability|salary|salary|2026-01|article_236';
   const auditRows = [
-    ['', 'Взыскать недоплату — 1 000,00', '', '', ''],
-    [true, 'Оклад — 01.2026', '', 1000, selectedKey],
-    ['', 'Индексация заработной платы — 250,00', '', '', ''],
-    [false, 'Оклад — 02.2026', '', 250, uncheckedKey],
-    ['', 'Материальная ответственность — 75,00', '', '', ''],
-    [true, 'Оклад — 01.2026', 'спорное', 75, disputedKey],
+    ['', 'Взыскать недоплату — 1 000,00', '', '', '', ''],
+    [true, 'Недоплата по окладу', '01.2026', 1000, '', selectedKey],
+    ['', 'Индексация заработной платы — 250,00', '', '', '', ''],
+    [false, 'Индексация заработной платы по окладу', '02.2026', 250, '', uncheckedKey],
+    ['', 'Материальная ответственность — 75,00', '', '', '', ''],
+    [true, 'Материальная ответственность за задержку выплаты по окладу',
+      '01.2026', 75, 'спорное', disputedKey],
   ];
-  intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 5)
+  intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 6)
     .setValues(auditRows);
   harness.spreadsheet.setNamedRange(
     intakeLayout.claimSelections.namedRange,
-    intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 5)
+    intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 6)
   );
   intake.getRange(intakeLayout.employerSector.valueCell).setValue('Частная организация');
   intake.getRange(intakeLayout.calculatedAverage.valueCell).setValue(3210.5);
@@ -7294,13 +7417,29 @@ assertRollbackPreflightFailurePreservesRunState(
     selectedKey, disputedKey,
   ]);
   assert.strictEqual(payload.groups[1].items[0].disputed, true);
+  assert.strictEqual(payload.groups[0].items[0].violation, 'Недоплата по окладу');
+  assert.strictEqual(payload.groups[0].items[0].period, '01.2026');
+  assert.strictEqual(harness.context.formatSelectedClaimPeriod_('', '2025-08'), '08.2025');
+  assert.strictEqual(
+    harness.context.normalizeGoogleDocIdCandidate_('1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'),
+    '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'
+  );
   assert.strictEqual(payload.total, 1075);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(
+    harness.context.summarizeSelectedClaimDashboardTotals_(payload)
+  )), {
+    underpayment: 1000,
+    indexation: 0,
+    liability: 75,
+    total: 1075,
+  });
   assert.strictEqual(payload.averageEarnings.selected.source, 'calculated');
   assert.strictEqual(payload.averageEarnings.selected.amount, 3210.5);
   assert.strictEqual(payload.averageEarnings.scenarios.length, 2);
   assert.strictEqual(payload.employerSector, 'Частная организация');
   assert.strictEqual(payload.recoveries.valid.length, 1);
   assert.strictEqual(payload.recoveries.valid[0].allocation, selectedKey);
+  assert.strictEqual(payload.recoveries.valid[0].allocationLabel, 'Недоплата по окладу (01.2026)');
   assert.strictEqual(payload.recoveries.unallocated.length, 1);
   assert.strictEqual(payload.recoveries.invalid.length, 1);
   assert.deepStrictEqual(Array.from(payload.warnings, (warning) => warning.code), [
@@ -7320,14 +7459,95 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(!JSON.stringify(payload).includes('ст. 236 ТК РФ'));
 }
 
+// The approved court-calculation model keeps the retained five-column
+// structure and derives every component from the exact checked stable keys.
+{
+  const harness = createHarness();
+  const payload = {
+    total: 1150,
+    groups: [{
+      family: 'underpayment',
+      items: [{
+        family: 'underpayment', baseKind: 'salary', period: '01.2026',
+        violation: 'Недоплата по окладу', amount: 1000, disputed: false,
+      }],
+    }, {
+      family: 'underpayment_indexation',
+      items: [{
+        family: 'underpayment_indexation', baseKind: 'salary', period: '01.2026',
+        violation: 'Индексация недоплаты по окладу', amount: 100, disputed: true,
+      }],
+    }, {
+      family: 'material_liability',
+      items: [{
+        family: 'material_liability', baseKind: 'salary', period: '01.2026',
+        violation: 'Материальная ответственность за задержку выплаты по окладу',
+        amount: 50, disputed: false,
+      }],
+    }],
+  };
+  const model = harness.context.buildApprovedClaimDocumentModel_(
+    payload, new Date(2026, 6, 18)
+  );
+  assert.strictEqual(model.total, 1150);
+  assert.deepStrictEqual(Array.from(model.summaryRows[0]), [
+    'Вид требования', 'Количество периодов', 'Сумма по требованию, ₽',
+    'Компенсация, ₽', 'Индексация, ₽',
+  ]);
+  assert.deepStrictEqual(Array.from(model.sections[0].rows[0]), [
+    'Период', 'Недоплата, ₽', 'Индексация, ₽', '236 ТК РФ, ₽', 'Итого, ₽',
+  ]);
+  assert.deepStrictEqual(Array.from(model.sections[0].rows[1]), [
+    '01.2026', '1 000,00', '100,00', '50,00', '1 150,00',
+  ]);
+  assert.strictEqual(model.sections[0].disputedItems.length, 1);
+  assert.strictEqual(model.article236Items.length, 1);
+  assert.strictEqual(harness.context.reconcileApprovedClaimDocumentModel_(model, payload), true);
+  assert.throws(
+    () => harness.context.reconcileApprovedClaimDocumentModel_(
+      model, Object.assign({}, payload, { total: 1200 })
+    ),
+    /не сходится с выбранными требованиями/i
+  );
+}
+
+// A new legal basis cannot silently create a new court-document layout.
+{
+  const harness = createHarness();
+  assert.throws(
+    () => harness.context.buildApprovedClaimDocumentModel_({
+      total: 10,
+      groups: [{
+        family: 'underpayment',
+        items: [{
+          family: 'underpayment', baseKind: 'unapproved_new_basis', period: '01.2026',
+          violation: 'Новое основание', amount: 10,
+        }],
+      }],
+    }, new Date(2026, 6, 18)),
+    /еще не согласован раздел|согласуйте изменение макета/i
+  );
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];
   const makeBody = () => ({
     content: [],
+    clear() {
+      this.content.length = 0;
+      return this;
+    },
     appendParagraph(value) {
       this.content.push(String(value));
-      return { setHeading() { return this; } };
+      return {
+        setHeading() { return this; },
+        editAsText() { return { setBold() { return this; } }; },
+      };
+    },
+    appendListItem(value) {
+      this.content.push(`• ${String(value)}`);
+      return this;
     },
     appendTable(rows) {
       this.content.push(rows.map((row) => row.join(' | ')).join('\n'));
@@ -7336,6 +7556,7 @@ function installVersionedDocsFakes(harness) {
   });
   harness.context.DocumentApp.ParagraphHeading.HEADING1 = 'HEADING1';
   harness.context.DocumentApp.ParagraphHeading.HEADING2 = 'HEADING2';
+  harness.context.DocumentApp.ParagraphHeading.HEADING3 = 'HEADING3';
   harness.context.DocumentApp.create = (title) => {
     const id = `generated-doc-${++nextId}`;
     const body = makeBody();
@@ -7351,6 +7572,7 @@ function installVersionedDocsFakes(harness) {
     };
     const file = {
       id, parent: null, trashed: false,
+      getId: () => id,
       moveTo(folder) {
         if (file.failMove) throw new Error('injected move failure');
         file.parent = folder;
@@ -7371,6 +7593,20 @@ function installVersionedDocsFakes(harness) {
     created.push({ doc, file });
     return doc;
   };
+  harness.context.DocumentApp.openById = (id) => harness.documents.get(id);
+  const originalGetFileById = harness.context.DriveApp.getFileById;
+  harness.context.DriveApp.getFileById = (id) => {
+    const file = originalGetFileById(id);
+    if (file && typeof file.makeCopy !== 'function') {
+      file.makeCopy = (title, folder) => {
+        const doc = harness.context.DocumentApp.create(title);
+        const copy = originalGetFileById(doc.getId());
+        copy.parent = folder;
+        return copy;
+      };
+    }
+    return file;
+  };
   harness.context.Drive = {
     Files: {
       trash(id) {
@@ -7389,13 +7625,13 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   const intakeLayout = harness.context.getClaimIntakeLayout_();
   const intake = workspace.questionnaire;
   const key = 'underpayment|salary|salary|2026-01|principal';
-  intake.getRange(intakeLayout.claimSelections.firstRow, 1, 2, 5).setValues([
-    ['', 'Взыскать недоплату — 1 000,00', '', '', ''],
-    [true, 'Оклад — 01.2026', 'спорное', 1000, key],
+  intake.getRange(intakeLayout.claimSelections.firstRow, 1, 2, 6).setValues([
+    ['', 'Взыскать недоплату — 1 000,00', '', '', '', ''],
+    [true, 'Недоплата по окладу', '01.2026', 1000, 'спорное', key],
   ]);
   harness.spreadsheet.setNamedRange(
     intakeLayout.claimSelections.namedRange,
-    intake.getRange(intakeLayout.claimSelections.firstRow, 1, 2, 5)
+    intake.getRange(intakeLayout.claimSelections.firstRow, 1, 2, 6)
   );
   intake.getRange(intakeLayout.employerSector.valueCell).setValue('Частная организация');
   intake.getRange(intakeLayout.calculatedAverage.valueCell).setValue(3000);
@@ -7431,14 +7667,14 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   const docs = installVersionedDocsFakes(harness);
   const intakeLayout = harness.context.getClaimIntakeLayout_();
   const firstRow = intakeLayout.claimSelections.firstRow;
-  workspace.questionnaire.getRange(firstRow, 1, 3, 5).setValues([
-    ['', 'Взыскать недоплату — 1 500,00', '', '', ''],
-    [true, 'Выбранный оклад — 01.2026', '', 1000, 'underpayment|salary|salary|2026-01|principal'],
-    [false, 'Снятая премия — 01.2026', '', 500, 'underpayment|monthly_bonus|bonus|2026-01|principal'],
+  workspace.questionnaire.getRange(firstRow, 1, 3, 6).setValues([
+    ['', 'Взыскать недоплату — 1 500,00', '', '', '', ''],
+    [true, 'Недоплата по окладу', '01.2026', 1000, '', 'underpayment|salary|salary|2026-01|principal'],
+    [false, 'Недоплата по премии', '01.2026', 500, '', 'underpayment|monthly_bonus|bonus|2026-01|principal'],
   ]);
   harness.spreadsheet.setNamedRange(
     intakeLayout.claimSelections.namedRange,
-    workspace.questionnaire.getRange(firstRow, 1, 3, 5)
+    workspace.questionnaire.getRange(firstRow, 1, 3, 6)
   );
   const oldBody = harness.documents.get('pipeline-old-doc').body.content.slice();
   const run = harness.context.createClaimConstructorRun_({
@@ -7469,8 +7705,11 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
     completed.results.docs.url
   );
   assert.deepStrictEqual(harness.documents.get('pipeline-old-doc').body.content, oldBody);
-  assert.match(docs.created[0].doc.body.content.join('\n'), /Выбранный оклад/);
-  assert.doesNotMatch(docs.created[0].doc.body.content.join('\n'), /Снятая премия/);
+  assert.match(
+    docs.created[0].doc.body.content.join('\n'),
+    /01\.2026 \| 1 000,00 \| 0,00 \| 0,00 \| 1 000,00/
+  );
+  assert.doesNotMatch(docs.created[0].doc.body.content.join('\n'), /Недоплата по премии/);
 }
 
 // A successful history commit is the idempotency authority for a constructor run.
@@ -7653,15 +7892,24 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
     error: /положительный средний заработок/i,
   },
   {
+    label: 'malformed selected amount',
+    mutate(harness, workspace) {
+      const layout = harness.context.getClaimIntakeLayout_();
+      workspace.questionnaire.getRange(layout.claimSelections.firstRow + 1, 4)
+        .setValue('не сумма');
+    },
+    error: /не содержит понятное нарушение, период или положительную сумму/i,
+  },
+  {
     label: 'malformed audit ordering',
     mutate(harness, workspace) {
       const layout = harness.context.getClaimIntakeLayout_();
       const key = 'underpayment|salary|salary|2026-01|principal';
-      workspace.questionnaire.getRange(layout.claimSelections.firstRow, 1, 1, 5)
-        .setValues([[true, 'Оклад — 01.2026', '', 1000, key]]);
+      workspace.questionnaire.getRange(layout.claimSelections.firstRow, 1, 1, 6)
+        .setValues([[true, 'Недоплата по окладу', '01.2026', 1000, '', key]]);
       harness.spreadsheet.setNamedRange(
         layout.claimSelections.namedRange,
-        workspace.questionnaire.getRange(layout.claimSelections.firstRow, 1, 1, 5)
+        workspace.questionnaire.getRange(layout.claimSelections.firstRow, 1, 1, 6)
       );
     },
     error: /нарушен порядок групп аудита/i,
@@ -7769,11 +8017,13 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   assert.deepStrictEqual(Array.from(history, (row) =>
     harness.context.extractGoogleDocId_(row[1])), [first.documentId, second.documentId]);
   const narrative = docs.created[1].doc.body.content.join('\n');
-  assert.match(narrative, /Взыскать недоплату/);
+  assert.match(narrative, /Расчет заявленных сумм/);
+  assert.match(narrative, /1\. Оклад: индексация, индексация недоплаты, матответственность/);
   assert.match(narrative, /1 000,00/);
-  assert.match(narrative, /спорное/);
-  assert.match(narrative, /только по данным расчетных листков/i);
-  assert.doesNotMatch(narrative, /исковое заявление|правовая позиция|ст\. 236 ТК РФ/i);
+  assert.match(narrative, /Спорные позиции, включенные пользователем/);
+  assert.match(narrative, /только по выбранным пользователем требованиям/i);
+  assert.match(narrative, /236 ТК РФ/);
+  assert.doesNotMatch(narrative, /исковое заявление|правовая позиция/i);
 }
 
 // Invalid current URL falls back to newest valid history; unusable parents fail before create.
@@ -7822,7 +8072,7 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
 }
 
 // Any post-create failure trashes the new file and leaves current link/history intact.
-['move', 'write', 'save', 'history', 'named_range', 'current_link'].forEach((failure) => {
+['open', 'write', 'save', 'history', 'named_range', 'current_link'].forEach((failure) => {
   const harness = createHarness(['Конструктор', 'Анкета и требования']);
   const parentFolder = { id: 'claims-folder' };
   const workspace = seedSelectedDocsWorkspace(harness, 'current-doc', parentFolder);
@@ -7834,7 +8084,6 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   const originalCreate = harness.context.DocumentApp.create;
   harness.context.DocumentApp.create = (title) => {
     const doc = originalCreate(title);
-    if (failure === 'move') docs.created[0].file.failMove = true;
     if (failure === 'write') doc.body.appendParagraph = () => {
       throw new Error('injected body write failure');
     };
@@ -7845,6 +8094,11 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
     }
     return doc;
   };
+  if (failure === 'open') {
+    harness.context.DocumentApp.openById = () => {
+      throw new Error('injected document open failure');
+    };
+  }
   if (failure === 'history') {
     harness.spreadsheet.failWritePredicate = (write) =>
       write.sheet === workspace.questionnaire
@@ -7872,38 +8126,19 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   assert.ok(!historyRange || historyRange.getValues().every((row) => !row[1]), failure);
 });
 
-// Cleanup retries DriveApp lookup after create and falls back to Advanced Drive trash.
+// Cleanup uses the File returned by makeCopy and exposes an orphan when both
+// simple and Advanced Drive trash operations fail.
 {
   const harness = createHarness(['Конструктор', 'Анкета и требования']);
   seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
   const docs = installVersionedDocsFakes(harness);
-  const getFile = harness.context.DriveApp.getFileById;
-  let generatedLookups = 0;
-  harness.context.DriveApp.getFileById = (id) => {
-    if (/^generated-doc-/.test(id) && ++generatedLookups === 1) {
-      throw new Error('transient generated file lookup failure');
-    }
-    return getFile(id);
-  };
-  assert.throws(
-    () => harness.context.writeSelectedClaimDocument({ spreadsheet: harness.spreadsheet }),
-    /transient generated file lookup failure/
-  );
-  assert.strictEqual(docs.created[0].file.trashed, true);
-}
-
-{
-  const harness = createHarness(['Конструктор', 'Анкета и требования']);
-  seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
-  const docs = installVersionedDocsFakes(harness);
-  const getFile = harness.context.DriveApp.getFileById;
-  harness.context.DriveApp.getFileById = (id) => {
-    if (/^generated-doc-/.test(id)) throw new Error('permanent generated file lookup failure');
-    return getFile(id);
-  };
   const originalCreate = harness.context.DocumentApp.create;
   harness.context.DocumentApp.create = (title) => {
     const doc = originalCreate(title);
+    doc.body.appendParagraph = () => {
+      throw new Error('injected document write failure');
+    };
+    docs.created[0].file.failTrash = true;
     docs.created[0].file.failAdvancedTrash = true;
     return doc;
   };

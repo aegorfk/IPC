@@ -12,6 +12,9 @@ const CLAIM_INTAKE_SETTINGS = {
   RECOVERY_WARNING_BACKGROUND: '#FFF2CC',
 };
 
+const APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY = 'APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID_V1';
+const DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID = '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE';
+
 function getClaimIntakeSettings_() {
   return CLAIM_INTAKE_SETTINGS;
 }
@@ -79,7 +82,7 @@ function getClaimIntakeLayout_() {
     claimSelections: {
       titleCell: 'A62',
       firstRow: 63,
-      columnCount: 5,
+      columnCount: 6,
       namedRange: 'CLAIM_INTAKE_CLAIM_SELECTIONS',
     },
     docsHistory: {
@@ -235,7 +238,9 @@ function buildClaimAuditModel_(claimFacts) {
       periodKey: fact.periodKey,
       periodLabel: fact.periodLabel,
       calculationItem: fact.calculationItem,
-      label: `${fact.baseLabel || 'Основание'} — ${fact.periodLabel || fact.periodKey}`,
+      violationLabel: buildClaimViolationLabel_(fact),
+      periodLabel: fact.periodLabel || fact.periodKey,
+      label: `${buildClaimViolationLabel_(fact)} — ${fact.periodLabel || fact.periodKey}`,
       amount: roundClaimAuditMoney_(amount),
       disputed: fact.disputed === true,
       badge: fact.disputed === true ? 'спорное' : '',
@@ -255,12 +260,48 @@ function buildClaimAuditModel_(claimFacts) {
       items,
     };
   }).filter(Boolean);
-  return {
+  const model = {
     groups,
     total: roundClaimAuditMoney_(groups.reduce(
       (sum, group) => sum + (group.excludedFromClaimTotals ? 0 : group.total), 0
     )),
   };
+  const expectedTotal = roundClaimAuditMoney_((claimFacts || []).reduce((sum, fact) => {
+    if (!fact || !factsByFamily[fact.family] || fact.family === 'unallocated_recovery') return sum;
+    const amount = Number(fact.amount);
+    return sum + (Number.isFinite(amount) && amount > 0 ? amount : 0);
+  }, 0));
+  if (Math.abs(model.total - expectedTotal) > 0.01) {
+    throw new Error(
+      `Разбивка требований не сходится с расчетными позициями: `
+      + `${formatClaimAuditAmount_(model.total)} вместо ${formatClaimAuditAmount_(expectedTotal)}.`
+    );
+  }
+  return model;
+}
+
+function buildClaimViolationLabel_(fact) {
+  const value = fact || {};
+  const baseLabels = {
+    salary: 'окладу',
+    monthly_premium: 'ежемесячной премии',
+    quarterly_premium: 'ежеквартальной премии',
+    annual_premium: 'ежегодной премии',
+    vacation: 'отпускным',
+    vacation_payment: 'отпускным',
+    salary_payment: 'заработной плате',
+  };
+  const basis = baseLabels[value.baseKind]
+    || String(value.baseLabel || 'иному основанию').toLowerCase();
+  const labels = {
+    underpayment: `Недоплата по ${basis}`,
+    material_liability: `Материальная ответственность за задержку выплаты по ${basis}`,
+    vacation_payment_delay: 'Нарушение срока выплаты отпускных',
+    salary_indexation: `Индексация заработной платы по ${basis}`,
+    underpayment_indexation: `Индексация недоплаты по ${basis}`,
+    unallocated_recovery: 'Нераспределенное частичное погашение',
+  };
+  return labels[value.family] || String(value.baseLabel || 'Требование');
 }
 
 function mergeClaimSelections_(existingSelections, currentItems) {
@@ -322,7 +363,7 @@ function readExistingClaimSelections_(sheet) {
   const namedRange = sheet.getParent().getRangeByName(layout.namedRange);
   const extent = getClaimAuditRenderedExtent_(sheet, layout, namedRange);
   return sheet.getRange(layout.firstRow, 1, extent, layout.columnCount).getValues().reduce((items, row) => {
-    const key = String(row[4] || '').trim();
+    const key = String(row[5] || '').trim();
     if (key) items.push({ key, selected: row[0] === true });
     return items;
   }, []);
@@ -350,14 +391,21 @@ function renderClaimAudit_(sheet, claimFacts, options) {
   const rows = [];
   const checkboxRanges = [];
   model.groups.forEach((group) => {
-    rows.push(['', `${group.label} — ${formatClaimAuditAmount_(group.total)}`, '', '', '']);
+    rows.push(['', `${group.label} — ${formatClaimAuditAmount_(group.total)}`, '', '', '', '']);
     const firstItemOffset = rows.length;
     group.items.forEach((item) => {
-      rows.push([item.selected, item.label, item.badge, item.amount, item.key]);
+      rows.push([
+        item.selected,
+        item.violationLabel,
+        item.periodLabel,
+        item.amount,
+        item.badge,
+        item.key,
+      ]);
     });
     checkboxRanges.push({ firstItemOffset, rowCount: group.items.length });
   });
-  if (!rows.length) rows.push(['', 'Расчетные позиции пока не найдены', '', '', '']);
+  if (!rows.length) rows.push(['', 'Расчетные позиции пока не найдены', '', '', '', '']);
   const spreadsheet = sheet.getParent();
   const namedRange = spreadsheet.getRangeByName(audit.namedRange);
   const previousExtent = getClaimAuditRenderedExtent_(sheet, audit, namedRange);
@@ -382,12 +430,19 @@ function renderClaimAudit_(sheet, claimFacts, options) {
     target.insertCheckboxes();
     target.setValues(values);
   });
+  model.groups.reduce((offset, group) => {
+    sheet.getRange(audit.firstRow + offset, 2, 1, 4)
+      .setBackground('#E8F0FE')
+      .setFontWeight('bold');
+    return offset + group.items.length + 1;
+  }, 0);
+  sheet.getRange(audit.firstRow, 2, rows.length, 4).setWrap(true);
   sheet.getRange(audit.firstRow, 4, rows.length, 1).setNumberFormat('#,##0.00');
   spreadsheet.setNamedRange(
     audit.namedRange,
     sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount)
   );
-  if (typeof sheet.hideColumns === 'function') sheet.hideColumns(5);
+  if (typeof sheet.hideColumns === 'function') sheet.hideColumns(6);
   model.durableUncheckedClaimKeys = Array.from(durableUnchecked);
   return model;
 }
@@ -422,9 +477,10 @@ function formatClaimAuditAmount_(value) {
 function formatClaimIntakeSheet_(sheet, layout, created) {
   sheet.setFrozenRows(2);
   sheet.setColumnWidth(1, 260);
-  sheet.setColumnWidth(2, 220);
-  sheet.setColumnWidth(3, 150);
-  sheet.setColumnWidth(4, 300);
+  sheet.setColumnWidth(2, 340);
+  sheet.setColumnWidth(3, 120);
+  sheet.setColumnWidth(4, 140);
+  sheet.setColumnWidth(5, 100);
   sheet.setColumnWidth(7, 170);
   sheet.setColumnWidth(8, 360);
   sheet.setColumnWidth(9, 130);
@@ -476,11 +532,21 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
       historyExtent, layout.docsHistory.columnCount
     )
   );
-  const auditExtent = getClaimAuditRenderedExtent_(
-    sheet,
-    layout.claimSelections,
-    spreadsheet.getRangeByName(layout.claimSelections.namedRange)
-  );
+  const existingAuditRange = spreadsheet.getRangeByName(layout.claimSelections.namedRange);
+  let auditExtent;
+  if (isLegacyClaimAuditRange_(sheet, layout.claimSelections, existingAuditRange)) {
+    const legacySelections = existingAuditRange.getValues().reduce((items, row) => {
+      const key = String(row[4] || '').trim();
+      if (isFivePartClaimKey_(key)) items.push({ key, selected: row[0] === true });
+      return items;
+    }, []);
+    captureDurableClaimSelections_(legacySelections);
+    auditExtent = existingAuditRange.getNumRows();
+  } else {
+    auditExtent = getClaimAuditRenderedExtent_(
+      sheet, layout.claimSelections, existingAuditRange
+    );
+  }
   spreadsheet.setNamedRange(
     layout.claimSelections.namedRange,
     sheet.getRange(
@@ -490,6 +556,15 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
       layout.claimSelections.columnCount
     )
   );
+}
+
+function isLegacyClaimAuditRange_(sheet, audit, range) {
+  return Boolean(range
+    && range.getSheet().getSheetId() === sheet.getSheetId()
+    && range.getRow() === audit.firstRow
+    && range.getColumn() === 1
+    && range.getNumColumns() === 5
+    && range.getNumRows() > 0);
 }
 
 function readAverageEarningsState_(spreadsheet) {
@@ -1311,7 +1386,7 @@ function buildSelectedClaimPayload_(spreadsheet) {
   const groups = [];
   let currentGroup = null;
   rows.forEach((row) => {
-    const key = String(row[4] || '').trim();
+    const key = String(row[5] || '').trim();
     if (!key) {
       const heading = String(row[1] || '').trim();
       if (!heading) return;
@@ -1331,15 +1406,40 @@ function buildSelectedClaimPayload_(spreadsheet) {
       );
     }
     if (row[0] !== true) return;
+    if (!isFivePartClaimKey_(key)) {
+      throw new Error('В выбранной позиции поврежден технический ключ. Повторите расчет в Google Sheets.');
+    }
     const amount = Number(row[3]);
-    const family = decodeClaimKeyPart_(key.split('|')[0]);
+    const keyParts = key.split('|').map(decodeClaimKeyPart_);
+    const family = keyParts[0];
+    const violation = String(row[1] || '').trim();
+    const periodKey = keyParts[3];
+    const period = formatSelectedClaimPeriod_(row[2], periodKey);
+    if (!violation || !period || !Number.isFinite(amount) || amount <= 0) {
+      throw new Error(
+        'Выбранная позиция не содержит понятное нарушение, период или положительную сумму. '
+        + 'Повторите расчет в Google Sheets.'
+      );
+    }
     if (!currentGroup.family) currentGroup.family = family;
+    if (currentGroup.family !== family) {
+      throw new Error(
+        'Нарушен порядок групп аудита: позиция относится к другой группе. '
+        + 'Повторите расчет в Google Sheets.'
+      );
+    }
     const item = {
       key,
       family,
-      label: String(row[1] || '').trim(),
-      amount: Number.isFinite(amount) ? roundClaimAuditMoney_(amount) : 0,
-      disputed: String(row[2] || '').trim().toLowerCase() === 'спорное',
+      layoutId: keyParts[1],
+      baseKind: keyParts[2],
+      periodKey,
+      calculationItem: keyParts[4],
+      violation,
+      period,
+      label: `${violation} — ${period}`,
+      amount: roundClaimAuditMoney_(amount),
+      disputed: String(row[4] || '').trim().toLowerCase() === 'спорное',
     };
     currentGroup.items.push(item);
     currentGroup.total = roundClaimAuditMoney_(currentGroup.total + item.amount);
@@ -1348,6 +1448,9 @@ function buildSelectedClaimPayload_(spreadsheet) {
   const selectedClaimKeys = new Set(selectedGroups.reduce(
     (keys, group) => keys.concat(group.items.map((item) => item.key)), []
   ));
+  const selectedItemByKey = new Map(selectedGroups.reduce(
+    (items, group) => items.concat(group.items), []
+  ).map((item) => [item.key, item]));
   const averageState = readAverageEarningsState_(target);
   const selectedAverage = resolveSelectedAverageEarnings_(averageState);
   const scenarios = ['calculated', 'user'].map((source) => {
@@ -1364,22 +1467,85 @@ function buildSelectedClaimPayload_(spreadsheet) {
   const recoveries = normalizePartialRecoveries_(recoveryRows);
   const run = typeof loadClaimConstructorRun_ === 'function' ? loadClaimConstructorRun_() : null;
   const effects = findLatestCalculationEffects_(run && run.results);
+  const claimGroups = selectedGroups.filter((group) => group.family !== 'unallocated_recovery');
   return {
     employerSector: String(target.getRangeByName(layout.employerSector.namedRange).getValue() || ''),
     averageEarnings: {
       selected: selectedAverage,
       scenarios,
     },
-    groups: selectedGroups,
-    total: roundClaimAuditMoney_(selectedGroups.reduce((sum, group) => sum + group.total, 0)),
+    groups: claimGroups,
+    total: roundClaimAuditMoney_(claimGroups.reduce((sum, group) => sum + group.total, 0)),
     recoveries: {
-      valid: recoveries.valid.filter((recovery) => selectedClaimKeys.has(recovery.allocation)),
+      valid: recoveries.valid.filter((recovery) => selectedClaimKeys.has(recovery.allocation))
+        .map((recovery) => {
+          const item = selectedItemByKey.get(recovery.allocation);
+          return Object.assign({}, recovery, {
+            allocationLabel: item ? `${item.violation} (${item.period})` : 'выбранное требование',
+          });
+        }),
       invalid: recoveries.invalid,
       unallocated: recoveries.unallocated,
     },
     warnings: collectSelectedClaimWarnings_(effects, selectedClaimKeys),
     sourceKind: 'payroll_slips',
   };
+}
+
+function formatSelectedClaimPeriod_(value, periodKey) {
+  const normalizedKey = String(periodKey || '').trim();
+  const keyMatch = normalizedKey.match(/^(\d{4})-(\d{2})$/);
+  if (keyMatch) return `${keyMatch[2]}.${keyMatch[1]}`;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return Utilities.formatDate(value, Session.getScriptTimeZone(), 'dd.MM.yyyy');
+  }
+  return String(value || '').trim();
+}
+
+function summarizeSelectedClaimDashboardTotals_(payload) {
+  const totals = (payload && payload.groups || []).reduce((result, group) => {
+    (group.items || []).forEach((item) => {
+      const amount = Number(item.amount) || 0;
+      if (item.family === 'underpayment') result.underpayment += amount;
+      if (item.family === 'salary_indexation' || item.family === 'underpayment_indexation') {
+        result.indexation += amount;
+      }
+      if (item.family === 'material_liability' || item.family === 'vacation_payment_delay') {
+        result.liability += amount;
+      }
+    });
+    return result;
+  }, { underpayment: 0, indexation: 0, liability: 0 });
+  totals.underpayment = roundClaimAuditMoney_(totals.underpayment);
+  totals.indexation = roundClaimAuditMoney_(totals.indexation);
+  totals.liability = roundClaimAuditMoney_(totals.liability);
+  totals.total = roundClaimAuditMoney_(
+    totals.underpayment + totals.indexation + totals.liability
+  );
+  return totals;
+}
+
+function syncClaimConstructorTotalsToSelection_(spreadsheet, payload) {
+  const totals = summarizeSelectedClaimDashboardTotals_(payload);
+  if (typeof loadClaimConstructorRun_ !== 'function'
+    || typeof saveClaimConstructorRun_ !== 'function') return totals;
+  const run = loadClaimConstructorRun_();
+  if (!run || !run.results) return totals;
+  run.results.dashboard = run.results.dashboard || { output: {} };
+  run.results.dashboard.totals = totals;
+  saveClaimConstructorRun_(run);
+  const sheet = spreadsheet.getSheetByName(getClaimConstructorLayout_().sheetName);
+  if (sheet && typeof renderClaimConstructorResults_ === 'function') {
+    renderClaimConstructorResults_(sheet, run.results.dashboard);
+    SpreadsheetApp.flush();
+  }
+  return totals;
+}
+
+function syncClaimConstructorTotalsToSelection() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const payload = buildSelectedClaimPayload_(spreadsheet);
+  return syncClaimConstructorTotalsToSelection_(spreadsheet, payload);
 }
 
 function decodeClaimKeyPart_(value) {
@@ -1493,6 +1659,8 @@ function resolveSelectedClaimDocumentFolder_(spreadsheet) {
   const constructorLayout = getClaimConstructorLayout_();
   const intakeLayout = getClaimIntakeLayout_();
   const candidates = [];
+  const approvedTemplateId = readApprovedClaimDocumentTemplateId_();
+  if (approvedTemplateId) candidates.push(approvedTemplateId);
   const currentRange = target.getRangeByName(constructorLayout.outputDoc.namedRange);
   if (currentRange) candidates.push(currentRange.getValue());
   const intake = target.getSheetByName(intakeLayout.sheetName);
@@ -1504,7 +1672,7 @@ function resolveSelectedClaimDocumentFolder_(spreadsheet) {
   }
   let lastProblem = '';
   for (let index = 0; index < candidates.length; index++) {
-    const id = extractGoogleDocId_(candidates[index]);
+    const id = normalizeGoogleDocIdCandidate_(candidates[index]);
     if (!id) continue;
     try {
       const file = DriveApp.getFileById(id);
@@ -1527,6 +1695,40 @@ function resolveSelectedClaimDocumentFolder_(spreadsheet) {
     + 'Укажите в Конструкторе ссылку на доступный расчетный документ в нужной папке'
     + (lastProblem ? `. ${lastProblem}` : '.')
   );
+}
+
+function normalizeGoogleDocIdCandidate_(value) {
+  const extracted = extractGoogleDocId_(value);
+  if (extracted) return extracted;
+  const raw = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{20,}$/.test(raw) ? raw : '';
+}
+
+function readApprovedClaimDocumentTemplateId_() {
+  if (typeof PropertiesService === 'undefined') {
+    return DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID;
+  }
+  return String(PropertiesService.getDocumentProperties()
+    .getProperty(APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY)
+    || DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID).trim();
+}
+
+function setApprovedClaimDocumentTemplateId(documentId) {
+  const id = normalizeGoogleDocIdCandidate_(documentId);
+  if (!id) throw new Error('Не указан корректный ID утвержденного шаблона судебного расчета.');
+  const file = DriveApp.getFileById(id);
+  const parents = file.getParents();
+  let count = 0;
+  while (parents.hasNext()) {
+    parents.next();
+    count++;
+  }
+  if (count !== 1) {
+    throw new Error('Утвержденный шаблон должен находиться ровно в одной доступной папке Google Drive.');
+  }
+  PropertiesService.getDocumentProperties()
+    .setProperty(APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY, id);
+  return { documentId: id, configured: true };
 }
 
 function writeSelectedClaimDocument(options) {
@@ -1567,10 +1769,10 @@ function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
   let file = null;
   let documentId = '';
   try {
-    document = DocumentApp.create(title);
-    documentId = document.getId();
-    file = DriveApp.getFileById(documentId);
-    file.moveTo(resolvedFolder.folder);
+    const templateFile = DriveApp.getFileById(resolvedFolder.sourceDocumentId);
+    file = templateFile.makeCopy(title, resolvedFolder.folder);
+    documentId = file.getId();
+    document = DocumentApp.openById(documentId);
     populateSelectedClaimDocument_(document, payload, now);
     document.saveAndClose();
     const url = document.getUrl
@@ -1583,6 +1785,7 @@ function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
       source: settings.source || payload.sourceKind,
       idempotencyKey: settings.idempotencyKey || '',
     });
+    const selectedTotals = summarizeSelectedClaimDashboardTotals_(payload);
     return {
       documentId,
       url,
@@ -1591,6 +1794,7 @@ function writeSelectedClaimDocumentLocked_(spreadsheet, settings) {
       sourceDocumentId: resolvedFolder.sourceDocumentId,
       source: settings.source || payload.sourceKind,
       idempotencyKey: String(settings.idempotencyKey || ''),
+      selectedTotals,
       payload,
     };
   } catch (error) {
@@ -1675,12 +1879,16 @@ function isSelectedClaimDocumentCorrectiveError_(error) {
     'average_earnings_invalid',
     'selected_claims_missing',
     'document_parent_unresolvable',
+    'approved_layout_unmapped_basis',
   ].indexOf(error.code) >= 0);
 }
 
 function writeSelectedClaimDocumentAction() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const result = writeSelectedClaimDocument({ spreadsheet });
+  if (result && result.payload) {
+    syncClaimConstructorTotalsToSelection_(spreadsheet, result.payload);
+  }
   spreadsheet.toast(
     `Создан новый документ: ${result.title}`,
     CLAIM_INTAKE_SETTINGS.SELECTED_DOC_ACTION_LABEL
@@ -1694,56 +1902,418 @@ function buildSelectedClaimDocumentTitle_(payload, now) {
   const timestamp = Utilities.formatDate(
     now, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss'
   );
-  return `Расчет выбранных требований — ${timestamp} — ${scenario}`;
+  return `Расчет заявленных сумм — ${timestamp} — ${scenario}`;
 }
 
 function populateSelectedClaimDocument_(document, payload, now) {
   const body = document.getBody();
-  body.appendParagraph('Расчет выбранных требований')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING1);
-  body.appendParagraph(`Дата формирования: ${Utilities.formatDate(
-    now, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm'
-  )}`);
-  body.appendParagraph(`Источник данных: расчетные листки (${payload.sourceKind}).`);
-  body.appendParagraph(`Сектор работодателя: ${payload.employerSector || 'не указан'}.`);
-  const average = payload.averageEarnings.selected || {};
-  body.appendParagraph('Сценарий среднего заработка')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-  body.appendParagraph(
-    `${average.source === 'user' ? 'Заданный вручную' : 'Рассчитанный системой'}: `
-    + `${formatClaimAuditAmount_(average.amount || 0)} руб.`
-    + (average.context ? `; контекст: ${average.context}` : '')
-  );
-  (payload.averageEarnings.scenarios || []).filter((scenario) => !scenario.selected)
-    .forEach((scenario) => body.appendParagraph(
-      `Для сравнения — ${scenario.source === 'user' ? 'ручной' : 'рассчитанный'}: `
-      + `${formatClaimAuditAmount_(scenario.amount)} руб.`
-      + (scenario.context ? `; ${scenario.context}` : '')
-    ));
-  body.appendParagraph('Выбранные требования')
-    .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-  payload.groups.forEach((group) => {
-    body.appendParagraph(group.label).setHeading(DocumentApp.ParagraphHeading.HEADING2);
-    body.appendTable([['Позиция', 'Статус', 'Сумма']].concat(group.items.map((item) => [
-      item.label,
-      item.disputed ? 'спорное' : '',
-      `${formatClaimAuditAmount_(item.amount)} руб.`,
-    ])));
-    body.appendParagraph(`Итого по группе: ${formatClaimAuditAmount_(group.total)} руб.`);
+  clearNewSelectedClaimDocumentBody_(body);
+  const model = buildApprovedClaimDocumentModel_(payload, now);
+  appendApprovedClaimHeading_(body, 'Расчет заявленных сумм', DocumentApp.ParagraphHeading.HEADING1);
+  appendApprovedClaimParagraph_(body, 'Дата окончания расчета:');
+  model.endDateRows.forEach((row) => appendApprovedClaimListItem_(body, row));
+
+  appendApprovedClaimHeading_(body, 'Сводка', DocumentApp.ParagraphHeading.HEADING2);
+  appendApprovedClaimTable_(body, model.summaryRows, {
+    totalRow: true,
+    columnWidths: [105, 70, 95, 90, 80],
   });
-  body.appendParagraph(`Итого выбранных требований: ${formatClaimAuditAmount_(payload.total)} руб.`);
-  appendSelectedClaimRecoveriesNarrative_(body, payload.recoveries);
-  if (payload.warnings.length) {
-    body.appendParagraph('Предупреждения расчета')
-      .setHeading(DocumentApp.ParagraphHeading.HEADING2);
-    payload.warnings.forEach((warning) => body.appendParagraph(
-      `${warning.reason || warning.code}` + (warning.source ? `; источник: ${warning.source}` : '')
-    ));
-  }
-  body.appendParagraph(
-    'Расшифровка сформирована только по данным расчетных листков и рассчитанным значениям Google Sheets; '
-    + 'нормативный анализ и полный текст иска в этот документ не включены.'
+  const totalParagraph = appendApprovedClaimParagraph_(
+    body,
+    `Общая сумма выбранных требований на ${model.calculationDate}: `
+      + `${formatClaimAuditAmount_(model.total)} ₽`
   );
+  setApprovedClaimElementBold_(totalParagraph, true);
+
+  model.sections.forEach((section, sectionIndex) => {
+    if (sectionIndex > 0 && section.baseKind === 'monthly_premium'
+      && typeof body.appendPageBreak === 'function') {
+      body.appendPageBreak();
+    }
+    appendApprovedClaimHeading_(body, section.title, DocumentApp.ParagraphHeading.HEADING2);
+    appendApprovedClaimTable_(body, section.rows, {
+      totalRow: true,
+      columnWidths: [85, 85, 75, 85, 110],
+    });
+    if (section.disputedItems.length) {
+      appendApprovedClaimParagraph_(body, 'Спорные позиции, включенные пользователем:');
+      section.disputedItems.forEach((item) => appendApprovedClaimListItem_(
+        body,
+        `${item.violation} (${item.period}) — ${formatClaimAuditAmount_(item.amount)} ₽`
+      ));
+    }
+  });
+
+  appendApprovedAverageEarningsSection_(body, payload.averageEarnings);
+  appendApprovedArticle236Detail_(body, model);
+  appendSelectedClaimRecoveriesNarrative_(body, payload.recoveries);
+  appendApprovedClaimWarnings_(body, payload.warnings);
+  appendApprovedClaimParagraph_(
+    body,
+    'Расчет сформирован только по выбранным пользователем требованиям на основании данных '
+      + 'Google Sheets. Снятые позиции в суммы и таблицы документа не включены.'
+  );
+  reconcileApprovedClaimDocumentModel_(model, payload);
+}
+
+function clearNewSelectedClaimDocumentBody_(body) {
+  if (body && typeof body.clear === 'function') {
+    body.clear();
+    return body;
+  }
+  if (body && Array.isArray(body.content)) body.content.length = 0;
+  return body;
+}
+
+function buildApprovedClaimDocumentModel_(payload, now) {
+  const value = payload || {};
+  const definitions = [
+    { baseKind: 'salary', label: 'Оклад', title: '1. Оклад: индексация, индексация недоплаты, матответственность' },
+    { baseKind: 'monthly_premium', label: 'Ежемесячные премии', title: '2.1. Ежемесячные премии' },
+    { baseKind: 'quarterly_premium', label: 'Ежеквартальные премии', title: '2.2. Ежеквартальные премии' },
+    { baseKind: 'annual_premium', label: 'Ежегодные премии', title: '2.3. Ежегодные премии' },
+    { baseKind: 'vacation', label: 'Отпуска', title: '3. Отпуска' },
+    { baseKind: 'vacation_payment', label: 'Отпуска', title: '3. Отпуска' },
+    { baseKind: 'salary_payment', label: 'Окончательный расчет', title: '4. Окончательный расчет при увольнении: перерасчет, индексация недоплаты и матответственность' },
+  ];
+  const definitionByBase = new Map(definitions.map((definition) => [definition.baseKind, definition]));
+  const items = (value.groups || []).reduce(
+    (result, group) => result.concat((group.items || []).map((item) => Object.assign({}, item, {
+      family: item.family || group.family,
+    }))), []
+  ).filter((item) => item.family !== 'unallocated_recovery');
+  const unknown = items.filter((item) => !definitionByBase.has(item.baseKind));
+  if (unknown.length) {
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'approved_layout_unmapped_basis',
+      `Для основания «${unknown[0].violation || unknown[0].baseKind}» еще не согласован раздел `
+        + 'судебного расчета. Сначала согласуйте изменение макета.'
+    );
+  }
+  const buckets = new Map();
+  items.forEach((item) => {
+    const bucketKey = item.baseKind === 'vacation_payment' ? 'vacation' : item.baseKind;
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, new Map());
+    const periods = buckets.get(bucketKey);
+    if (!periods.has(item.period)) {
+      periods.set(item.period, {
+        period: item.period,
+        underpayment: 0,
+        indexation: 0,
+        liability: 0,
+        selectedTotal: 0,
+        items: [],
+      });
+    }
+    const row = periods.get(item.period);
+    if (item.family === 'underpayment') row.underpayment += item.amount;
+    if (item.family === 'salary_indexation' || item.family === 'underpayment_indexation') {
+      row.indexation += item.amount;
+    }
+    if (item.family === 'material_liability' || item.family === 'vacation_payment_delay') {
+      row.liability += item.amount;
+    }
+    row.selectedTotal += item.amount;
+    row.items.push(item);
+  });
+  const orderedDefinitions = definitions.filter((definition, index, all) =>
+    all.findIndex((candidate) => (candidate.baseKind === 'vacation_payment' ? 'vacation' : candidate.baseKind)
+      === (definition.baseKind === 'vacation_payment' ? 'vacation' : definition.baseKind)) === index
+  );
+  const sections = [];
+  const summaryRows = [[
+    'Вид требования', 'Количество периодов', 'Сумма по требованию, ₽',
+    'Компенсация, ₽', 'Индексация, ₽',
+  ]];
+  const article236Items = [];
+  orderedDefinitions.forEach((definition) => {
+    const bucketKey = definition.baseKind === 'vacation_payment' ? 'vacation' : definition.baseKind;
+    const periods = buckets.get(bucketKey);
+    if (!periods || !periods.size) return;
+    const rows = Array.from(periods.values()).sort(compareApprovedClaimPeriods_);
+    const totals = rows.reduce((result, row) => {
+      result.underpayment += row.underpayment;
+      result.indexation += row.indexation;
+      result.liability += row.liability;
+      result.selectedTotal += row.selectedTotal;
+      row.items.filter((item) => item.family === 'material_liability'
+        || item.family === 'vacation_payment_delay').forEach((item) => article236Items.push(item));
+      return result;
+    }, { underpayment: 0, indexation: 0, liability: 0, selectedTotal: 0 });
+    const tableRows = [['Период', 'Недоплата, ₽', 'Индексация, ₽', '236 ТК РФ, ₽', 'Итого, ₽']]
+      .concat(rows.map((row) => [
+        row.period,
+        formatClaimAuditAmount_(row.underpayment),
+        formatClaimAuditAmount_(row.indexation),
+        formatClaimAuditAmount_(row.liability),
+        formatClaimAuditAmount_(row.selectedTotal),
+      ]))
+      .concat([[
+        'Итого',
+        formatClaimAuditAmount_(totals.underpayment),
+        formatClaimAuditAmount_(totals.indexation),
+        formatClaimAuditAmount_(totals.liability),
+        formatClaimAuditAmount_(totals.selectedTotal),
+      ]]);
+    sections.push({
+      baseKind: bucketKey,
+      title: definition.title,
+      rows: tableRows,
+      totals,
+      disputedItems: rows.reduce(
+        (result, row) => result.concat(row.items.filter((item) => item.disputed)), []
+      ),
+    });
+    summaryRows.push([
+      definition.label,
+      String(rows.length),
+      formatClaimAuditAmount_(totals.underpayment),
+      formatClaimAuditAmount_(totals.liability),
+      formatClaimAuditAmount_(totals.indexation),
+    ]);
+  });
+  const summaryTotals = sections.reduce((result, section) => {
+    result.periodCount += section.rows.length - 2;
+    result.underpayment += section.totals.underpayment;
+    result.liability += section.totals.liability;
+    result.indexation += section.totals.indexation;
+    result.selectedTotal += section.totals.selectedTotal;
+    return result;
+  }, { periodCount: 0, underpayment: 0, liability: 0, indexation: 0, selectedTotal: 0 });
+  summaryRows.push([
+    'Итого',
+    String(summaryTotals.periodCount),
+    formatClaimAuditAmount_(summaryTotals.underpayment),
+    formatClaimAuditAmount_(summaryTotals.liability),
+    formatClaimAuditAmount_(summaryTotals.indexation),
+  ]);
+  const calculationDate = Utilities.formatDate(
+    now, Session.getScriptTimeZone(), 'dd.MM.yyyy'
+  );
+  return {
+    calculationDate,
+    endDateRows: sections.map((section) => {
+      const definition = orderedDefinitions.find((candidate) => {
+        const key = candidate.baseKind === 'vacation_payment' ? 'vacation' : candidate.baseKind;
+        return key === section.baseKind;
+      });
+      return `${definition ? definition.label : section.baseKind}: ${calculationDate}`;
+    }),
+    items,
+    sections,
+    summaryRows,
+    article236Items,
+    total: roundClaimAuditMoney_(summaryTotals.selectedTotal),
+  };
+}
+
+function compareApprovedClaimPeriods_(left, right) {
+  const parse = (value) => {
+    const match = String(value && value.period || '').match(/^(\d{2})\.(\d{4})$/);
+    return match ? Number(match[2]) * 12 + Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  return parse(left) - parse(right) || String(left.period).localeCompare(String(right.period));
+}
+
+function reconcileApprovedClaimDocumentModel_(model, payload) {
+  const selectedTotal = roundClaimAuditMoney_((model.items || []).reduce(
+    (sum, item) => sum + Number(item.amount || 0), 0
+  ));
+  const payloadTotal = roundClaimAuditMoney_(Number(payload && payload.total || 0));
+  if (Math.abs(model.total - selectedTotal) > 0.01
+    || Math.abs(model.total - payloadTotal) > 0.01) {
+    throw new Error(
+      `Судебный расчет не сходится с выбранными требованиями: документ `
+        + `${formatClaimAuditAmount_(model.total)}, выбранные позиции `
+        + `${formatClaimAuditAmount_(selectedTotal)}, аудит ${formatClaimAuditAmount_(payloadTotal)}.`
+    );
+  }
+  return true;
+}
+
+function appendApprovedAverageEarningsSection_(body, averageEarnings) {
+  const value = averageEarnings || {};
+  const selected = value.selected || {};
+  appendApprovedClaimHeading_(
+    body, '5. Расчет среднего заработка', DocumentApp.ParagraphHeading.HEADING2
+  );
+  const rows = [['Показатель', 'Значение'], [
+    selected.source === 'user' ? 'Средний заработок, заданный вручную' : 'Средний заработок по реконструкции',
+    `${formatClaimAuditAmount_(selected.amount || 0)} ₽`,
+  ]];
+  if (selected.context) rows.push(['Источник выбранного значения', selected.context]);
+  (value.scenarios || []).filter((scenario) => !scenario.selected).forEach((scenario) => {
+    rows.push([
+      scenario.source === 'user' ? 'Для сравнения: заданный вручную' : 'Для сравнения: по реконструкции',
+      `${formatClaimAuditAmount_(scenario.amount || 0)} ₽${scenario.context ? `; ${scenario.context}` : ''}`,
+    ]);
+  });
+  appendApprovedClaimTable_(body, rows, { columnWidths: [290, 150] });
+}
+
+function appendApprovedArticle236Detail_(body, model) {
+  if (!model.article236Items.length) return;
+  if (typeof body.appendPageBreak === 'function') body.appendPageBreak();
+  appendApprovedClaimHeading_(
+    body,
+    '7. Подробный расчет матответственности по ст. 236 ТК РФ',
+    DocumentApp.ParagraphHeading.HEADING2
+  );
+  const total = model.article236Items.reduce(
+    (sum, item) => sum + Number(item.amount || 0), 0
+  );
+  const rows = [['Период', 'Суть нарушения', 'Компенсация, ₽']]
+    .concat(model.article236Items.map((item) => [
+      item.period,
+      `${formatApprovedArticle236Violation_(item.violation)}`
+        + `${item.disputed ? ' (спорное)' : ''}`,
+      formatClaimAuditAmount_(item.amount),
+    ]))
+    .concat([['', 'Итого', formatClaimAuditAmount_(total)]]);
+  appendApprovedClaimTable_(body, rows, {
+    totalRow: true,
+    columnWidths: [75, 275, 90],
+  });
+}
+
+function formatApprovedArticle236Violation_(value) {
+  return String(value || '')
+    .replace(/^Материальная ответственность за задержку\s+/i, 'Задержка ')
+    .trim();
+}
+
+function appendApprovedClaimWarnings_(body, warnings) {
+  const values = warnings || [];
+  if (!values.length) return;
+  appendApprovedClaimParagraph_(body, 'Замечания к расчету:');
+  values.forEach((warning) => appendApprovedClaimListItem_(
+    body,
+    `${warning.reason || warning.code}`
+  ));
+}
+
+function appendApprovedClaimHeading_(body, text, heading) {
+  const paragraph = body.appendParagraph(text).setHeading(heading);
+  const styles = {};
+  styles[DocumentApp.ParagraphHeading.HEADING1] = {
+    color: '#366091', size: 15, spacingBefore: 24,
+  };
+  styles[DocumentApp.ParagraphHeading.HEADING2] = {
+    color: '#4F81BD', size: 13, spacingBefore: 10,
+  };
+  styles[DocumentApp.ParagraphHeading.HEADING3] = {
+    color: '#4F81BD', size: 11, spacingBefore: 10,
+  };
+  const style = styles[heading] || styles[DocumentApp.ParagraphHeading.HEADING3];
+  if (typeof paragraph.setLineSpacing === 'function') paragraph.setLineSpacing(1.15);
+  if (typeof paragraph.setSpacingBefore === 'function') {
+    paragraph.setSpacingBefore(style.spacingBefore);
+  }
+  if (typeof paragraph.setSpacingAfter === 'function') paragraph.setSpacingAfter(0);
+  if (typeof paragraph.editAsText === 'function') {
+    const value = paragraph.editAsText();
+    if (value && typeof value.setFontFamily === 'function') {
+      value.setFontFamily('Times New Roman');
+    }
+    if (value && typeof value.setForegroundColor === 'function') {
+      value.setForegroundColor(style.color);
+    }
+    if (value && typeof value.setFontSize === 'function') value.setFontSize(style.size);
+    if (value && typeof value.setBold === 'function') value.setBold(true);
+  }
+  return paragraph;
+}
+
+function appendApprovedClaimParagraph_(body, text) {
+  const paragraph = body.appendParagraph(text);
+  if (typeof paragraph.setLineSpacing === 'function') paragraph.setLineSpacing(1.15);
+  if (typeof paragraph.setSpacingAfter === 'function') paragraph.setSpacingAfter(4);
+  setApprovedClaimElementTextStyle_(paragraph, {
+    color: '#000000', size: 11, bold: false,
+  });
+  return paragraph;
+}
+
+function appendApprovedClaimListItem_(body, text) {
+  if (body && typeof body.appendListItem === 'function') {
+    const item = body.appendListItem(text);
+    if (typeof item.setLineSpacing === 'function') item.setLineSpacing(1.15);
+    if (typeof item.setSpacingAfter === 'function') item.setSpacingAfter(2);
+    setApprovedClaimElementTextStyle_(item, {
+      color: '#000000', size: 11, bold: false,
+    });
+    return item;
+  }
+  return body.appendParagraph(`• ${text}`);
+}
+
+function appendApprovedClaimTable_(body, rows, options) {
+  const table = body.appendTable(rows);
+  const settings = options || {};
+  if (!table || typeof table.getNumRows !== 'function') return table;
+  if (typeof table.setBorderColor === 'function') table.setBorderColor('#000000');
+  if (typeof table.setBorderWidth === 'function') table.setBorderWidth(1);
+  if (Array.isArray(settings.columnWidths)) {
+    for (let rowIndex = 0; rowIndex < table.getNumRows(); rowIndex++) {
+      const row = table.getRow(rowIndex);
+      if (!row || typeof row.getNumCells !== 'function') continue;
+      for (let cellIndex = 0; cellIndex < row.getNumCells(); cellIndex++) {
+        const cell = row.getCell(cellIndex);
+        setApprovedClaimElementTextStyle_(cell, {
+          color: '#000000', size: 11, bold: false,
+        });
+        const width = settings.columnWidths[cellIndex];
+        if (width && cell && typeof cell.setWidth === 'function') cell.setWidth(width);
+      }
+    }
+  }
+  styleApprovedClaimTableRow_(table.getRow(0), true, true);
+  if (settings.totalRow && table.getNumRows() > 1) {
+    styleApprovedClaimTableRow_(table.getRow(table.getNumRows() - 1), true, true);
+  }
+  return table;
+}
+
+function styleApprovedClaimTableRow_(row, bold, shaded) {
+  if (!row || typeof row.getNumCells !== 'function') return;
+  for (let index = 0; index < row.getNumCells(); index++) {
+    const cell = row.getCell(index);
+    if (shaded && cell && typeof cell.setBackgroundColor === 'function') {
+      cell.setBackgroundColor('#eeeeee');
+    }
+    setApprovedClaimElementBold_(cell, bold);
+  }
+}
+
+function setApprovedClaimElementBold_(element, bold) {
+  if (!element) return;
+  try {
+    if (typeof element.editAsText === 'function') element.editAsText().setBold(Boolean(bold));
+  } catch (error) {
+    Logger.log(`Не удалось применить полужирное начертание: ${error && error.message ? error.message : error}`);
+  }
+}
+
+function setApprovedClaimElementTextStyle_(element, options) {
+  if (!element || typeof element.editAsText !== 'function') return;
+  const settings = options || {};
+  try {
+    const value = element.editAsText();
+    if (value && typeof value.setFontFamily === 'function') {
+      value.setFontFamily('Times New Roman');
+    }
+    if (settings.color && value && typeof value.setForegroundColor === 'function') {
+      value.setForegroundColor(settings.color);
+    }
+    if (settings.size && value && typeof value.setFontSize === 'function') {
+      value.setFontSize(settings.size);
+    }
+    if (typeof settings.bold === 'boolean' && value && typeof value.setBold === 'function') {
+      value.setBold(settings.bold);
+    }
+  } catch (error) {
+    Logger.log(`Не удалось применить стиль утвержденного расчета: ${error && error.message ? error.message : error}`);
+  }
 }
 
 function appendSelectedClaimRecoveriesNarrative_(body, recoveries) {
@@ -1753,7 +2323,7 @@ function appendSelectedClaimRecoveriesNarrative_(body, recoveries) {
     .setHeading(DocumentApp.ParagraphHeading.HEADING2);
   value.valid.forEach((item) => body.appendParagraph(
     `${formatDate_(item.date)} — ${formatClaimAuditAmount_(item.amount)} руб.; `
-    + `отнесено к ${item.allocation}.`
+    + `отнесено к ${item.allocationLabel || 'выбранному требованию'}.`
   ));
   value.unallocated.forEach((item) => body.appendParagraph(
     `Спорное нераспределенное погашение: ${formatDate_(item.date)} — `

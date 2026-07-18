@@ -562,6 +562,9 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       });
     }
     applyCalculationEffectFactFlags_(results, recoveryEffects);
+    results.forEach((result) => {
+      result.totals = summarizeClaimFactsForConstructor_(result.claimFacts || []);
+    });
     results.calculationEffects = recoveryEffects;
     if (results.length && (recoveryState.valid.length
       || recoveryState.unallocated.length || recoveryEffects.warnings.length)) {
@@ -574,6 +577,7 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const auditFacts = results.reduce(
       (facts, result) => facts.concat(result.claimFacts || []), []
     ).concat(recoveryEffects.auditFacts || []);
+    assertClaimConstructorAuditReconciles_(results, auditFacts);
     reportCalculationProgress_(transactionOptions, { stage: 'audit' });
     if (typeof renderClaimAudit_ === 'function' && intakeSheet) {
       extendCalculationTransactionAuditSnapshot_(
@@ -1172,7 +1176,7 @@ function recalculateForcedAbsenceLiabilityAndVacations() {
 
 function runClaimSheetCalculation_(spreadsheet, options) {
   const settings = options || {};
-  const labelValues = settings.labelValues || scanSpreadsheetLabelValues_(spreadsheet);
+  const labelValues = settings.labelValues || scanClaimCalculationLabelValues_(spreadsheet);
   const params = settings.params || readClaimCalculationParamsFromLabelValues_(labelValues);
   const calculated = calculateClaimCalculationResult_(spreadsheet, params, labelValues);
   if (!calculated.ready) {
@@ -1622,11 +1626,6 @@ function updateUnpaidSalaryIndexationCore_(params) {
   );
 
   SpreadsheetApp.flush();
-  const totals = summarizeClaimConstructorCalculationTotals_(
-    sheet.getRange(table.headerRow + 1, table.columns.totalUnderpayment + 1, rowCount, 1).getValues(),
-    sheet.getRange(table.headerRow + 1, table.columns.target + 1, rowCount, 1).getValues(),
-    sheet.getRange(table.headerRow + 1, table.columns.penalty + 1, rowCount, 1).getValues()
-  );
   const claimFacts = buildClaimFactsFromCalculationRows_({
     sheetName: sheet.getName(),
     table,
@@ -1642,6 +1641,14 @@ function updateUnpaidSalaryIndexationCore_(params) {
       productionCalendar,
       inferredPaymentSchedule
     ),
+  });
+  validateClaimFactCoverage_({
+    sheetName: sheet.getName(),
+    table,
+    rows: values,
+    underpaymentValues: refreshedTotalUnderpaymentValues,
+    indexationValues: targetValues,
+    liabilityValues: penaltyValues,
   });
   if (table.layout.id === 'vacation') {
     Array.prototype.push.apply(claimFacts, buildVacationPaymentDelayFacts_({
@@ -1662,6 +1669,7 @@ function updateUnpaidSalaryIndexationCore_(params) {
       compensationRates,
     }));
   }
+  const totals = summarizeClaimFactsForConstructor_(claimFacts);
 
   return {
     sheetName: sheet.getName(),
@@ -1803,9 +1811,7 @@ function rescanCalculationResultFromSheet_(spreadsheet, result, cachedTable, cac
     });
   });
   return Object.assign({}, result, {
-    totals: summarizeClaimConstructorCalculationTotals_(
-      underpaymentValues, indexationValues, liabilityValues
-    ),
+    totals: summarizeClaimFactsForConstructor_(facts),
     claimFacts: facts,
   });
 }
@@ -1831,6 +1837,78 @@ function summarizeClaimConstructorCalculationTotals_(underpaymentValues, indexat
     indexation: sum(indexationValues),
     liability: sum(liabilityValues),
   };
+}
+
+function summarizeClaimFactsForConstructor_(claimFacts) {
+  const totals = (claimFacts || []).reduce((result, fact) => {
+    const amount = Number(fact && fact.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return result;
+    if (fact.family === 'underpayment') result.underpayment += amount;
+    if (fact.family === 'salary_indexation' || fact.family === 'underpayment_indexation') {
+      result.indexation += amount;
+    }
+    if (fact.family === 'material_liability' || fact.family === 'vacation_payment_delay') {
+      result.liability += amount;
+    }
+    return result;
+  }, { underpayment: 0, indexation: 0, liability: 0 });
+  return {
+    underpayment: roundMoney_(totals.underpayment),
+    indexation: roundMoney_(totals.indexation),
+    liability: roundMoney_(totals.liability),
+  };
+}
+
+function assertClaimConstructorAuditReconciles_(calculationResults, auditFacts) {
+  const expected = (calculationResults || []).reduce((totals, result) => {
+    const item = result && result.totals || {};
+    totals.underpayment += Number(item.underpayment) || 0;
+    totals.indexation += Number(item.indexation) || 0;
+    totals.liability += Number(item.liability) || 0;
+    return totals;
+  }, { underpayment: 0, indexation: 0, liability: 0 });
+  const actual = summarizeClaimFactsForConstructor_(auditFacts || []);
+  ['underpayment', 'indexation', 'liability'].forEach((family) => {
+    if (Math.abs(roundMoney_(expected[family]) - actual[family]) <= 0.01) return;
+    const error = new Error(
+      `Итог ${family} не сходится с детальной разбивкой: `
+      + `${roundMoney_(expected[family])} вместо ${actual[family]}.`
+    );
+    error.code = 'CLAIM_RECONCILIATION_FAILED';
+    throw error;
+  });
+  return actual;
+}
+
+function validateClaimFactCoverage_(params) {
+  const settings = params || {};
+  const rows = settings.rows || [];
+  const table = settings.table || {};
+  const columns = table.columns || {};
+  rows.forEach((row, rowIndex) => {
+    if (parseRowPeriod_(row, columns)) return;
+    const outputs = [
+      readClaimFactAmount_(settings.underpaymentValues, rowIndex),
+      readClaimFactAmount_(settings.indexationValues, rowIndex),
+      readClaimFactAmount_(settings.liabilityValues, rowIndex),
+    ];
+    if (!outputs.some((amount) => Number.isFinite(amount) && amount > 0)) return;
+    if (isClaimCalculationSummaryRow_(row)) return;
+    const error = new Error(
+      `На листе «${settings.sheetName || 'расчет'}» в строке `
+      + `${Number(table.headerRow || 0) + rowIndex + 1} не удалось определить период `
+      + 'или дату выплаты для положительной расчетной суммы. Проверьте строку.'
+    );
+    error.code = 'CLAIM_RECONCILIATION_FAILED';
+    throw error;
+  });
+}
+
+function isClaimCalculationSummaryRow_(row) {
+  const text = normalizeText_((row || []).filter((value) =>
+    value !== '' && value !== null && value !== undefined
+  ).join(' | '));
+  return /(^|\| |\s)(итого|всего|общий итог|цена иска)(\s|[:,]|$)/i.test(text);
 }
 
 function applyCalculationEffectFactFlags_(calculationResults, calculationEffects) {
@@ -3135,6 +3213,11 @@ function resolveSemanticColumnsForLayout_(headerValues, layout) {
     const index = findAliases(HEADER_ALIASES[semantic]);
     if (index >= 0) columns[semantic] = index;
   });
+  const compoundPeriodIndex = findCompoundClaimPeriodColumn_(headers);
+  // A dedicated compound period/payment header is more specific than a generic
+  // fragment such as "за период" in an amount column, so it must win even when
+  // the generic alias resolver found a column first.
+  if (compoundPeriodIndex >= 0) columns.period = compoundPeriodIndex;
   if (!Number.isInteger(columns.unpaidSalary)) {
     const unpaidPattern = layout.id === 'monthlyPremiums'
       ? /недоплат.*(ежемесяч|месячн).*прем/
@@ -3187,7 +3270,9 @@ function resolveSemanticColumnsForLayout_(headerValues, layout) {
 function getSemanticallyCompatibleLayoutIds_(headers) {
   const normalizedHeaders = (headers || []).map(normalizeText_);
   const text = normalizedHeaders.join(' | ');
-  const has = (aliases) => normalizedHeaders.some((header) => headerMatches_(header, aliases));
+  const compoundPeriodIndex = findCompoundClaimPeriodColumn_(normalizedHeaders);
+  const has = (aliases, field) => (field === 'period' && compoundPeriodIndex >= 0)
+    || normalizedHeaders.some((header) => headerMatches_(header, aliases));
   const common = /(недоплат|невыплачен)/.test(text)
     && /индексац/.test(text)
     && /(пен[ия]|ст\.?\s*236|материальн.*ответствен)/.test(text);
@@ -3195,9 +3280,14 @@ function getSemanticallyCompatibleLayoutIds_(headers) {
   return Object.keys(SHEET_LAYOUT_SEMANTIC_CONTRACTS).filter((layoutId) => {
     const contract = SHEET_LAYOUT_SEMANTIC_CONTRACTS[layoutId];
     return (contract.requiredFields || []).every((field) =>
-      HEADER_ALIASES[field] && has(HEADER_ALIASES[field])
+      HEADER_ALIASES[field] && has(HEADER_ALIASES[field], field)
     ) && (contract.requiredPatterns || []).every((pattern) => pattern.test(text));
   });
+}
+
+function findCompoundClaimPeriodColumn_(headers) {
+  const pattern = /((квартал|год|месяц).*(расчет|расчёт|период).*(месяц|дата).*выплат)|((период|расчет|расчёт).*(квартал|год).*(месяц|дата).*выплат)/;
+  return (headers || []).map(normalizeText_).findIndex((header) => pattern.test(header));
 }
 
 function getDefaultSheetLayout_() {
@@ -4132,7 +4222,7 @@ function formatSalaryPaymentScheduleItem_(item) {
 }
 
 function readClaimCalculationParams_(spreadsheet) {
-  const labelValues = scanSpreadsheetLabelValues_(spreadsheet);
+  const labelValues = scanClaimCalculationLabelValues_(spreadsheet);
   return readClaimCalculationParamsFromLabelValues_(labelValues);
 }
 
@@ -4301,6 +4391,29 @@ function scanSpreadsheetLabelValues_(spreadsheet) {
     }));
   });
   return result;
+}
+
+function scanClaimCalculationLabelValues_(spreadsheet) {
+  const sheets = spreadsheet.getSheets();
+  const userFacing = sheets.filter((sheet) => {
+    if (typeof classifyClaimConstructorSheet_ === 'function') {
+      return ['constructor', 'questionnaire', 'primary_calculation']
+        .indexOf(classifyClaimConstructorSheet_(sheet)) >= 0;
+    }
+    return /^(конструктор|анкета и требования|оклад|ежемесячные|ежеквартальные|ежегодные|отпуска(?: и расчет)?)$/i
+      .test(String(sheet.getName ? sheet.getName() : '').trim());
+  });
+  const targets = userFacing.length ? userFacing : sheets;
+  return targets.reduce((result, sheet) => {
+    Array.prototype.push.apply(result, scanSheetLabelValues_(sheet, {
+      rows: 120,
+      columns: 30,
+      // Constructor links and calculation parameters are stored as actual cell
+      // values. Avoid the much heavier RichText read over every technical sheet.
+      includeRichText: false,
+    }));
+    return result;
+  }, []);
 }
 
 function scanSheetLabelValues_(sheet, options) {
@@ -4560,8 +4673,13 @@ function buildForcedAbsenceDocTableRows_(result, params) {
 }
 
 function extractGoogleDocId_(value) {
-  const match = String(value || '').match(/\/document\/d\/([^/]+)/);
-  return match ? match[1] : '';
+  const text = String(value || '').trim();
+  const pathMatch = text.match(/\/document\/d\/([A-Za-z0-9_-]+)/);
+  if (pathMatch) return pathMatch[1];
+  const queryMatch = text.match(
+    /https:\/\/(?:docs|drive)\.google\.com\/[^\s]*[?&]id=([A-Za-z0-9_-]+)/i
+  );
+  return queryMatch ? queryMatch[1] : '';
 }
 
 function buildForcedAbsenceCalculationTableRows_(result, startDate, endDate, annualVacationDays) {
@@ -4823,12 +4941,25 @@ function parseMonth_(value) {
 
 function parseRowPeriod_(row, columns) {
   if (Number.isInteger(columns.period)) {
-    return parseMonthYear_(row[columns.period]);
+    const explicitPeriod = parseMonthYear_(row[columns.period]);
+    if (explicitPeriod) return explicitPeriod;
   }
 
   const year = Number.isInteger(columns.year) ? parseYear_(row[columns.year]) : null;
   const month = Number.isInteger(columns.month) ? parseMonth_(row[columns.month]) : null;
-  return year && month ? { year, month } : null;
+  if (year && month) return { year, month };
+
+  // Some vendor formats leave the accrual-period cell blank for an individual
+  // payment but still provide its factual payment date. Keep the row in the
+  // traceable claim ledger and use that date only as the display/grouping period;
+  // Article 236 continues to use the full factual date through source metadata.
+  if (Number.isInteger(columns.paymentDate)) {
+    const paymentDate = parsePaymentDateCell_(row[columns.paymentDate]).date;
+    if (paymentDate) {
+      return { year: paymentDate.getFullYear(), month: paymentDate.getMonth() + 1 };
+    }
+  }
+  return null;
 }
 
 function getRowStartDate_(row, columns, layout, productionCalendar) {

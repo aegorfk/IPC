@@ -887,6 +887,75 @@ const calendar = {
 }
 
 {
+  const headers = [
+    'Должностной оклад с учетом индексации за период',
+    'Надлежащие премии',
+    'Квартал расчета и месяц выплаты',
+    'Вид премии',
+    'Основание для расчета премии',
+    'Начисленные премии',
+    'Недоплата ежеквартальных премий (с учетом фактически выплаченных)',
+    'Сумма индексации недоплаты на момент подачи иска',
+    'Пени за несвоевременную выплату (ст. 236 ТК РФ)',
+  ];
+  assert.ok(context.getSemanticallyCompatibleLayoutIds_(headers).includes('quarterlyPremiums'));
+  const columns = context.resolveSemanticColumnsForLayout_(
+    headers, context.getSheetLayout_('Ежеквартальные')
+  );
+  assert.strictEqual(columns.period, 2);
+  const parsed = context.parseRowPeriod_([
+    '', '', '4 квартал 2023 (октябрь - декабрь)\nДекабрь 2023', '', '', '', 274581.24, '', '',
+  ], columns);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(parsed)), { year: 2023, month: 12 });
+}
+
+{
+  const headers = [
+    'Дата выплаты',
+    'Сумма корректного годового заработка',
+    'Дни, среднемесячное число (06.10.2023)',
+    'Количество дней, подлежащих компенсации',
+    'Среднедневной заработок',
+    '',
+    'Дата выплаты',
+    'Начислены отпуска по расчетным листкам',
+    'Корректное начисление отпусков (с индексацией)',
+    'Недоплата по отпускным выплатам',
+    'Сумма индексации недоплаты на момент подачи иска (20.05.2026)',
+    'Пени за несвоевременную выплату (ст. 236 ТК РФ)',
+    'Период отпуска',
+  ];
+  const columns = context.resolveSemanticColumnsForLayout_(
+    headers, context.getSheetLayout_('Отпуска')
+  );
+  const paymentDate = vm.runInContext('new Date(2024, 1, 13)', context);
+  const parsed = context.parseRowPeriod_([
+    paymentDate, '', 114.13, 1, 3167.11, '', paymentDate,
+    3024.81, 3167.11, 142.3, '', '', '',
+  ], columns);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(parsed)), { year: 2024, month: 2 });
+}
+
+{
+  const originalScanner = context.scanSheetLabelValues_;
+  const scanned = [];
+  context.scanSheetLabelValues_ = (sheet, options) => {
+    scanned.push({ name: sheet.getName(), includeRichText: options.includeRichText });
+    return [{ sheetName: sheet.getName() }];
+  };
+  const names = ['Конструктор', 'Анкета и требования', 'Оклад',
+    'Реконструкция_Оклад', 'Расчетные_листы_Диагностика'];
+  const result = context.scanClaimCalculationLabelValues_({
+    getSheets: () => names.map((name) => ({ getName: () => name })),
+  });
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(result.map((item) => item.sheetName))), [
+    'Конструктор', 'Анкета и требования', 'Оклад',
+  ]);
+  assert.ok(scanned.every((item) => item.includeRichText === false));
+  context.scanSheetLabelValues_ = originalScanner;
+}
+
+{
   const period = context.parseMonthYear_('2023 год Декабрь 2023');
   assert.strictEqual(period.year, 2023);
   assert.strictEqual(period.month, 12);
@@ -1979,6 +2048,14 @@ const calendar = {
   assert.strictEqual(
     context.extractGoogleDocId_('https://docs.google.com/document/d/1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE/edit?tab=t.0#heading=h.gu6y48a4iy08'),
     '1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE'
+  );
+  assert.strictEqual(
+    context.extractGoogleDocId_('https://docs.google.com/open?id=1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'),
+    '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'
+  );
+  assert.strictEqual(
+    context.extractGoogleDocId_('Расчет — https://docs.google.com/open?id=1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'),
+    '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE'
   );
   assert.strictEqual(context.formatMoneyRu_(7624537.92, 2), '7 624 537,92');
   assert.strictEqual(context.formatMoneyRu_(3626.6667, 3), '3 626,667');

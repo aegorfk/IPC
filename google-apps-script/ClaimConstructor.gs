@@ -1237,6 +1237,7 @@ function renderClaimConstructorInputErrors_(sheet, errors) {
 function buildClaimCalculation() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
+  renderClaimConstructorInputErrors_(sheet, []);
   sheet.showSheet();
   sheet.activate();
   const persistedRun = loadClaimConstructorRun_();
@@ -1712,6 +1713,13 @@ function continueClaimConstructorPipeline_(runId, options) {
           docIssues.push(buildClaimConstructorCorrectiveDocsIssue_(error, run));
         }
       }
+      if (docs && docs.created !== false && docs.reused === true && !docs.selectedTotals
+        && typeof buildSelectedClaimPayload_ === 'function'
+        && typeof summarizeSelectedClaimDashboardTotals_ === 'function') {
+        docs.selectedTotals = summarizeSelectedClaimDashboardTotals_(
+          buildSelectedClaimPayload_(spreadsheet)
+        );
+      }
       const serializedDocs = normalizeClaimConstructorDocsResult_(docs);
       try {
         run = finishClaimConstructorRun_(
@@ -1761,6 +1769,7 @@ function normalizeClaimConstructorDocsResult_(result) {
     reused: value.reused === true,
     code: value.code || '',
     reason: value.reason || '',
+    selectedTotals: value.selectedTotals || null,
   };
 }
 
@@ -1790,10 +1799,9 @@ function pruneResolvedTransientRuntimeIssues_(issues, successfulPhase, phases) {
   return (issues || []).filter((issue) => {
     const resolvedPhase = issue.phase === successfulPhase
       || (phases && phases[issue.phase] === 'done');
-    const transientRuntimeIssue = issue.sourceKind === 'system'
-      && issue.reviewStatus === 'фатальная ошибка'
-      && isRetryableClaimConstructorRuntimeError_(issue.reason);
-    return !(resolvedPhase && transientRuntimeIssue);
+    const resolvedRuntimeIssue = issue.sourceKind === 'system'
+      && issue.reviewStatus === 'фатальная ошибка';
+    return !(resolvedPhase && resolvedRuntimeIssue);
   });
 }
 
@@ -2045,6 +2053,9 @@ function finishClaimConstructorRun_(runId, expectedPhase, resultKey, result, iss
       run.results.dashboard = run.results.dashboard || {};
       run.results.dashboard.output = run.results.dashboard.output || {};
       run.results.dashboard.output.docUrl = result.url;
+      if (result.selectedTotals) {
+        run.results.dashboard.totals = result.selectedTotals;
+      }
       run.inputs.docUrl = result.url;
     }
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
@@ -2114,11 +2125,9 @@ function buildClaimConstructorDashboardResult_(spreadsheet, calculationResults, 
     acc.liability += Number(item.liability) || 0;
     return acc;
   }, { underpayment: 0, indexation: 0, liability: 0 });
-  if (claimCalculation && claimCalculation.ready && claimCalculation.written > 0 && claimCalculation.result) {
-    totals.underpayment += (Number(claimCalculation.result.wageAmount) || 0)
-      + (Number(claimCalculation.result.vacationAmount) || 0);
-    totals.liability += Number(claimCalculation.result.penaltyAmount) || 0;
-  }
+  // Totals shown as claims must be fully represented by selectable audit facts.
+  // Forced-absence/vacation calculations remain available in their own cells,
+  // but are not added here until they have stable selectable audit keys.
   totals.total = totals.underpayment + totals.indexation + totals.liability;
   return {
     totals,
@@ -2385,6 +2394,8 @@ function retryClaimCalculation() {
   }
 
   const spreadsheet = SpreadsheetApp.openById(successor.spreadsheetId);
+  const constructorSheet = ensureClaimConstructorWorkspace_(spreadsheet).constructor;
+  renderClaimConstructorInputErrors_(constructorSheet, []);
   refreshClaimConstructorDashboard_(spreadsheet, successor);
   if (successor.phase === 'validating' || successor.phase === 'importing') {
     return continueClaimConstructorRetryImport_(successor, spreadsheet);
