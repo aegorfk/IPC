@@ -109,6 +109,12 @@ The system SHALL preserve the accrual period, independently established legal du
 - **AND** continues through the calculation end date for an unpaid remainder
 - **AND** never uses the factual payment date as the legal due date
 
+#### Scenario: Part of salary was actually paid late and the reconstructed remainder is still unpaid
+- **WHEN** the independently established due date, factual payment date, reconstructed proper amount, and unpaid remainder are available
+- **THEN** Article 236 for the actually paid share ends on its factual payment date inclusive
+- **AND** Article 236 for the unpaid remainder continues through the selected calculation end date
+- **AND** the audit exposes the late-paid share as a separate selectable material-liability item with violation kind `salary_payment_delay` so partial-recovery recalculation of the outstanding principal does not erase it
+
 #### Scenario: Legal due date is not established
 - **WHEN** a payment event is recognized but the applicable statutory, contractual, collective, or local due date is unavailable
 - **THEN** the system preserves the factual payment date

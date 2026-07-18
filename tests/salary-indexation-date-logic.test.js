@@ -268,6 +268,25 @@ const calendar = {
   assert.strictEqual(context.formatDate_(schedule.slices[1].dueDate), '05.02.2024');
   assert.strictEqual(context.formatDate_(schedule.slices[1].actualPaymentDate), '10.02.2024');
   assert.match(schedule.slices[0].dateSource, /восстановлено/);
+  const rates = [{ date: new Date(2024, 0, 1), rate: 10 }];
+  const delayFacts = context.buildSalaryPaymentDelayFacts_({
+    rows: [row], table, sheetName: 'Реконструкция_Оклад', productionCalendar: calendar,
+    inferredPaymentSchedule: {
+      firstHalf: { day: 20, monthOffset: 0, matches: 3, observations: 3 },
+      secondHalf: { day: 5, monthOffset: 1, matches: 3, observations: 3 },
+    },
+    compensationRates: rates,
+    underpaymentValues: [[1700]],
+  });
+  assert.strictEqual(delayFacts.length, 2);
+  assert.strictEqual(delayFacts[0].family, 'material_liability');
+  assert.strictEqual(delayFacts[0].baseKind, 'salary_payment');
+  assert.strictEqual(delayFacts[0].violationKind, 'salary_payment_delay');
+  assert.strictEqual(delayFacts[0].disputed, true);
+  assert.strictEqual(delayFacts[0].paidAmount, 7200);
+  assert.strictEqual(delayFacts[0].amount, 28.8);
+  assert.strictEqual(delayFacts[1].paidAmount, 8100);
+  assert.strictEqual(delayFacts[1].amount, 27);
 }
 
 {

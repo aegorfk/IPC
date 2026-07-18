@@ -60,7 +60,7 @@ The canonical ledger stores:
 - `Дата выплаты`, only when recognized from an actual payment/statement event;
 - an internal future `Срок выплаты` field, which remains blank unless supplied by statute, questionnaire, or later document analysis.
 
-The old `Год`/`Месяц` technical columns remain available internally if needed for formulas but are not presented as payment components. They are labeled as accrual-period components or hidden from the normal ledger view. Article 236 uses the actual payment date and partial-payment schedule when available; a payroll-period month is never substituted for a factual day.
+The old `Год`/`Месяц` technical columns remain available internally if needed for formulas but are not presented as payment components. They are labeled as accrual-period components or hidden from the normal ledger view. Article 236 uses the actual payment date and partial-payment schedule when available; a payroll-period month is never substituted for a factual day. For salary rows, the reconstructed proper amount is split into the share actually paid and the remaining underpayment. Liability for a late-paid share ends on the factual payment date inclusive, while liability for the remaining underpayment continues to the calculation end date. The late-paid component is kept as a separate audit fact so later partial recoveries of the outstanding debt cannot overwrite it.
 
 ### 4. Sort before every durable ledger write and apply filters idempotently
 

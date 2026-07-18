@@ -7858,6 +7858,23 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   assert.strictEqual(model.groups[0].items[0].selected, true);
   assert.strictEqual(model.groups[0].items[0].badge, 'спорное');
   assert.strictEqual(model.groups[0].items[0].key.split('|').length, 5);
+
+  const salaryDelay = Object.assign({}, fact, {
+    family: 'material_liability',
+    layoutId: 'salary',
+    baseKind: 'salary_payment',
+    baseLabel: 'Просрочка выплаты заработной платы — первая половина месяца',
+    calculationItem: 'article_236_firstHalf',
+    amount: 28.8,
+    sourceRef: 'Реконструкция_Оклад!3',
+  });
+  const salaryModel = harness.context.buildClaimAuditModel_([salaryDelay]);
+  assert.strictEqual(
+    salaryModel.groups[0].label,
+    'Материальная ответственность'
+  );
+  assert.strictEqual(salaryModel.groups[0].items[0].selected, true);
+  assert.strictEqual(salaryModel.groups[0].items[0].badge, 'спорное');
 }
 
 console.log('claim constructor characterization ok');

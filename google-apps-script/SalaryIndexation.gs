@@ -1651,6 +1651,17 @@ function updateUnpaidSalaryIndexationCore_(params) {
       compensationRates,
     }));
   }
+  if (table.layout.id === 'salary') {
+    Array.prototype.push.apply(claimFacts, buildSalaryPaymentDelayFacts_({
+      sheetName: sheet.getName(),
+      table,
+      rows: values,
+      underpaymentValues: refreshedTotalUnderpaymentValues,
+      productionCalendar,
+      inferredPaymentSchedule,
+      compensationRates,
+    }));
+  }
 
   return {
     sheetName: sheet.getName(),
@@ -1926,6 +1937,67 @@ function buildVacationPaymentDelayFacts_(params) {
       dueDate: timing.dueDate,
       actualPaymentDate: timing.paymentDate,
       delayDays: timing.delayDays,
+    });
+    return facts;
+  }, []);
+}
+
+function buildSalaryPaymentDelayFacts_(params) {
+  const settings = params || {};
+  const rows = settings.rows || [];
+  const table = settings.table || {};
+  const columns = table.columns || {};
+  if ((table.layout && table.layout.id) !== 'salary'
+    || !Number.isInteger(columns.paymentDate)
+    || !Number.isInteger(columns.correctAmount)) return [];
+
+  return rows.reduce((facts, row, rowIndex) => {
+    const correctAmount = parseMoney_(row[columns.correctAmount]);
+    const underpaymentFromOutput = settings.underpaymentValues
+      && settings.underpaymentValues[rowIndex]
+      ? parseMoney_(settings.underpaymentValues[rowIndex][0])
+      : null;
+    const underpaymentAmount = underpaymentFromOutput === null
+      ? (Number.isInteger(columns.totalUnderpayment)
+        ? parseMoney_(row[columns.totalUnderpayment]) : null)
+      : underpaymentFromOutput;
+    if (correctAmount === null || underpaymentAmount === null) return facts;
+    const schedule = buildSalaryDebtSchedule_(row, table, settings.productionCalendar || {}, {
+      correctAmount,
+      totalUnderpayment: underpaymentAmount,
+      principal: underpaymentAmount,
+      inferredPaymentSchedule: settings.inferredPaymentSchedule,
+    });
+    (schedule.slices || []).forEach((slice) => {
+      if (!(slice.dueDate instanceof Date)
+        || !(slice.actualPaymentDate instanceof Date)
+        || !Number.isFinite(Number(slice.paidAmount))
+        || Number(slice.paidAmount) <= 0) return;
+      const compensation = calculateSalaryCompensation_(
+        Number(slice.paidAmount), slice.dueDate, slice.actualPaymentDate,
+        settings.compensationRates || []
+      );
+      if (!compensation.amount || compensation.amount <= 0) return;
+      const period = schedule.period;
+      facts.push({
+        family: 'material_liability',
+        layoutId: 'salary',
+        baseKind: 'salary_payment',
+        baseLabel: `Просрочка выплаты заработной платы — ${slice.label}`,
+        periodKey: `${period.year}-${pad2_(period.month)}`,
+        periodLabel: `${pad2_(period.month)}.${period.year}`,
+        calculationItem: `article_236_${slice.id}`,
+        amount: roundMoney_(compensation.amount),
+        disputed: true,
+        sourceRef: `${settings.sheetName || 'Оклад'}!${Number(table.headerRow || 0) + rowIndex + 1}`,
+        dueDate: new Date(slice.dueDate),
+        actualPaymentDate: new Date(slice.actualPaymentDate),
+        paidAmount: roundMoney_(Number(slice.paidAmount)),
+        delayDays: Math.max(0, Math.round(
+          (Number(slice.actualPaymentDate) - Number(slice.dueDate)) / (24 * 60 * 60 * 1000)
+        )),
+        violationKind: 'salary_payment_delay',
+      });
     });
     return facts;
   }, []);
@@ -3538,6 +3610,11 @@ function buildSalaryDebtSchedule_(row, table, productionCalendar, options) {
   const workedParts = splitAmountByShares_(totalWorkedDays, shares);
   const correctParts = splitAmountByShares_(correctAmount, shares);
   const underpaymentParts = splitAmountByShares_(underpaymentAmount, shares);
+  const paidParts = correctParts.map((correctPart, index) => {
+    const underpaymentPart = underpaymentParts[index];
+    if (correctPart === null || underpaymentPart === null) return null;
+    return roundMoney_(Math.max(0, Number(correctPart) - Number(underpaymentPart)));
+  });
 
   return {
     period,
@@ -3551,6 +3628,7 @@ function buildSalaryDebtSchedule_(row, table, productionCalendar, options) {
       workedDays: workedParts[index],
       correctAmount: correctParts[index],
       underpaymentAmount: underpaymentParts[index],
+      paidAmount: paidParts[index],
     })),
     missingReason: '',
   };
