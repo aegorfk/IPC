@@ -1864,6 +1864,98 @@ function failClaimConstructorRuntime_(runId, failedPhase, error) {
   }
 }
 
+function compactClaimConstructorCalculationEffects_(effects) {
+  if (!effects) return null;
+  const derivative = effects.derivativeEffects || {};
+  return {
+    warnings: (effects.warnings || []).slice(),
+    derivativeEffects: {
+      warnings: (derivative.warnings || []).slice(),
+    },
+  };
+}
+
+function compactClaimConstructorCalculationResult_(result) {
+  const value = result || {};
+  const compact = {};
+  Object.keys(value).forEach((key) => {
+    const item = value[key];
+    if (item === null || ['string', 'number', 'boolean'].indexOf(typeof item) >= 0) {
+      compact[key] = item;
+    }
+  });
+  if (value.totals) {
+    compact.totals = {
+      underpayment: Number(value.totals.underpayment) || 0,
+      indexation: Number(value.totals.indexation) || 0,
+      liability: Number(value.totals.liability) || 0,
+    };
+  }
+  if (Array.isArray(value.claimFacts)) compact.claimFactCount = value.claimFacts.length;
+  if (Array.isArray(value.derivativeDependencies)) {
+    compact.derivativeDependencyCount = value.derivativeDependencies.length;
+  }
+  if (Array.isArray(value.derivativeWarnings)) {
+    compact.derivativeWarningCount = value.derivativeWarnings.length;
+  }
+  const effects = compactClaimConstructorCalculationEffects_(value.calculationEffects);
+  if (effects) compact.calculationEffects = effects;
+  return compact;
+}
+
+function compactClaimConstructorCalculationResults_(results) {
+  return (results || []).map(compactClaimConstructorCalculationResult_);
+}
+
+function compactClaimConstructorReconstructionResult_(result) {
+  const value = result || {};
+  return {
+    fillResults: (value.fillResults || []).map(compactClaimConstructorCalculationResult_),
+    calculationResults: compactClaimConstructorCalculationResults_(value.calculationResults),
+    company: value.company || '',
+    quality: value.quality || {},
+    stepTimings: (value.stepTimings || []).slice(),
+  };
+}
+
+function compactClaimConstructorReconstructionCheckpoint_(checkpoint) {
+  const compact = Object.assign({}, checkpoint || {});
+  compact.fillResults = (compact.fillResults || []).map(compactClaimConstructorCalculationResult_);
+  compact.calculationResults = compactClaimConstructorCalculationResults_(compact.calculationResults);
+  return compact;
+}
+
+function compactClaimConstructorClaimCalculation_(claimCalculation) {
+  const value = claimCalculation || {};
+  const compact = {};
+  Object.keys(value).forEach((key) => {
+    const item = value[key];
+    if (item === null || ['string', 'number', 'boolean'].indexOf(typeof item) >= 0) {
+      compact[key] = item;
+    }
+  });
+  const result = value.result || {};
+  compact.result = {};
+  Object.keys(result).forEach((key) => {
+    const item = result[key];
+    if (item === null || ['string', 'number', 'boolean'].indexOf(typeof item) >= 0) {
+      compact.result[key] = item;
+    }
+  });
+  compact.issueCount = (value.issues || []).length;
+  return compact;
+}
+
+function compactClaimConstructorStoredResult_(key, value) {
+  if (key === 'reconstruction') return compactClaimConstructorReconstructionResult_(value);
+  if (key === 'reconstructionCheckpoint') {
+    return value === undefined ? undefined : compactClaimConstructorReconstructionCheckpoint_(value);
+  }
+  if (key === 'calculations') return compactClaimConstructorCalculationResults_(value);
+  if (key === 'claimCalculation') return compactClaimConstructorClaimCalculation_(value);
+  return value;
+}
+
 function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, resultKey, result, progressText, additionalResults, issues, executionToken) {
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
@@ -1876,9 +1968,9 @@ function recordClaimConstructorPhaseResult_(runId, expectedPhase, nextPhase, res
       || !execution || execution.token !== executionToken) {
       return null;
     }
-    run.results[resultKey] = result;
+    run.results[resultKey] = compactClaimConstructorStoredResult_(resultKey, result);
     Object.keys(additionalResults || {}).forEach((key) => {
-      run.results[key] = additionalResults[key];
+      run.results[key] = compactClaimConstructorStoredResult_(key, additionalResults[key]);
     });
     run.issues = mergeClaimConstructorIssues_(run.issues, issues || []);
     run.issues = pruneResolvedTransientRuntimeIssues_(run.issues, expectedPhase, run.phases);
@@ -1905,7 +1997,7 @@ function recordClaimConstructorPhaseCheckpoint_(runId, expectedPhase, resultKey,
       || !execution || execution.token !== executionToken) {
       return null;
     }
-    const value = checkpoint || {};
+    const value = compactClaimConstructorStoredResult_(resultKey, checkpoint || {});
     run.results[resultKey] = value;
     const totalSteps = Math.max(1, Number(value.totalSteps) || 1);
     const completedSteps = Math.max(0, Math.min(totalSteps, Number(value.nextStep) || 0));
@@ -2211,7 +2303,9 @@ function createClaimConstructorRetryRun_(previousRun, options) {
   phaseOrder.slice(0, restartIndex).forEach((phase) => {
     (resultKeysByPhase[phase] || []).forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(previousRun.results || {}, key)) {
-        run.results[key] = JSON.parse(JSON.stringify(previousRun.results[key]));
+        run.results[key] = JSON.parse(JSON.stringify(
+          compactClaimConstructorStoredResult_(key, previousRun.results[key])
+        ));
       }
     });
   });

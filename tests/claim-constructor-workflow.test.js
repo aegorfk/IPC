@@ -3127,6 +3127,77 @@ function stubBatchSessionStartup(harness) {
   assert.strictEqual(legacyCalls, 0);
 }
 
+// Detailed per-row calculation facts are durable in Sheets and must not be
+// duplicated into Script Properties, whose total quota is much smaller than a
+// realistic multi-year calculation result.
+{
+  const harness = createHarness(['Конструктор']);
+  const run = harness.context.createClaimConstructorRun_({
+    docUrl: 'https://docs.google.com/document/d/doc-1/edit',
+  }, { now: new Date('2026-07-18T09:00:00.000Z') });
+  harness.context.completeClaimConstructorPhase_(
+    run, 'validating', 'importing', new Date('2026-07-18T09:00:01.000Z')
+  );
+  harness.context.completeClaimConstructorPhase_(
+    run, 'importing', 'reconstructing', new Date('2026-07-18T09:00:02.000Z')
+  );
+  harness.context.completeClaimConstructorPhase_(
+    run, 'reconstructing', 'calculating', new Date('2026-07-18T09:00:03.000Z')
+  );
+  run.results.reconstruction = {
+    company: 'ООО Тест',
+    quality: { companies: ['ООО Тест'], blankCompanyPeriods: [], periodIssues: {} },
+  };
+  harness.context.saveClaimConstructorRun_(run, harness.scriptProperties);
+
+  const detailedFacts = Array.from({ length: 2400 }, (_, index) => ({
+    source: { sheetName: 'Оклад', row: index + 3, cells: { principal: `N${index + 3}` } },
+    dueDateSource: `Подробное основание срока выплаты ${index + 1} ${'данные '.repeat(12)}`,
+    principal: index + 0.25,
+  }));
+  harness.context.runAllSheetsIndexation_ = () => [{
+    sheetName: 'Оклад',
+    layoutId: 'salary',
+    calculated: detailedFacts.length,
+    skipped: 0,
+    totals: { underpayment: 100, indexation: 20, liability: 10 },
+    claimFacts: detailedFacts,
+    derivativeDependencies: detailedFacts,
+    derivativeWarnings: [],
+  }];
+  harness.context.runClaimSheetCalculation_ = () => ({
+    ready: true,
+    written: 1,
+    result: {
+      wageAmount: 100,
+      vacationAmount: 0,
+      penaltyAmount: 10,
+      facts: detailedFacts,
+    },
+    params: { detailedFacts },
+    issues: [],
+  });
+
+  const advanced = harness.context.continueClaimConstructorPipeline_(run.id, {
+    spreadsheet: harness.spreadsheet,
+  });
+  const persisted = harness.context.loadClaimConstructorRun_(harness.scriptProperties);
+
+  assert.strictEqual(advanced.phase, 'writing_doc');
+  assert.strictEqual(persisted.phase, 'writing_doc');
+  assert.strictEqual(persisted.results.calculations[0].claimFactCount, detailedFacts.length);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(
+    persisted.results.calculations[0], 'claimFacts'
+  ), false);
+  assert.strictEqual(persisted.results.claimCalculation.result.wageAmount, 100);
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(
+    persisted.results.claimCalculation.result, 'facts'
+  ), false);
+  const totalStoredBytes = Object.values(harness.scriptProperties.getProperties())
+    .reduce((sum, value) => sum + Buffer.byteLength(value, 'utf8'), 0);
+  assert.ok(totalStoredBytes < 384000);
+}
+
 // An incomplete reconstruction step persists a heartbeat and releases the phase lease.
 {
   const harness = createHarness(['Конструктор']);

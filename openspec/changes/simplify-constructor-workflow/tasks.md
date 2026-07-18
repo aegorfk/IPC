@@ -80,4 +80,5 @@
 - [x] 8.2 Implement UTF-8-aware bounded chunks, a versioned atomic manifest, exact load/round-trip verification, and cleanup of obsolete generations while retaining direct storage for small states.
 - [x] 8.3 Add regression coverage proving an interrupted large-state write does not replace the previously committed state and every stored value remains below the safety limit.
 - [x] 8.4 Reconcile quality/VLM/skipped-file observations by stable source identity so a technical `OK` row cannot duplicate a source warning.
-- [ ] 8.5 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.
+- [x] 8.5 Keep completed row-level calculation facts and derivative dependencies in authoritative Sheets, persist only compact durable summaries/references, and cover the aggregate Script Properties quota with a regression test.
+- [ ] 8.6 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.

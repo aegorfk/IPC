@@ -55,8 +55,14 @@ The system MUST persist constructor run state and automatically continue the wor
 - **WHEN** serialized run state with issues, results, or checkpoints exceeds the safe size of one Script Property value
 - **THEN** the system writes bounded generation-specific UTF-8 chunks before atomically publishing a versioned manifest
 - **AND** every stored property value remains below the configured per-value safety limit
-- **AND** loading reconstructs the complete run without dropping issues, results, or phase checkpoints
+- **AND** loading reconstructs the complete persisted run without dropping issues, durable result summaries, or phase checkpoints required for continuation
 - **AND** an interrupted chunk write leaves the previously committed manifest readable
+
+#### Scenario: Completed row-level results exceed the aggregate property quota
+- **WHEN** a completed calculation produces row-level claim facts, derivative dependencies, or other detail whose duplication would exceed the aggregate Script Properties quota
+- **THEN** the detailed facts remain durable in the existing authoritative calculation and technical Sheets ranges
+- **AND** the constructor state persists compact totals, row counts, warnings needed by the Docs handoff, and result references instead of duplicating those rows
+- **AND** retry and Docs continuation do not repeat completed Sheets calculation phases
 
 #### Scenario: Second build request joins active run
 - **WHEN** the user invokes `Собрать расчет` while a fresh constructor run is active
