@@ -14,6 +14,8 @@ The recognized payroll ledger is still organized as a technical import: it expos
 - Use actual payment dates, when reliably recognized, as the factual basis for Article 236 calculations; absent or ambiguous dates remain non-blocking review issues.
 - Detect vacation payments made later than three calendar days before vacation starts, create a selectable audit item for the delayed vacation payment and its Article 236 consequence, and avoid treating the whole vacation principal as unpaid when it was merely paid late.
 - Record follow-up scope for employment start date, employment contract/LNA payment rules, quarterly-premium due-date determination, delayed-premium claims, and richer monetary assessment when the legal due date cannot be inferred from payroll slips alone.
+- Replace the aggregated payroll summary with a one-row-per-source-event normalized ledger: actual payment dates, statement identifiers, source accrual intervals, and source text remain visible, while repeated accruals and payments are never summed merely because their labels match.
+- Recognize explicit one-off reward wording (birthday, anniversary, exceptional achievement, and similar wording) as the calculation category `Разовая премия`, with an Article 191 legal hypothesis that remains reviewable against the applicable local act or award order.
 
 ## Capabilities
 

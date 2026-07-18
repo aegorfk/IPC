@@ -40,6 +40,7 @@ The existing calculation category remains an internal routing field. The ledger 
 - `Оплата труда — компенсационная выплата`;
 - `Оплата труда — стимулирующая выплата`;
 - `Премия/поощрение — требуются документы`;
+- `Поощрение по ст. 191 ТК РФ`;
 - `Гарантийная выплата / средний заработок`;
 - `Социальная или иная выплата`;
 - `Удержание`;
@@ -94,6 +95,14 @@ A `late_paid` result SHALL NOT recreate the already-paid vacation principal as a
 Version one records a candidate when the premium accrual period and factual payment period are materially separated, for example a first-quarter premium paid in July. It does not assume March as the due date. The candidate is selected by default as disputed, requests the remuneration-system document or user-entered due date, and has no fabricated Article 236 amount.
 
 The follow-up stage will extract or ask for the relevant LNA/contract due date, determine whether the premium is part of the remuneration system, and then calculate delay and compensation.
+
+### 9. The summary is a normalized source ledger, not an aggregate
+
+`Расчетные_листы_Свод` preserves one durable row for every normalized source event. It may reorder rows chronologically and add derived classification/provenance fields, but it SHALL NOT group or sum rows by file, period, event, category, or label. This is necessary because two visually identical accruals or payments can have different source intervals, statement numbers, or actual payment dates, and those differences change later vacation and Article 236 analysis.
+
+The user-facing summary omits technical `Год периода`, `Месяц периода`, and `Строк` columns. Instead it shows `Период расчетного листка`, `Период начисления из источника`, `Дата начисления`, `Дата выплаты`, `Ведомость`, the normalized event/category, legal classification, amounts, and the original source fragment. Internal year/month fields remain available only as components of the payroll-slip period and are never payment-date substitutes.
+
+The source accrual interval is parsed conservatively from an accrual row such as `01.10-05.10` and is stored with source provenance. A missing interval remains blank; the importer does not invent a vacation or employment interval from the slip month alone.
 
 ## Risks / Trade-offs
 

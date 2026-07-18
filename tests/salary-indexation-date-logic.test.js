@@ -1041,7 +1041,7 @@ const calendar = {
   assert.strictEqual(parsedHtml[0][16], 89100);
   assert.strictEqual(parsedHtml[0][17], '');
   assert.strictEqual(parsedHtml[0][18], '');
-  assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][9], 89100);
+  assert.strictEqual(context.buildZupSummary_(parsedHtml)[0][14], 89100);
   assert.strictEqual(
     context.extractDriveFolderId_('https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?ths=true'),
     '1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm'
@@ -1193,7 +1193,7 @@ const calendar = {
   assert.strictEqual(equalNameDifferentFolders.length, 2);
   assert.strictEqual(
     vm.runInContext('ZUP_IMPORT_SETTINGS.PARSER_VERSION', context),
-    'payroll-import-v16-legal-ledger'
+    'payroll-import-v17-raw-ledger'
   );
 
   assert.strictEqual(
@@ -2013,6 +2013,142 @@ const calendar = {
     Array.from(sorted, (row) => `${row[columns.period]}|${row[columns.sourceRow]}`),
     ['10.2023|1', '10.2023|4', '10.2023|2', '11.2023|3']
   );
+}
+
+{
+  const headers = Array.from(vm.runInContext('ZUP_SUMMARY_HEADERS', context));
+  assert.deepStrictEqual(headers, [
+    'Файл',
+    'Лист источника',
+    'Организация',
+    'Сотрудник',
+    'Период расчетного листка',
+    'Период начисления из источника',
+    'Дата начисления',
+    'Дата выплаты',
+    'Ведомость',
+    'Событие',
+    'Расчетная категория',
+    'Вид начисления / выплаты',
+    'Рабочие дни по расчетному листку',
+    'Фактически отработано дней',
+    'Начислено',
+    'Выплачено',
+    'Удержано',
+    'Категория по ТК РФ',
+    'Правовое основание',
+    'Статус квалификации',
+    'Строка источника',
+  ]);
+  assert.strictEqual(headers.includes('Год периода'), false);
+  assert.strictEqual(headers.includes('Месяц периода'), false);
+  assert.strictEqual(headers.includes('Строк'), false);
+
+  const makeLedgerRow = (values) => {
+    const row = new Array(25).fill('');
+    row[0] = values.file;
+    row[1] = 'Polza VLM';
+    row[2] = 'ООО Работодатель';
+    row[3] = 'Работник';
+    row[4] = values.period;
+    row[5] = values.accrualDate || '';
+    row[6] = values.year;
+    row[7] = values.month;
+    row[8] = values.workDays || '';
+    row[9] = values.paidDays || '';
+    row[10] = values.paymentDate || '';
+    row[11] = values.statement || '';
+    row[12] = values.paymentDate || '';
+    row[13] = values.section;
+    row[14] = values.category;
+    row[15] = values.kind;
+    row[16] = values.accrued || '';
+    row[17] = values.paid || '';
+    row[18] = values.withheld || '';
+    row[19] = values.sourceRow;
+    row[23] = values.ordinal;
+    return row;
+  };
+  const ledgerRows = [
+    makeLedgerRow({
+      file: '2025_Сентябрь.png', period: '09.2025', year: 2025, month: 9,
+      accrualDate: '05.10.2025', section: 'Начислено', category: 'Отпуска',
+      kind: 'Отпуск основной', accrued: 15320.85,
+      sourceRow: '[VLM стр. 1, confidence 0.95] Отпуск основной 01.10-05.10', ordinal: 1,
+    }),
+    makeLedgerRow({
+      file: '2025_Октябрь.png', period: '10.2025', year: 2025, month: 10,
+      paymentDate: '20.10.2025', statement: 'Банк, вед. № 425', section: 'Выплачено',
+      category: 'Ежемесячные премии', kind: 'Премии, межрасчет', paid: 5046,
+      sourceRow: '[VLM] Премии, межрасчет № 425', ordinal: 1,
+    }),
+    makeLedgerRow({
+      file: '2025_Октябрь.png', period: '10.2025', year: 2025, month: 10,
+      paymentDate: '20.10.2025', statement: 'Банк, вед. № 426', section: 'Выплачено',
+      category: 'Ежемесячные премии', kind: 'Премии, межрасчет', paid: 5046,
+      sourceRow: '[VLM] Премии, межрасчет № 426', ordinal: 2,
+    }),
+    makeLedgerRow({
+      file: '2025_Ноябрь.png', period: '11.2025', year: 2025, month: 11,
+      paymentDate: '01.11.2025', statement: 'Банк, вед. № 466', section: 'Выплачено',
+      category: 'Отпуска', kind: 'Отпускные', paid: 2660.91,
+      sourceRow: '[VLM] Отпускные № 466', ordinal: 1,
+    }),
+    makeLedgerRow({
+      file: '2025_Ноябрь.png', period: '11.2025', year: 2025, month: 11,
+      paymentDate: '27.11.2025', statement: 'Банк, вед. № 493', section: 'Выплачено',
+      category: 'Отпуска', kind: 'Отпускные', paid: 72742.31,
+      sourceRow: '[VLM] Отпускные № 493', ordinal: 2,
+    }),
+    makeLedgerRow({
+      file: '2025_Ноябрь.png', period: '11.2025', year: 2025, month: 11,
+      accrualDate: '01.12.2025', section: 'Начислено', category: 'Отпуска',
+      kind: 'Отпуск основной', accrued: 3094.05,
+      sourceRow: '[VLM] Отпуск основной 01.12', ordinal: 3,
+    }),
+    makeLedgerRow({
+      file: '2025_Ноябрь.png', period: '11.2025', year: 2025, month: 11,
+      accrualDate: '31.10.2025', section: 'Начислено', category: 'Доплата до оклада',
+      kind: 'Доплата до оклада (ФИКС)', accrued: 19337.16,
+      sourceRow: '[VLM] Доплата до оклада (ФИКС)', ordinal: 4,
+    }),
+    makeLedgerRow({
+      file: '2026_Февраль.png', period: '02.2026', year: 2026, month: 2,
+      accrualDate: '15.02.2026', section: 'Начислено', category: 'Оклад',
+      kind: 'Оплата по окладу', accrued: 4736.37,
+      sourceRow: '[VLM] Оплата по окладу 01.02-15.02', ordinal: 1,
+    }),
+    makeLedgerRow({
+      file: '2026_Февраль.png', period: '02.2026', year: 2026, month: 2,
+      accrualDate: '28.02.2026', section: 'Начислено', category: 'Оклад',
+      kind: 'Оплата по окладу', accrued: 28986.63,
+      sourceRow: '[VLM] Оплата по окладу 16.02-28.02', ordinal: 2,
+    }),
+  ];
+  const summary = context.buildZupSummary_(ledgerRows);
+  assert.strictEqual(summary.length, ledgerRows.length);
+  assert.deepStrictEqual(Array.from(summary.filter((row) => row[11] === 'Отпускные'), (row) => row[15]), [2660.91, 72742.31]);
+  assert.deepStrictEqual(Array.from(summary.filter((row) => row[11] === 'Отпускные'), (row) => row[7]), ['01.11.2025', '27.11.2025']);
+  assert.deepStrictEqual(Array.from(summary.filter((row) => row[11] === 'Премии, межрасчет'), (row) => row[8]), ['Банк, вед. № 425', 'Банк, вед. № 426']);
+  assert.deepStrictEqual(Array.from(summary.filter((row) => row[11] === 'Оплата по окладу'), (row) => row[14]), [4736.37, 28986.63]);
+  assert.ok(summary.some((row) => row[14] === 3094.05));
+  assert.ok(summary.some((row) => row[14] === 19337.16));
+  assert.ok(summary.some((row) => row[14] === 15320.85 && row[5] === '01.10.2025–05.10.2025'));
+}
+
+{
+  assert.strictEqual(context.detectZupCategory_('Премия ко дню рождения'), 'Разовая премия');
+  assert.strictEqual(context.detectZupCategory_('Премия за великие достижения'), 'Разовая премия');
+  const oneOff = context.resolveZupLegalClassification_({
+    section: 'Начислено',
+    category: 'Разовая премия',
+    kind: 'Премия ко дню рождения',
+  });
+  assert.strictEqual(oneOff.calculationCategory, 'Разовая премия');
+  assert.strictEqual(oneOff.legalCategory, 'Поощрение по ст. 191 ТК РФ');
+  assert.strictEqual(oneOff.legalSource, 'статья 191 ТК РФ');
+  assert.strictEqual(oneOff.status, 'требует проверки ПВТР или приказа');
+  assert.strictEqual(oneOff.needsDocuments, true);
 }
 
 {

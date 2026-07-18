@@ -51,3 +51,13 @@
 - [x] 7.3 Push the verified Apps Script with `clasp`, migrate the working workbook, and verify sheet ids/order/formulas/filters against the Drive backup.
 - [ ] 7.4 Run a constructor smoke calculation and verify chronological rows, employer warning, legal categories, October 2023 workdays, vacation timing, detailed audit checkboxes, and Docs preservation.
 - [ ] 7.5 Record deployed Git commit, workbook/backup links, known disputed items, rollback instructions, and follow-up premium/LNA change.
+
+## 8. Raw Normalized Summary Ledger
+
+- [x] 8.1 Add failing regression tests proving that repeated vacation payments, inter-settlement premiums, and split salary accruals remain separate and retain their actual payment dates, statements, and source ordinals.
+- [x] 8.2 Add failing fixtures for the November 2025 vacation amount `3 094,05`, the fixed salary top-up `19 337,16`, and the September 2025 vacation amount `15 320,85`, proving they remain visible in the summary.
+- [x] 8.3 Replace summary aggregation with a one-row normalized projection; remove `Год периода`, `Месяц периода`, and `Строк`, and expose payroll-slip period, source accrual interval, accrual date, payment date, statement, legal fields, and source text.
+- [x] 8.4 Make payroll-slip year/month components stable internal period fields rather than derived payment/accrual-date components, and bump the parser version so existing cached rows are rebuilt.
+- [x] 8.5 Add and test the `Разовая премия` calculation category for explicit Article 191 one-off reward wording without routing it as a guaranteed periodic premium.
+- [x] 8.6 Run the focused and complete Node suites, strict OpenSpec validation, `git diff --check`, and push the verified Apps Script.
+- [ ] 8.7 Re-run the working workbook import and verify the cited September 2025, October 2025, November 2025, and February 2026 rows in `Расчетные_листы_Свод`.

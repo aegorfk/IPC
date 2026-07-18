@@ -1,5 +1,5 @@
 const ZUP_IMPORT_SETTINGS = {
-  PARSER_VERSION: 'payroll-import-v16-legal-ledger',
+  PARSER_VERSION: 'payroll-import-v17-raw-ledger',
   SOURCE_FOLDER_URL: 'https://drive.google.com/drive/folders/1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm?usp=sharing',
   RECONSTRUCTION_PREFIX: 'Реконструкция_',
   IMPORT_SHEET_NAME: 'Расчетные_листы',
@@ -66,10 +66,10 @@ const ZUP_IMPORT_HEADERS = [
   'Лист',
   'Организация',
   'Сотрудник',
-  'Период начисления',
+  'Период расчетного листка',
   'Дата начисления',
-  'Год периода',
-  'Месяц периода',
+  'Год расчетного листка',
+  'Месяц расчетного листка',
   'Рабочие дни по расчетному листку',
   'Факт. отработано дней',
   'Дата выплаты',
@@ -86,6 +86,7 @@ const ZUP_IMPORT_HEADERS = [
   'Правовое основание',
   'Статус квалификации',
   'Порядок строки источника',
+  'Период начисления из источника',
 ];
 
 const ZUP_IMPORT_COLUMNS = {
@@ -113,22 +114,31 @@ const ZUP_IMPORT_COLUMNS = {
   legalSource: 21,
   classificationStatus: 22,
   sourceOrdinal: 23,
+  accrualInterval: 24,
 };
 
 const ZUP_SUMMARY_HEADERS = [
   'Файл',
-  'Период начисления',
-  'Год периода',
-  'Месяц периода',
+  'Лист источника',
+  'Организация',
+  'Сотрудник',
+  'Период расчетного листка',
+  'Период начисления из источника',
+  'Дата начисления',
+  'Дата выплаты',
+  'Ведомость',
   'Событие',
   'Расчетная категория',
   'Вид начисления / выплаты',
   'Рабочие дни по расчетному листку',
-  'Факт. отработано дней',
+  'Фактически отработано дней',
   'Начислено',
   'Выплачено',
   'Удержано',
-  'Строк',
+  'Категория по ТК РФ',
+  'Правовое основание',
+  'Статус квалификации',
+  'Строка источника',
 ];
 
 const ZUP_QUALITY_HEADERS = [
@@ -1429,18 +1439,23 @@ function readZupImportObjects_(spreadsheet) {
       paid: parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]),
       withheld: parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]),
       sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
+      accrualInterval: row[ZUP_IMPORT_COLUMNS.accrualInterval],
       isVlm: row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM',
     }))
     .filter((row) => row.period);
 }
 
 function normalizeZupImportPeriod_(yearValue, monthValue, periodValue) {
+  const explicitPeriod = parseMonthYear_(periodValue);
+  if (explicitPeriod) {
+    return explicitPeriod;
+  }
   const year = Number(yearValue);
   const month = Number(monthValue);
   if (year && month >= 1 && month <= 12) {
     return { year, month };
   }
-  return parseMonthYear_(periodValue);
+  return null;
 }
 
 function buildZupReconstructionModel_(rows) {
@@ -3804,12 +3819,12 @@ function buildZupVlmPrompt_(file) {
     'Нужны реальные строки начислений, выплат и удержаний: оклад, премии, отпускные, больничные, удержания, выплаты. Не включай справочные строки без денежного потока, если они не влияют на начислено/удержано/выплачено.',
     'Для начислений отдельно выделяй рабочие дни и оплачено дней, если они есть рядом с периодом строки. Если есть колонка "Оплачено" вида "18,00 дн.", заполни paidDays.',
     'Для каждой строки начисления верни accrualDate: полную дату начисления дохода или последний день периода начисления. Для премий с периодом 01.01-31.03 accrualDate должен быть 31.03 соответствующего года.',
-    'Премии классифицируй по периоду начисления: месяц = ежемесячная, квартальный диапазон = ежеквартальная, год = ежегодная. Не дублируй выплаченную премию как начисленную.',
+    'Премии классифицируй по периоду начисления: месяц = ежемесячная, квартальный диапазон = ежеквартальная, год = ежегодная. Премию ко дню рождения, юбилею, за особые/великие достижения или прямо названную разовой/единовременной классифицируй как Разовая премия. Не дублируй выплаченную премию как начисленную.',
     'ВТБ-формат: строки с НДФЛ и удержаниями клади в Удержано, строки перечислений/карт/банка/ведомостей клади в Выплачено, строки "Итого по ведомости" используй только для сверки totals и не дублируй как row.',
     'Если листок содержит долг на начало/конец, не превращай его в начисление или выплату; можно упомянуть это в warnings.',
     'Даты возвращай в формате dd.MM.yyyy, период листка в формате MM.yyyy.',
     'Суммы возвращай числами в рублях, без пробелов и знаков валюты. Если суммы нет, возвращай 0.',
-    'Категорию выбирай из: Оклад, Ежемесячные премии, Ежеквартальные премии, Ежегодные премии, Отпуска, Больничные, Отпуск без оплаты, Удержания, Выплаты, Материальная помощь, Командировки, Доплата до оклада, Сверхурочные и ночные, Праздники и выходные, Районные коэффициенты и надбавки, Совмещение и замещение, Выходное пособие, Прочее.',
+    'Категорию выбирай из: Оклад, Ежемесячные премии, Ежеквартальные премии, Ежегодные премии, Разовая премия, Отпуска, Больничные, Отпуск без оплаты, Удержания, Выплаты, Материальная помощь, Командировки, Доплата до оклада, Сверхурочные и ночные, Праздники и выходные, Районные коэффициенты и надбавки, Совмещение и замещение, Выходное пособие, Прочее.',
     'В page верни номер страницы, если он понятен, иначе 0. В blockIndex верни порядковый номер расчетного листка внутри файла, начиная с 1.',
     'В sourceText положи короткий фрагмент исходной строки, по которому можно проверить извлечение; для строк из фото добавь узнаваемый текст строки.',
   ].join('\n');
@@ -4026,9 +4041,6 @@ function convertPolzaVlmRowToZupRow_(file, row, slip, fallbackPeriod) {
   const section = normalizeZupVlmSection_(row.section, row);
   const category = normalizeZupVlmCategory_(row.category, row.kind || row.sourceText || '', section);
   const accrualDate = normalizeZupVlmAccrualDate_(row.accrualDate, period);
-  const periodForColumns = accrualDate
-    ? { year: accrualDate.getFullYear(), month: accrualDate.getMonth() + 1 }
-    : period;
   const accrued = normalizeZupVlmAmount_(row.accrued);
   const paid = normalizeZupVlmAmount_(row.paid);
   const withheld = normalizeZupVlmAmount_(row.withheld);
@@ -4043,8 +4055,8 @@ function convertPolzaVlmRowToZupRow_(file, row, slip, fallbackPeriod) {
     slip.employee || '',
     formatZupPeriod_(period),
     accrualDate ? formatDate_(accrualDate) : '',
-    periodForColumns.year,
-    periodForColumns.month,
+    period.year,
+    period.month,
     normalizeZupVlmDayCount_(row.workDays),
     normalizeZupVlmDayCount_(row.paidDays),
     normalizeZupVlmDate_(row.paymentDate),
@@ -4104,6 +4116,9 @@ function normalizeZupVlmCategory_(category, text, section) {
   }
   const normalized = String(category || '').trim();
   const detected = detectZupCategory_(text || '', section);
+  if (detected === 'Разовая премия') {
+    return detected;
+  }
   if (normalized && !/^(Прочее|Выплаты)$/i.test(normalized)) {
     return normalized;
   }
@@ -4601,9 +4616,6 @@ function extractZupRowSegment_(segment, context) {
 
   const period = resolveZupRowPeriod_(segment, context);
   const accrualDate = resolveZupAccrualDate_(segment.cells, period, context);
-  const periodForColumns = accrualDate
-    ? { year: accrualDate.getFullYear(), month: accrualDate.getMonth() + 1 }
-    : period;
   const paymentStatement = extractZupPaymentStatement_(segment.cells);
   const paymentDate = paymentStatement.date || extractZupPaymentDateFromCells_(segment.cells);
   const dayColumns = extractZupDayColumns_(segment.cells, segment.section);
@@ -4615,8 +4627,8 @@ function extractZupRowSegment_(segment, context) {
     context.employee,
     period ? formatZupPeriod_(period) : '',
     accrualDate ? formatDate_(accrualDate) : '',
-    periodForColumns ? periodForColumns.year : '',
-    periodForColumns ? periodForColumns.month : '',
+    period ? period.year : '',
+    period ? period.month : '',
     dayColumns.workDays,
     dayColumns.paidDays,
     paymentDate ? formatDate_(paymentDate) : '',
@@ -4740,6 +4752,9 @@ function detectZupCategory_(rowText, section) {
   }
 
   if (normalizedText.includes('прем')) {
+    if (/(дн[юя] рождени|ко дню рождени|юбиле|велик[а-я]* достижени|выдающ[а-я]* достижени|особ[а-я]* достижени|разов[а-я]* прем|единовременн[а-я]* прем)/.test(normalizedText)) {
+      return 'Разовая премия';
+    }
     if (/(кварт|0?1[./-]0?1\s*[-–]\s*3?1[./-]0?3|0?1[./-]0?4\s*[-–]\s*30[./-]0?6|0?1[./-]0?7\s*[-–]\s*30[./-]0?9|0?1[./-]10\s*[-–]\s*3?1[./-]12)/.test(normalizedText)) {
       return 'Ежеквартальные премии';
     }
@@ -5114,6 +5129,15 @@ function resolveZupLegalClassification_(input) {
       legalSource: 'расчетный листок', status: 'определено по событию удержания', needsDocuments: false,
     };
   }
+  if (category === 'Разовая премия') {
+    return {
+      calculationCategory: category,
+      legalCategory: 'Поощрение по ст. 191 ТК РФ',
+      legalSource: 'статья 191 ТК РФ',
+      status: 'требует проверки ПВТР или приказа',
+      needsDocuments: true,
+    };
+  }
   if (/премии$/.test(category)) {
     return {
       calculationCategory: category,
@@ -5166,7 +5190,64 @@ function enrichZupImportRowLegalClassification_(row) {
   result[ZUP_IMPORT_COLUMNS.legalCategory] = classification.legalCategory;
   result[ZUP_IMPORT_COLUMNS.legalSource] = classification.legalSource;
   result[ZUP_IMPORT_COLUMNS.classificationStatus] = classification.status;
+  if (!result[ZUP_IMPORT_COLUMNS.accrualInterval]) {
+    result[ZUP_IMPORT_COLUMNS.accrualInterval] = extractZupAccrualInterval_(result);
+  }
   return result;
+}
+
+function extractZupAccrualInterval_(row) {
+  if (!row || row[ZUP_IMPORT_COLUMNS.section] !== 'Начислено') return '';
+  const sourceText = String(row[ZUP_IMPORT_COLUMNS.sourceRow] || '')
+    .replace(/^\s*\[VLM[^\]]*\]\s*/i, '');
+  const kind = String(row[ZUP_IMPORT_COLUMNS.kind] || '');
+  const category = String(row[ZUP_IMPORT_COLUMNS.category] || '');
+  const text = `${kind} ${sourceText}`;
+  const referenceDate = parseDateValue_(row[ZUP_IMPORT_COLUMNS.accrualDate]);
+  const referencePeriod = parseMonthYear_(row[ZUP_IMPORT_COLUMNS.period]) || null;
+  const referenceYear = referenceDate
+    ? referenceDate.getFullYear()
+    : (referencePeriod ? referencePeriod.year : null);
+  const rangeMatch = text.match(/(?:^|\D)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*[-–—]\s*(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?=\D|$)/);
+  if (rangeMatch) {
+    const startDay = Number(rangeMatch[1]);
+    const startMonth = Number(rangeMatch[2]);
+    const endDay = Number(rangeMatch[4]);
+    const endMonth = Number(rangeMatch[5]);
+    if (isValidZupDayMonth_(startDay, startMonth) && isValidZupDayMonth_(endDay, endMonth)) {
+      const explicitEndYear = normalizeZupSourceYear_(rangeMatch[6]);
+      const endYear = explicitEndYear || referenceYear;
+      const explicitStartYear = normalizeZupSourceYear_(rangeMatch[3]);
+      const startYear = explicitStartYear || (endYear && startMonth > endMonth ? endYear - 1 : endYear);
+      if (startYear && endYear) {
+        return `${formatZupSourceIntervalDate_(startDay, startMonth, startYear)}–${formatZupSourceIntervalDate_(endDay, endMonth, endYear)}`;
+      }
+    }
+  }
+
+  if (category !== 'Отпуска' && !/отпуск/i.test(text)) return '';
+  const singleMatch = text.match(/(?:^|\D)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?=\D|$)/);
+  if (!singleMatch) return '';
+  const day = Number(singleMatch[1]);
+  const month = Number(singleMatch[2]);
+  const year = normalizeZupSourceYear_(singleMatch[3]) || referenceYear;
+  return isValidZupDayMonth_(day, month) && year
+    ? formatZupSourceIntervalDate_(day, month, year)
+    : '';
+}
+
+function normalizeZupSourceYear_(value) {
+  const year = Number(value);
+  if (!year) return null;
+  return year < 100 ? 2000 + year : year;
+}
+
+function isValidZupDayMonth_(day, month) {
+  return day >= 1 && day <= 31 && month >= 1 && month <= 12;
+}
+
+function formatZupSourceIntervalDate_(day, month, year) {
+  return `${pad2_(day)}.${pad2_(month)}.${year}`;
 }
 
 function applyZupTableFilter_(sheet, dataRowCount, columnCount) {
@@ -5212,77 +5293,43 @@ function writeZupSummarySheet_(spreadsheet, rows) {
   writeZupSheetData_(sheet, data);
   applyZupTableFilter_(sheet, summary.length, ZUP_SUMMARY_HEADERS.length);
   if (summary.length) {
-    sheet.getRange(2, 8, summary.length, 2).setNumberFormat('0.00');
-    sheet.getRange(2, 10, summary.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
+    sheet.getRange(2, 7, summary.length, 2).setNumberFormat('dd.mm.yyyy');
+    sheet.getRange(2, 13, summary.length, 2).setNumberFormat('0.00');
+    sheet.getRange(2, 15, summary.length, 3).setNumberFormat(SETTINGS.MONEY_FORMAT);
   }
 }
 
 function buildZupSummary_(rows) {
-  const map = {};
-  rows.forEach((sourceRow) => {
-    const row = enrichZupImportRowLegalClassification_(sourceRow);
-    const key = [
+  return sortZupImportRowsChronologically_(ensureZupSourceOrdinals_(rows))
+    .map(enrichZupImportRowLegalClassification_)
+    .map((row) => [
       row[ZUP_IMPORT_COLUMNS.file],
+      row[ZUP_IMPORT_COLUMNS.sheet],
+      row[ZUP_IMPORT_COLUMNS.company],
+      row[ZUP_IMPORT_COLUMNS.employee],
       row[ZUP_IMPORT_COLUMNS.period],
-      row[ZUP_IMPORT_COLUMNS.year],
-      row[ZUP_IMPORT_COLUMNS.month],
+      row[ZUP_IMPORT_COLUMNS.accrualInterval],
+      row[ZUP_IMPORT_COLUMNS.accrualDate],
+      row[ZUP_IMPORT_COLUMNS.paymentDate] || row[ZUP_IMPORT_COLUMNS.statementDate],
+      row[ZUP_IMPORT_COLUMNS.paymentStatement],
       row[ZUP_IMPORT_COLUMNS.section],
       row[ZUP_IMPORT_COLUMNS.category],
       row[ZUP_IMPORT_COLUMNS.kind],
-    ].join('|');
-    if (!map[key]) {
-      map[key] = {
-        file: row[ZUP_IMPORT_COLUMNS.file],
-        period: row[ZUP_IMPORT_COLUMNS.period],
-        year: row[ZUP_IMPORT_COLUMNS.year],
-        month: row[ZUP_IMPORT_COLUMNS.month],
-        section: row[ZUP_IMPORT_COLUMNS.section],
-        category: row[ZUP_IMPORT_COLUMNS.category],
-        kind: row[ZUP_IMPORT_COLUMNS.kind],
-        workDays: 0,
-        paidDays: 0,
-        accrued: 0,
-        paid: 0,
-        withheld: 0,
-        count: 0,
-      };
-    }
+      normalizeZupSummaryNumber_(row[ZUP_IMPORT_COLUMNS.workDays], 2),
+      normalizeZupSummaryNumber_(row[ZUP_IMPORT_COLUMNS.paidDays], 2),
+      normalizeZupSummaryNumber_(row[ZUP_IMPORT_COLUMNS.accrued], 2),
+      normalizeZupSummaryNumber_(row[ZUP_IMPORT_COLUMNS.paid], 2),
+      normalizeZupSummaryNumber_(row[ZUP_IMPORT_COLUMNS.withheld], 2),
+      row[ZUP_IMPORT_COLUMNS.legalCategory],
+      row[ZUP_IMPORT_COLUMNS.legalSource],
+      row[ZUP_IMPORT_COLUMNS.classificationStatus],
+      row[ZUP_IMPORT_COLUMNS.sourceRow],
+    ]);
+}
 
-    map[key].workDays += parseMoney_(row[ZUP_IMPORT_COLUMNS.workDays]) || 0;
-    map[key].paidDays += parseMoney_(row[ZUP_IMPORT_COLUMNS.paidDays]) || 0;
-    map[key].accrued += parseMoney_(row[ZUP_IMPORT_COLUMNS.accrued]) || 0;
-    map[key].paid += parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]) || 0;
-    map[key].withheld += parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]) || 0;
-    map[key].count++;
-  });
-
-  return Object.keys(map)
-    .map((key) => map[key])
-    .sort((left, right) => {
-      const leftPeriod = parseMonthYear_(left.period) || { year: Number(left.year) || 9999, month: Number(left.month) || 12 };
-      const rightPeriod = parseMonthYear_(right.period) || { year: Number(right.year) || 9999, month: Number(right.month) || 12 };
-      return leftPeriod.year - rightPeriod.year || leftPeriod.month - rightPeriod.month ||
-        String(left.file || '').localeCompare(String(right.file || ''), 'ru') ||
-        String(left.section || '').localeCompare(String(right.section || ''), 'ru') ||
-        String(left.kind || '').localeCompare(String(right.kind || ''), 'ru');
-    })
-    .map((item) => {
-      return [
-        item.file,
-        item.period,
-        item.year,
-        item.month,
-        item.section,
-        item.category,
-        item.kind,
-        item.workDays ? roundNumber_(item.workDays, 2) : '',
-        item.paidDays ? roundNumber_(item.paidDays, 2) : '',
-        roundMoney_(item.accrued),
-        roundMoney_(item.paid),
-        roundMoney_(item.withheld),
-        item.count,
-      ];
-    });
+function normalizeZupSummaryNumber_(value, digits) {
+  const number = parseMoney_(value);
+  return number === null ? '' : roundNumber_(number, digits);
 }
 
 function writeZupPaymentStructureSheet_(spreadsheet, rows) {

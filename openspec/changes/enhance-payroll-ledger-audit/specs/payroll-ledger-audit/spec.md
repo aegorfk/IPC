@@ -24,6 +24,17 @@ The system SHALL present normalized payroll rows in a deterministic chronologica
 - **AND** orders rows inside the period by available accrual/payment event date, with undated rows after dated rows of the same event type
 - **AND** uses event type, source file, source sheet, and a persisted original-row ordinal as deterministic tie-breakers
 
+#### Scenario: Repeated source labels have distinct facts
+- **WHEN** two or more source rows have the same period, event, category, or label but differ by amount, accrual interval, statement, actual payment date, or source ordinal
+- **THEN** `Расчетные_листы_Свод` preserves each row separately
+- **AND** does not sum their amounts or day counts
+- **AND** exposes the actual payment date and statement of each payment row for later Article 236 analysis
+
+#### Scenario: Summary fields are understandable
+- **WHEN** the normalized summary is written
+- **THEN** it does not show technical `Год периода`, `Месяц периода`, or `Строк` columns
+- **AND** shows the payroll-slip period, source accrual interval, accrual date, actual payment date, statement, event, normalized and legal categories, amounts, and source fragment
+
 #### Scenario: Ledger is rewritten
 - **WHEN** an import rerun replaces the current ledger contents
 - **THEN** the system creates exactly one filter over the current header and ledger data rows
@@ -70,7 +81,7 @@ The system SHALL keep source label, event type, hidden internal calculation role
 
 #### Scenario: Evidence establishes a separate reward
 - **WHEN** available evidence identifies a premium as a one-off Article 191 reward outside the remuneration system
-- **THEN** its legal category is `Социальная или иная выплата` with legal source `статья 191 ТК РФ`
+- **THEN** its legal category is `Поощрение по ст. 191 ТК РФ` with legal source `статья 191 ТК РФ`
 - **AND** the system does not silently treat it as a guaranteed Article 129/135 salary component
 
 #### Scenario: Aggregate salary payment is recognized

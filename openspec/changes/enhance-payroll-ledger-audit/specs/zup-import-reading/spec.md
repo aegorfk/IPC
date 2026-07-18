@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Normalized row metadata
-The system SHALL include payroll-slip period, accrual date, independently sourced actual payment date, work-day, factual worked-day, payment-statement, original-row ordinal, calculation-category, and legal-classification fields in normalized import rows.
+The system SHALL include payroll-slip period, source accrual interval, accrual date, independently sourced actual payment date, work-day, factual worked-day, payment-statement, original-row ordinal, calculation-category, and legal-classification fields in normalized import rows.
 
 #### Scenario: Accrual row has day counts
 - **WHEN** an accrual row contains period, working days, and factual worked days
@@ -18,6 +18,12 @@ The system SHALL include payroll-slip period, accrual date, independently source
 - **WHEN** a normalized row is written durably
 - **THEN** it includes its source file, source sheet, and original-row ordinal
 - **AND** later sorting and retry produce the same order for equivalent inputs
+
+#### Scenario: Source row contains an accrual interval
+- **WHEN** an accrual source fragment contains a date or date range such as `01.10-05.10`
+- **THEN** the normalized row records that interval in `Период начисления из источника`
+- **AND** keeps it separate from the payroll-slip month, accrual date, and actual payment date
+- **AND** leaves the interval blank rather than deriving it from the slip month when the source has no interval
 
 ### Requirement: Classification coverage
 The system SHALL classify salary base, compensatory salary components, premium candidates, vacation/average-earnings guarantees, sick leave, social/other payments, severance, unpaid vacation, withholdings, and payment events without treating the payroll provider as part of the domain category.
@@ -39,6 +45,12 @@ The system SHALL classify salary base, compensatory salary components, premium c
 - **THEN** its periodic calculation category remains available to reconstruction
 - **AND** the visible legal category is `Премия/поощрение — требуются документы`
 - **AND** the disputed status does not block calculations
+
+#### Scenario: Source wording identifies a one-off reward
+- **WHEN** an accrual label explicitly describes a birthday, anniversary, exceptional-achievement, or similar one-off premium
+- **THEN** its calculation category is `Разовая премия`
+- **AND** its visible legal hypothesis references Article 191 of the Labor Code
+- **AND** the row remains reviewable against the applicable local act or award order without being routed as a guaranteed periodic premium
 
 #### Scenario: Payment structure JSON is produced
 - **WHEN** normalized payroll-slip rows are written after a full import
@@ -88,4 +100,3 @@ The system SHALL populate `Реконструкция_*` sheets from normalized 
 - **THEN** reconstruction includes every otherwise valid row in one combined calculation
 - **AND** identifies the most frequent employer as the temporary primary employer
 - **AND** states that the calculation currently assumes one employer and may need to be split by debtor after review
-
