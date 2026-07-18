@@ -69,10 +69,10 @@
 - [x] 7.2 Run `git diff --check`, review the diff for unrelated changes, and verify `.clasp.json`, calculation methodology, category rules, VLM prompts, and worksheet formulas were not changed unintentionally.
 - [x] 7.3 Push the verified Apps Script files with `clasp push` and record the deployed Git commit in the handoff.
 - [x] 7.4 In the working spreadsheet, create/update `Конструктор`, preserve the two current links, and verify normal mode leaves only the constructor visible.
-- [ ] 7.5 Run a constructor smoke calculation and verify automatic batch continuation, Sheets-first updates, final status/totals, and non-blocking issue reporting.
+- [x] 7.5 Run a constructor smoke calculation and verify automatic batch continuation, Sheets-first updates, final status/totals, and non-blocking issue reporting.
 - [x] 7.6 Verify calculation-detail and technical visibility modes against the Drive backup and confirm no sheet data, order, or identifiers changed.
-- [ ] 7.7 Verify Docs content outside the managed markers is unchanged and record any unavailable optional claim facts as constructor issues.
-- [ ] 7.8 Prepare the final report with backup URL, tests, deployed commit, workflow behavior, known warnings, and rollback instructions.
+- [x] 7.7 Verify Docs content outside the managed markers is unchanged and record any unavailable optional claim facts as constructor issues.
+- [x] 7.8 Prepare the final report with backup URL, tests, deployed commit, workflow behavior, known warnings, and rollback instructions.
 
 ## 8. Property-safe constructor state
 
@@ -81,4 +81,16 @@
 - [x] 8.3 Add regression coverage proving an interrupted large-state write does not replace the previously committed state and every stored value remains below the safety limit.
 - [x] 8.4 Reconcile quality/VLM/skipped-file observations by stable source identity so a technical `OK` row cannot duplicate a source warning.
 - [x] 8.5 Keep completed row-level calculation facts and derivative dependencies in authoritative Sheets, persist only compact durable summaries/references, and cover the aggregate Script Properties quota with a regression test.
-- [ ] 8.6 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.
+- [x] 8.6 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.
+
+## Deployment handoff — 2026-07-18
+
+- Working spreadsheet: https://docs.google.com/spreadsheets/d/1lhAhovg1dRQuDjghunzbjLZ92TKprUhEPZjOEymdd0M/edit
+- Drive backup: https://docs.google.com/spreadsheets/d/1TSJT97fRZe99ToiA1q-YHeu5vOoJmlC9ryFuQI-bMvI/edit
+- Generated calculation Doc: https://docs.google.com/document/d/1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE/edit
+- Deployed commits: `1465171` (aggregate Script Properties quota), `9cd72d9` (provisional/final issue reconciliation).
+- Verification: all four Node Apps Script tests pass; `openspec validate simplify-constructor-workflow --strict` passes; direct Apps Script API retry resumed at `calculating`, completed `writing_doc`, and ended as `complete_with_warnings`.
+- Final live totals: underpayment 41,448,609.53 RUB; indexation 1,809,050.14 RUB; material liability 214,432.30 RUB; total claims 43,472,091.97 RUB.
+- Review issues: 138 after replacing legacy provisional source observations with final audit observations. Distinct substantive checks for the same payroll slip remain separate by design.
+- Docs preservation: the prior input Doc `1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE` retained its pre-run modified time (2026-07-16); the repeated calculation created a new Doc in the same Drive parent `1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm`.
+- Rollback: restore the Drive backup for workbook state; for script code, switch to commit `067164a` and run `clasp push --force`. OAuth credentials and `.clasp.json` remain local and are not committed.
