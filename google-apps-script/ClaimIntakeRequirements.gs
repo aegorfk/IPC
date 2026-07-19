@@ -183,6 +183,161 @@ function classifyEmploymentPremiumNature_(premium) {
   };
 }
 
+/**
+ * Resolves a premium due date only from a declared rule. Payroll-slip period
+ * is allowed as a rule parameter, never as a substitute for the due date.
+ */
+function resolveEmploymentPremiumDueDate_(premium, dueRule) {
+  const premiumValue = premium || {};
+  const rule = dueRule || premiumValue.dueRule;
+  if (!rule || !rule.type) {
+    return {
+      dueDateFact: null,
+      status: 'cannot_verify',
+      reason: 'Не установлен самостоятельный срок выплаты премии: требуется правило из договора, ЛНА или подтвержденное уточнение пользователя.',
+      rule: null,
+    };
+  }
+  let date = null;
+  const parameters = Object.assign({}, rule.parameters || {});
+  if (rule.type === 'fixed_date') {
+    date = parseDateValue_(parameters.date || rule.date);
+  } else if (rule.type === 'quarter_end_day') {
+    const match = String(premiumValue.premiumPeriod || premiumValue.accrualPeriod || '')
+      .match(/^(\d{4})-Q([1-4])$/i);
+    const day = Number(parameters.day);
+    if (match && Number.isInteger(day) && day >= 1 && day <= 31) {
+      const year = Number(match[1]);
+      const finalMonth = Number(match[2]) * 3;
+      const candidate = new Date(year, finalMonth - 1, day);
+      if (candidate.getMonth() === finalMonth - 1) date = candidate;
+    }
+  } else if (rule.type === 'period_end_offset') {
+    const end = resolveEmploymentPremiumPeriodEnd_(premiumValue.premiumPeriod || premiumValue.accrualPeriod);
+    const days = Number(parameters.days);
+    if (end && Number.isFinite(days)) date = new Date(
+      end.getFullYear(), end.getMonth(), end.getDate() + Math.trunc(days)
+    );
+  }
+  if (!date) {
+    return {
+      dueDateFact: null,
+      status: 'cannot_verify',
+      reason: `Не удалось применить правило срока выплаты премии «${rule.type}».`,
+      rule: { id: String(rule.id || rule.type), type: rule.type, parameters, sourceRef: rule.sourceRef || '' },
+    };
+  }
+  const sourceType = rule.sourceType || (rule.assumed ? 'calculated_assumption' : 'document_confirmed');
+  const verificationStatus = rule.assumed ? 'probable_or_disputed' : 'confirmed';
+  return {
+    dueDateFact: createEmploymentAuditFact_(date, {
+      sourceType,
+      sourceRef: rule.sourceRef || '',
+      confidence: rule.confidence === undefined ? (rule.assumed ? 0.5 : 1) : rule.confidence,
+      verificationStatus,
+      notes: rule.notes || '',
+    }),
+    status: verificationStatus,
+    reason: rule.assumed ? 'Срок рассчитан по явно отмеченному допущению.' : 'Срок рассчитан по подтвержденному правилу.',
+    rule: { id: String(rule.id || rule.type), type: rule.type, parameters, sourceRef: rule.sourceRef || '' },
+  };
+}
+
+function resolveEmploymentPremiumPeriodEnd_(value) {
+  const quarter = String(value || '').match(/^(\d{4})-Q([1-4])$/i);
+  if (quarter) return new Date(Number(quarter[1]), Number(quarter[2]) * 3, 0);
+  const month = String(value || '').match(/^(\d{4})-(\d{2})$/);
+  if (month) return new Date(Number(month[1]), Number(month[2]), 0);
+  return null;
+}
+
+function buildEmploymentPremiumDelayAudit_(premium, dueRule) {
+  const value = premium || {};
+  const due = resolveEmploymentPremiumDueDate_(value, dueRule);
+  const actual = value.actualPaymentDateFact || null;
+  if (!due.dueDateFact || !actual || !parseDateValue_(actual.value)) {
+    return Object.assign({}, due, {
+      status: 'cannot_verify',
+      delayDays: null,
+      reason: !due.dueDateFact ? due.reason : 'Не подтверждена фактическая дата выплаты премии.',
+    });
+  }
+  const dueDate = parseDateValue_(due.dueDateFact.value);
+  const actualDate = parseDateValue_(actual.value);
+  const delayDays = Math.max(0, Math.round((Number(actualDate) - Number(dueDate)) / 86400000));
+  return Object.assign({}, due, {
+    actualPaymentDateFact: actual,
+    delayDays,
+    status: delayDays > 0
+      ? (due.status === 'confirmed' && actual.verificationStatus === 'confirmed'
+        ? 'confirmed' : 'probable_or_disputed')
+      : 'informational',
+    delayed: delayDays > 0,
+  });
+}
+
+/**
+ * Converts a premium's independently established payment timeline into the
+ * existing Article 236 rate engine. Each factual partial payment closes only
+ * its paid share; an unpaid remainder runs to the selected calculation date.
+ */
+function calculateEmploymentPremiumArticle236_(premium, delayAudit, compensationRates, calculationEndDate) {
+  const value = premium || {};
+  const audit = delayAudit || {};
+  const dueFact = audit.dueDateFact;
+  const dueDate = dueFact && parseDateValue_(dueFact.value);
+  const principal = parseMoney_(value.amount !== undefined ? value.amount : value.accrued);
+  if (!dueDate || principal === null || principal <= 0) {
+    return {
+      amount: 0, outstanding: principal && principal > 0 ? principal : 0,
+      intervals: [], status: 'cannot_verify',
+      reason: !dueDate ? 'Не установлен срок выплаты премии.' : 'Не установлена сумма премии.',
+    };
+  }
+  const rawPayments = Array.isArray(value.actualPayments)
+    ? value.actualPayments
+    : (value.actualPaymentDateFact ? [{ amount: principal, dateFact: value.actualPaymentDateFact }] : []);
+  const payments = rawPayments.map((payment, index) => {
+    const dateFact = payment && (payment.dateFact || payment.actualPaymentDateFact || payment);
+    const date = dateFact && parseDateValue_(dateFact.value || dateFact.date || dateFact);
+    const amount = parseMoney_(payment && payment.amount !== undefined ? payment.amount : principal);
+    return { index, date, amount: amount === null ? 0 : Math.max(0, amount), dateFact };
+  }).filter((payment) => payment.date && payment.amount > 0).sort((left, right) =>
+    Number(left.date) - Number(right.date) || left.index - right.index
+  );
+  const intervals = [];
+  let outstanding = roundClaimAuditMoney_(principal);
+  let total = 0;
+  payments.forEach((payment) => {
+    if (outstanding <= 0) return;
+    const paidShare = Math.min(outstanding, payment.amount);
+    const calculation = calculateSalaryCompensation_(paidShare, dueDate, payment.date, compensationRates || []);
+    intervals.push({
+      kind: 'paid_share', base: paidShare, dueDate: new Date(dueDate), endDate: new Date(payment.date),
+      actualPaymentDateFact: payment.dateFact || null, calculation,
+    });
+    total += calculation.amount;
+    outstanding = roundClaimAuditMoney_(outstanding - paidShare);
+  });
+  const endDate = parseDateValue_(calculationEndDate);
+  if (outstanding > 0 && endDate) {
+    const calculation = calculateSalaryCompensation_(outstanding, dueDate, endDate, compensationRates || []);
+    intervals.push({
+      kind: 'outstanding', base: outstanding, dueDate: new Date(dueDate), endDate: new Date(endDate), calculation,
+    });
+    total += calculation.amount;
+  }
+  const hasAssumption = dueFact.verificationStatus !== 'confirmed'
+    || payments.some((payment) => payment.dateFact
+      && payment.dateFact.verificationStatus !== 'confirmed');
+  return {
+    amount: roundClaimAuditMoney_(total), outstanding, intervals,
+    status: hasAssumption ? 'probable_or_disputed' : 'confirmed',
+    disputed: hasAssumption,
+    reason: hasAssumption ? 'Расчет использует явно отмеченное допущение о сроке или дате выплаты.' : '',
+  };
+}
+
 function getClaimIntakeSettings_() {
   return CLAIM_INTAKE_SETTINGS;
 }

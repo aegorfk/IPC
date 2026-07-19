@@ -7641,6 +7641,62 @@ assertRollbackPreflightFailurePreservesRunState(
   );
 }
 
+// A premium deadline comes from an explicit rule; the reflected payroll-slip
+// month never manufactures either a deadline or a factual payment date.
+{
+  const harness = createHarness();
+  const premium = { premiumPeriod: '2024-Q1' };
+  const unresolved = harness.context.resolveEmploymentPremiumDueDate_(premium, null);
+  assert.strictEqual(unresolved.dueDateFact, null);
+  assert.strictEqual(unresolved.status, 'cannot_verify');
+  const resolved = harness.context.resolveEmploymentPremiumDueDate_(premium, {
+    id: 'quarterly-march', type: 'quarter_end_day', parameters: { day: 31 },
+    sourceRef: 'Положение о премировании, п. 5', sourceType: 'document_confirmed',
+  });
+  assert.strictEqual(resolved.dueDateFact.value.getFullYear(), 2024);
+  assert.strictEqual(resolved.dueDateFact.value.getMonth(), 2);
+  assert.strictEqual(resolved.dueDateFact.value.getDate(), 31);
+  const delay = harness.context.buildEmploymentPremiumDelayAudit_({
+    premiumPeriod: '2024-Q1',
+    actualPaymentDateFact: harness.context.createEmploymentAuditFact_(new Date(2024, 6, 9), {
+      sourceType: 'payroll_slip', sourceRef: 'ведомость № 211', confidence: 1,
+      verificationStatus: 'confirmed',
+    }),
+  }, {
+    id: 'quarterly-march', type: 'quarter_end_day', parameters: { day: 31 },
+    sourceRef: 'Положение о премировании, п. 5', sourceType: 'document_confirmed',
+  });
+  assert.strictEqual(delay.delayed, true);
+  assert.ok(delay.delayDays > 90);
+  assert.strictEqual(delay.status, 'confirmed');
+}
+
+// Article 236 for a premium uses the independent due date and closes each
+// factual paid share separately, preserving an unpaid remainder if one exists.
+{
+  const harness = createHarness();
+  const dueDateFact = harness.context.createEmploymentAuditFact_(new Date(2024, 2, 31), {
+    sourceType: 'document_confirmed', sourceRef: 'Положение, п. 5', confidence: 1,
+    verificationStatus: 'confirmed',
+  });
+  const result = harness.context.calculateEmploymentPremiumArticle236_({
+    amount: 1000,
+    actualPayments: [{
+      amount: 400,
+      dateFact: harness.context.createEmploymentAuditFact_(new Date(2024, 6, 9), {
+        sourceType: 'payroll_slip', sourceRef: 'ведомость № 211', confidence: 1,
+        verificationStatus: 'confirmed',
+      }),
+    }],
+  }, { dueDateFact }, [{ date: new Date(2024, 0, 1), rate: 15 }], new Date(2024, 6, 9));
+  assert.strictEqual(result.outstanding, 600);
+  assert.strictEqual(result.intervals.length, 2);
+  assert.strictEqual(result.intervals[0].kind, 'paid_share');
+  assert.strictEqual(result.intervals[1].kind, 'outstanding');
+  assert.strictEqual(result.amount, 100);
+  assert.strictEqual(result.status, 'confirmed');
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];
