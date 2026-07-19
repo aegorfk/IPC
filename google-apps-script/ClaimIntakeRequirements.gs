@@ -15,6 +15,107 @@ const CLAIM_INTAKE_SETTINGS = {
 const APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY = 'APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID_V1';
 const DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID = '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE';
 
+const EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY = {
+  user_confirmed: 400,
+  document_confirmed: 300,
+  payroll_slip: 200,
+  calculated_assumption: 100,
+};
+
+const EMPLOYMENT_AUDIT_VERIFICATION_STATUSES = [
+  'confirmed', 'probable_or_disputed', 'cannot_verify', 'informational',
+];
+
+/**
+ * A legal/payroll fact never loses where it came from.  The effective value is
+ * chosen for the calculation, but conflicting source values remain available
+ * for audit and later review.
+ */
+function createEmploymentAuditFact_(value, options) {
+  const settings = options || {};
+  const sourceType = String(settings.sourceType || 'calculated_assumption');
+  const verificationStatus = String(settings.verificationStatus || 'probable_or_disputed');
+  if (!Object.prototype.hasOwnProperty.call(EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY, sourceType)) {
+    throw new Error(`Неизвестный источник факта: ${sourceType}`);
+  }
+  if (EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.indexOf(verificationStatus) < 0) {
+    throw new Error(`Неизвестный статус проверки факта: ${verificationStatus}`);
+  }
+  return {
+    value: value === undefined ? null : value,
+    sourceType,
+    sourceRef: String(settings.sourceRef || ''),
+    confidence: normalizeEmploymentAuditConfidence_(settings.confidence),
+    verificationStatus,
+    notes: String(settings.notes || ''),
+  };
+}
+
+function normalizeEmploymentAuditConfidence_(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0 || numeric > 1) {
+    throw new Error('Уверенность факта должна быть числом от 0 до 1');
+  }
+  return numeric;
+}
+
+function resolveEmploymentAuditFacts_(facts) {
+  const candidates = (facts || [])
+    .filter(Boolean)
+    .map((fact) => createEmploymentAuditFact_(fact.value, fact));
+  if (!candidates.length) {
+    return { effective: null, candidates: [], conflict: false };
+  }
+  const comparable = (value) => value instanceof Date
+    ? `date:${value.getFullYear()}-${value.getMonth() + 1}-${value.getDate()}`
+    : `${typeof value}:${String(value).trim()}`;
+  const distinctValues = Array.from(new Set(candidates.map((fact) => comparable(fact.value))));
+  const statusWeight = { confirmed: 4, probable_or_disputed: 3, informational: 2, cannot_verify: 1 };
+  const ordered = candidates.slice().sort((left, right) =>
+    (EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY[right.sourceType]
+      - EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY[left.sourceType])
+    || (statusWeight[right.verificationStatus] - statusWeight[left.verificationStatus])
+    || ((right.confidence === null ? -1 : right.confidence)
+      - (left.confidence === null ? -1 : left.confidence))
+    || left.sourceRef.localeCompare(right.sourceRef)
+  );
+  return {
+    effective: ordered[0],
+    candidates: ordered,
+    conflict: distinctValues.length > 1,
+  };
+}
+
+/**
+ * Normalizes legacy payment metadata without treating a payroll-slip month as
+ * either the statutory due date or a factual payment date.  All three time
+ * axes stay independent for Article 236 and premium-delay audit.
+ */
+function normalizeEmploymentPaymentTimeline_(value) {
+  const source = value || {};
+  const period = source.accrualPeriod || source.period || source.payrollSlipPeriod || null;
+  const due = source.dueDateFact || (source.legalDueDate
+    ? createEmploymentAuditFact_(source.legalDueDate, {
+      sourceType: source.legalDueDateSourceType || 'document_confirmed',
+      sourceRef: source.legalDueDateSource || '',
+      confidence: source.legalDueDateConfidence,
+      verificationStatus: source.legalDueDateVerificationStatus || 'confirmed',
+    }) : null);
+  const actual = source.actualPaymentDateFact || (source.actualPaymentDate
+    ? createEmploymentAuditFact_(source.actualPaymentDate, {
+      sourceType: source.actualPaymentDateSourceType || 'payroll_slip',
+      sourceRef: source.actualPaymentDateSource || '',
+      confidence: source.actualPaymentDateConfidence,
+      verificationStatus: source.actualPaymentDateVerificationStatus || 'probable_or_disputed',
+    }) : null);
+  return {
+    accrualPeriod: period || null,
+    dueDateFact: due || null,
+    actualPaymentDateFact: actual || null,
+  };
+}
+
 function getClaimIntakeSettings_() {
   return CLAIM_INTAKE_SETTINGS;
 }
@@ -27,6 +128,16 @@ function getClaimIntakeLayout_() {
       labelCell: 'A3',
       valueCell: 'B3',
       namedRange: 'CLAIM_INTAKE_EMPLOYER_SECTOR',
+    },
+    employmentStartDate: {
+      label: 'Дата начала трудовых отношений',
+      labelCell: 'A4',
+      valueCell: 'B4',
+      sourceCell: 'C4',
+      statusCell: 'D4',
+      namedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_DATE',
+      sourceNamedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_SOURCE',
+      statusNamedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_STATUS',
     },
     calculatedAverage: {
       label: 'Рассчитанный средний заработок',
@@ -123,6 +234,13 @@ function applyClaimIntakeStructure_(sheet, layout) {
   sheet.getRange('A1').setValue('Анкета и требования');
   sheet.getRange('A2').setValue('Факты дела, настройки расчета и выбранные требования');
   sheet.getRange(layout.employerSector.labelCell).setValue(layout.employerSector.label);
+  sheet.getRange(layout.employmentStartDate.labelCell).setValue(layout.employmentStartDate.label);
+  if (!String(sheet.getRange(layout.employmentStartDate.sourceCell).getValue() || '').trim()) {
+    sheet.getRange(layout.employmentStartDate.sourceCell).setValue('источник: пользователь');
+  }
+  if (!String(sheet.getRange(layout.employmentStartDate.statusCell).getValue() || '').trim()) {
+    sheet.getRange(layout.employmentStartDate.statusCell).setValue('подтверждено пользователем');
+  }
   sheet.getRange('A5').setValue('Средний заработок');
   [
     layout.calculatedAverage,
@@ -151,6 +269,7 @@ function applyClaimIntakeStructure_(sheet, layout) {
     .setAllowInvalid(false)
     .build();
   sheet.getRange(layout.employerSector.valueCell).setDataValidation(sectorRule);
+  sheet.getRange(layout.employmentStartDate.valueCell).setNumberFormat('dd.MM.yyyy');
   const scenarioRule = SpreadsheetApp.newDataValidation()
     .requireValueInList(CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES, true)
     .setAllowInvalid(false)
@@ -505,6 +624,7 @@ function formatClaimIntakeSheet_(sheet, layout, created) {
 function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
   [
     layout.employerSector,
+    layout.employmentStartDate,
     layout.calculatedAverage,
     layout.calculatedAverageContext,
     layout.manualAverageEnabled,
@@ -515,6 +635,14 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
   ].forEach((field) => {
     spreadsheet.setNamedRange(field.namedRange, sheet.getRange(field.valueCell));
   });
+  spreadsheet.setNamedRange(
+    layout.employmentStartDate.sourceNamedRange,
+    sheet.getRange(layout.employmentStartDate.sourceCell)
+  );
+  spreadsheet.setNamedRange(
+    layout.employmentStartDate.statusNamedRange,
+    sheet.getRange(layout.employmentStartDate.statusCell)
+  );
   spreadsheet.setNamedRange(
     layout.partialRecoveries.namedRange,
     sheet.getRange(
@@ -747,8 +875,22 @@ function resolveSelectedAverageEarnings_(state) {
 function captureClaimQuestionnaireState_(spreadsheet) {
   const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const layout = getClaimIntakeLayout_();
+  const employmentStartValue = target.getRangeByName(layout.employmentStartDate.namedRange).getValue();
   return {
     employerSector: target.getRangeByName(layout.employerSector.namedRange).getValue(),
+    employmentStartDate: employmentStartValue || null,
+    employmentStartFact: employmentStartValue
+      ? createEmploymentAuditFact_(employmentStartValue, {
+        sourceType: employmentAuditSourceTypeFromDisplay_(
+          target.getRangeByName(layout.employmentStartDate.sourceNamedRange).getValue()
+        ),
+        sourceRef: `${layout.sheetName}!${layout.employmentStartDate.valueCell}`,
+        verificationStatus: employmentAuditStatusFromDisplay_(
+          target.getRangeByName(layout.employmentStartDate.statusNamedRange).getValue()
+        ),
+        confidence: 1,
+      })
+      : null,
     manualAverageEnabled: target.getRangeByName(layout.manualAverageEnabled.namedRange).getValue() === true,
     averageEarnings: readAverageEarningsState_(target),
     partialRecoveries: target.getRangeByName(layout.partialRecoveries.namedRange).getValues(),
@@ -767,6 +909,17 @@ function normalizeClaimQuestionnaireStateForWrite_(state, layout) {
       throw new Error('Неизвестный сектор работодателя');
     }
     normalized.employerSector = value.employerSector;
+  }
+  if (value.employmentStartDate !== undefined || value.employmentStartFact !== undefined) {
+    const sourceFact = value.employmentStartFact || createEmploymentAuditFact_(
+      value.employmentStartDate,
+      { sourceType: 'user_confirmed', verificationStatus: 'confirmed', confidence: 1 }
+    );
+    const parsedDate = parseDateValue_(sourceFact.value);
+    if (!parsedDate) {
+      throw new Error('Дата начала трудовых отношений должна быть понятной датой');
+    }
+    normalized.employmentStartFact = createEmploymentAuditFact_(parsedDate, sourceFact);
   }
   if (value.manualAverageEnabled !== undefined) {
     if (typeof value.manualAverageEnabled !== 'boolean') {
@@ -796,6 +949,22 @@ function normalizeClaimQuestionnaireStateForWrite_(state, layout) {
     }
   }
   return normalized;
+}
+
+function employmentAuditSourceTypeFromDisplay_(value) {
+  const normalized = normalizeText_(value);
+  if (normalized.indexOf('документ') >= 0) return 'document_confirmed';
+  if (normalized.indexOf('расчет') >= 0 || normalized.indexOf('расчёт') >= 0) return 'payroll_slip';
+  if (normalized.indexOf('допущ') >= 0) return 'calculated_assumption';
+  return 'user_confirmed';
+}
+
+function employmentAuditStatusFromDisplay_(value) {
+  const normalized = normalizeText_(value);
+  if (normalized.indexOf('не удалось') >= 0 || normalized.indexOf('невозможно') >= 0) return 'cannot_verify';
+  if (normalized.indexOf('спор') >= 0 || normalized.indexOf('предполож') >= 0) return 'probable_or_disputed';
+  if (normalized.indexOf('сведен') >= 0) return 'informational';
+  return 'confirmed';
 }
 
 function getClaimIntakeMutationLock_() {
@@ -853,6 +1022,19 @@ function writeClaimQuestionnaireState_(state, spreadsheet) {
         values: [[normalized.employerSector]],
       });
     }
+    if (normalized.employmentStartFact) {
+      const fact = normalized.employmentStartFact;
+      mutations.push({
+        range: sheet.getRange(layout.employmentStartDate.valueCell),
+        values: [[fact.value]],
+      }, {
+        range: sheet.getRange(layout.employmentStartDate.sourceCell),
+        values: [[formatEmploymentAuditFactSource_(fact)]],
+      }, {
+        range: sheet.getRange(layout.employmentStartDate.statusCell),
+        values: [[formatEmploymentAuditFactStatus_(fact)]],
+      });
+    }
     if (normalized.manualAverageEnabled !== undefined) {
       mutations.push({
         range: sheet.getRange(layout.manualAverageEnabled.valueCell),
@@ -906,6 +1088,26 @@ function writeClaimQuestionnaireState_(state, spreadsheet) {
       throw error;
     }
   }, lockOptions);
+}
+
+function formatEmploymentAuditFactSource_(fact) {
+  const labels = {
+    user_confirmed: 'источник: пользователь',
+    document_confirmed: 'источник: документ',
+    payroll_slip: 'источник: расчетные листы',
+    calculated_assumption: 'источник: допущение',
+  };
+  return labels[fact && fact.sourceType] || 'источник: не указан';
+}
+
+function formatEmploymentAuditFactStatus_(fact) {
+  const labels = {
+    confirmed: 'подтверждено',
+    probable_or_disputed: 'спорное',
+    cannot_verify: 'нужно уточнить',
+    informational: 'к сведению',
+  };
+  return labels[fact && fact.verificationStatus] || 'нужно уточнить';
 }
 
 function addClaimPartialRecovery(options) {

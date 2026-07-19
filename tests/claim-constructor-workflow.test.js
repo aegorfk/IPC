@@ -7548,6 +7548,66 @@ assertRollbackPreflightFailurePreservesRunState(
   }
 }
 
+// Employment/remuneration facts retain all source versions. A confirmed user
+// correction wins for calculation but does not erase the extracted conflict.
+{
+  const harness = createHarness();
+  const extracted = harness.context.createEmploymentAuditFact_('01.10.2023', {
+    sourceType: 'payroll_slip', sourceRef: 'Расчетные_листы_Свод!E2',
+    confidence: 0.92, verificationStatus: 'probable_or_disputed',
+  });
+  const user = harness.context.createEmploymentAuditFact_('06.10.2023', {
+    sourceType: 'user_confirmed', sourceRef: 'Анкета и требования!B4',
+    confidence: 1, verificationStatus: 'confirmed',
+  });
+  const resolved = harness.context.resolveEmploymentAuditFacts_([extracted, user]);
+  assert.strictEqual(resolved.effective.value, '06.10.2023');
+  assert.strictEqual(resolved.candidates.length, 2);
+  assert.strictEqual(resolved.conflict, true);
+  const timeline = harness.context.normalizeEmploymentPaymentTimeline_({
+    payrollSlipPeriod: '01.07.2024',
+    actualPaymentDate: '09.07.2024',
+    actualPaymentDateSource: 'ведомость № 211',
+  });
+  assert.strictEqual(timeline.accrualPeriod, '01.07.2024');
+  assert.strictEqual(timeline.dueDateFact, null);
+  assert.strictEqual(timeline.actualPaymentDateFact.value, '09.07.2024');
+  assert.throws(
+    () => harness.context.createEmploymentAuditFact_('x', { sourceType: 'document_confirmed', confidence: 2 }),
+    /от 0 до 1/i
+  );
+}
+
+// The employment-start answer is a durable questionnaire fact with visible
+// origin and verification status, rather than a date inferred from a first slip.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet);
+  const date = new Date(2023, 9, 6);
+  harness.context.writeClaimQuestionnaireState_({
+    employmentStartFact: {
+      value: date,
+      sourceType: 'user_confirmed',
+      sourceRef: 'Анкета и требования!B4',
+      confidence: 1,
+      verificationStatus: 'confirmed',
+    },
+  }, harness.spreadsheet);
+  const state = harness.context.readClaimQuestionnaireState_(harness.spreadsheet);
+  assert.ok(state.employmentStartDate instanceof Date);
+  assert.strictEqual(state.employmentStartDate.getFullYear(), 2023);
+  assert.strictEqual(state.employmentStartFact.sourceType, 'user_confirmed');
+  const intake = harness.spreadsheet.getSheetByName('Анкета и требования');
+  assert.strictEqual(intake.getRange('C4').getValue(), 'источник: пользователь');
+  assert.strictEqual(intake.getRange('D4').getValue(), 'подтверждено');
+  assert.throws(
+    () => harness.context.writeClaimQuestionnaireState_(
+      { employmentStartDate: 'не дата' }, harness.spreadsheet
+    ),
+    /должна быть понятной датой/i
+  );
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];
