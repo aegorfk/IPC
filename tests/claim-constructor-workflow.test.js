@@ -7608,6 +7608,39 @@ assertRollbackPreflightFailurePreservesRunState(
   );
 }
 
+// Premium identifiers stay source-provider-neutral while source ordinals keep
+// independent payment events separate; classification remains reviewable.
+{
+  const harness = createHarness();
+  const first = harness.context.buildEmploymentPremiumAuditId_({
+    layoutId: 'quarterlyPremiums', baseKind: 'quarterly_premium',
+    premiumPeriod: '2024-Q1', sourceOrdinal: 12, organization: 'ООО Альфа',
+  });
+  const sameSemanticDifferentEmployer = harness.context.buildEmploymentPremiumAuditId_({
+    layoutId: 'quarterlyPremiums', baseKind: 'quarterly_premium',
+    premiumPeriod: '2024-Q1', sourceOrdinal: 12, organization: 'ООО Бета',
+  });
+  const separateSourceEvent = harness.context.buildEmploymentPremiumAuditId_({
+    layoutId: 'quarterlyPremiums', baseKind: 'quarterly_premium',
+    premiumPeriod: '2024-Q1', sourceOrdinal: 13,
+  });
+  assert.strictEqual(first, sameSemanticDifferentEmployer);
+  assert.notStrictEqual(first, separateSourceEvent);
+  assert.strictEqual(
+    harness.context.classifyEmploymentPremiumNature_({ remunerationSystem: true }).kind,
+    'remuneration_system'
+  );
+  const reward = harness.context.classifyEmploymentPremiumNature_({
+    label: 'Премия ко дню рождения', evidence: [],
+  });
+  assert.strictEqual(reward.kind, 'article_191_reward');
+  assert.strictEqual(reward.disputed, true);
+  assert.strictEqual(
+    harness.context.classifyEmploymentPremiumNature_({ label: 'Премия' }).kind,
+    'disputed'
+  );
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];

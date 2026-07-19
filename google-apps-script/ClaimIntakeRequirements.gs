@@ -116,6 +116,73 @@ function normalizeEmploymentPaymentTimeline_(value) {
   };
 }
 
+/**
+ * A premium identity deliberately excludes employer and payroll-system labels.
+ * The persisted source ordinal keeps visually identical source events apart
+ * until a later calculation layer explicitly decides to aggregate them.
+ */
+function buildEmploymentPremiumAuditId_(premium) {
+  const value = premium || {};
+  const period = normalizeText_(value.premiumPeriod || value.accrualPeriod || value.periodKey)
+    || 'unknown_period';
+  const semantic = normalizeText_(value.paymentSemantic || value.baseKind || value.category)
+    || 'unknown_premium';
+  const ordinal = Number.isInteger(value.sourceOrdinal)
+    ? String(value.sourceOrdinal)
+    : (normalizeText_(value.calculationItem) || 'unknown_event');
+  return [
+    'premium_delay',
+    normalizeClaimLayoutIdentity_(value.layoutId),
+    semantic,
+    period,
+    `event_${ordinal}`,
+  ].map((part) => encodeURIComponent(normalizeText_(part))).join('|');
+}
+
+function buildEmploymentAuditPositionId_(fact) {
+  const value = fact || {};
+  return [
+    normalizeText_(value.ruleId) || 'unknown_rule',
+    normalizeClaimLayoutIdentity_(value.layoutId),
+    normalizeClaimBaseKindIdentity_(value.baseKind),
+    normalizeText_(value.periodKey) || 'unknown_period',
+    normalizeText_(value.calculationItem) || 'unknown_item',
+  ].map((part) => encodeURIComponent(normalizeText_(part))).join('|');
+}
+
+function classifyEmploymentPremiumNature_(premium) {
+  const value = premium || {};
+  const evidence = value.evidence || [];
+  const text = normalizeText_([
+    value.label, value.kind, value.sourceText,
+    ...evidence.map((item) => item && (item.text || item.value || item.notes)),
+  ].filter(Boolean).join(' '));
+  const systemEvidence = value.remunerationSystem === true
+    || evidence.some((item) => item && item.remunerationSystem === true);
+  const oneOffEvidence = value.article191Reward === true
+    || /разов|ко дн(?:[её]м|ю) рождения|юбиле|выдающ|особ[ыи]е достижен|поощрен/i.test(text);
+  if (systemEvidence) {
+    return {
+      kind: 'remuneration_system', verificationStatus: 'confirmed', disputed: false,
+      reason: 'Премия подтверждена как часть системы оплаты труда.', evidence,
+    };
+  }
+  if (oneOffEvidence) {
+    return {
+      kind: 'article_191_reward',
+      verificationStatus: evidence.length ? 'confirmed' : 'probable_or_disputed',
+      disputed: !evidence.length,
+      reason: 'Выявлены признаки разового поощрения по ст. 191 ТК РФ; требуется сверка с ПВТР или приказом.',
+      evidence,
+    };
+  }
+  return {
+    kind: 'disputed', verificationStatus: 'probable_or_disputed', disputed: true,
+    reason: 'Недостаточно сведений, чтобы отнести премию к системе оплаты труда или разовому поощрению.',
+    evidence,
+  };
+}
+
 function getClaimIntakeSettings_() {
   return CLAIM_INTAKE_SETTINGS;
 }
