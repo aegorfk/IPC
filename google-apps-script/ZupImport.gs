@@ -39,6 +39,18 @@ const ZUP_IMPORT_SETTINGS = {
   BATCH_TIME_BUDGET_MS: 210 * 1000,
   BATCH_TIME_MARGIN_MS: 30 * 1000,
   BATCH_MAX_FILES: 2,
+  RECOGNITION_QUEUE_SHEET_NAME: 'Расчетные_листы_Очередь',
+  RECOGNITION_QUEUE_VERSION: 'recognition-queue-v1',
+  RECOGNITION_CONTRACT_VERSION: 'payroll-recognition-v1',
+  RECOGNITION_MAX_WORKERS_PROPERTY: 'ZUP_VLM_MAX_WORKERS',
+  RECOGNITION_ROLLOUT_APPROVED_PROPERTY: 'ZUP_VLM_PARALLEL_ROLLOUT_APPROVED',
+  RECOGNITION_DEFAULT_WORKERS: 1,
+  RECOGNITION_SAFE_MAX_WORKERS: 2,
+  RECOGNITION_LEASE_MS: 5 * 60 * 1000,
+  RECOGNITION_MAX_RETRIES: 3,
+  RECOGNITION_RETRY_BASE_MS: 15 * 1000,
+  RECOGNITION_RETRY_MAX_MS: 5 * 60 * 1000,
+  RECOGNITION_WORKER_TRIGGER_FUNCTION: 'runZupRecognitionWorker_',
   DIAGNOSTIC_BATCH_ROWS: 200,
   DIAGNOSTIC_IN_IMPORT_FINALIZATION: false,
   REVIEW_FILL: '#f4b183',
@@ -188,6 +200,514 @@ const ZUP_VLM_LOG_HEADERS = [
   'Предупреждения',
   'Сырой JSON',
 ];
+
+const ZUP_RECOGNITION_QUEUE_HEADERS = [
+  'Run ID', 'Source group', 'Source signature', 'Recognition contract', 'Status',
+  'Attempts', 'Lease owner', 'Lease token', 'Lease expires', 'Next attempt',
+  'Created', 'Started', 'Finished', 'Result identity', 'Error class', 'Error',
+  'Provider generation', 'Usage JSON', 'Cost', 'Review disposition', 'Result JSON',
+];
+
+function getZupRecognitionMaxWorkers_() {
+  const configured = Number(getZupScriptProperty_(ZUP_IMPORT_SETTINGS.RECOGNITION_MAX_WORKERS_PROPERTY));
+  const requested = Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured) : ZUP_IMPORT_SETTINGS.RECOGNITION_DEFAULT_WORKERS;
+  const approved = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.RECOGNITION_ROLLOUT_APPROVED_PROPERTY) === 'true';
+  if (!approved) return 1;
+  return Math.max(1, Math.min(ZUP_IMPORT_SETTINGS.RECOGNITION_SAFE_MAX_WORKERS, requested));
+}
+
+function isZupParallelRecognitionEnabled_() {
+  return getZupRecognitionMaxWorkers_() > 1;
+}
+
+function buildZupRecognitionSourceSignature_(candidate) {
+  const value = candidate || {};
+  return [value.sourceGroupKey || value.groupKey || '', value.fileId || '', value.fileName || '',
+    value.fileSignature || value.signature || '', value.parserVersion || ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+    value.contractVersion || ZUP_IMPORT_SETTINGS.RECOGNITION_CONTRACT_VERSION]
+    .map((part) => String(part || '').trim()).join('|');
+}
+
+function buildZupRecognitionResultIdentity_(runId, sourceSignature, contractVersion) {
+  const input = [runId, sourceSignature, contractVersion || ZUP_IMPORT_SETTINGS.RECOGNITION_CONTRACT_VERSION]
+    .join('|');
+  if (Utilities.computeDigest && Utilities.DigestAlgorithm) {
+    const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input);
+    return `recognition:${digest.map((byte) => (`0${(byte & 255).toString(16)}`).slice(-2)).join('')}`;
+  }
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index++) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `recognition:${(hash >>> 0).toString(16)}`;
+}
+
+function buildZupRecognitionQueueItem_(candidate, runId, now) {
+  const value = candidate || {};
+  const created = now instanceof Date ? now : new Date(now || Date.now());
+  const signature = buildZupRecognitionSourceSignature_(value);
+  return {
+    runId: String(runId || ''),
+    sourceGroupKey: String(value.sourceGroupKey || value.groupKey || ''),
+    sourceSignature: signature,
+    recognitionContract: String(value.contractVersion || ZUP_IMPORT_SETTINGS.RECOGNITION_CONTRACT_VERSION),
+    status: value.deterministicAccepted ? 'succeeded' : 'pending',
+    attempts: 0, leaseOwner: '', leaseToken: '', leaseExpires: null, nextAttempt: null,
+    createdAt: created.toISOString(), startedAt: '', finishedAt: '',
+    resultIdentity: value.deterministicAccepted
+      ? buildZupRecognitionResultIdentity_(runId, signature, value.contractVersion) : '',
+    errorClass: '', error: '', providerGeneration: '', usage: null, cost: null,
+    reviewDisposition: value.deterministicAccepted ? 'deterministic' : '',
+    result: value.deterministicResult || null,
+    fileId: String(value.fileId || ''), fileName: String(value.fileName || ''),
+    mimeType: String(value.mimeType || ''), group: value.group || null,
+  };
+}
+
+function buildZupRecognitionQueue_(candidates, runId, now) {
+  const seen = new Set();
+  return (candidates || []).map((candidate) => buildZupRecognitionQueueItem_(candidate, runId, now))
+    .filter((item) => {
+      if (!item.sourceSignature || seen.has(item.sourceSignature)) return false;
+      seen.add(item.sourceSignature);
+      return true;
+    });
+}
+
+function normalizeZupRecognitionQueueDate_(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? new Date(value) : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function zupRecognitionQueueActiveCount_(queue, now) {
+  const at = now instanceof Date ? now.getTime() : new Date(now || Date.now()).getTime();
+  return (queue || []).filter((item) => item && item.status === 'leased'
+    && normalizeZupRecognitionQueueDate_(item.leaseExpires)
+    && normalizeZupRecognitionQueueDate_(item.leaseExpires).getTime() > at).length;
+}
+
+function reclaimExpiredZupRecognitionLeases_(queue, now) {
+  const at = now instanceof Date ? now : new Date(now || Date.now());
+  return (queue || []).map((item) => {
+    if (!item || item.status !== 'leased') return item;
+    const expiry = normalizeZupRecognitionQueueDate_(item.leaseExpires);
+    if (!expiry || expiry > at) return item;
+    return Object.assign({}, item, {
+      status: item.attempts >= ZUP_IMPORT_SETTINGS.RECOGNITION_MAX_RETRIES ? 'failed_review' : 'pending',
+      leaseOwner: '', leaseToken: '', leaseExpires: null,
+      errorClass: 'lease_expired', error: 'Рабочий запуск завершился до фиксации результата.',
+      nextAttempt: item.attempts >= ZUP_IMPORT_SETTINGS.RECOGNITION_MAX_RETRIES
+        ? null : at.toISOString(),
+    });
+  });
+}
+
+function claimZupRecognitionQueueItems_(queue, workerId, maxWorkers, now, leaseMs) {
+  const at = now instanceof Date ? now : new Date(now || Date.now());
+  const reclaimed = reclaimExpiredZupRecognitionLeases_(queue || [], at);
+  const active = zupRecognitionQueueActiveCount_(reclaimed, at);
+  const capacity = Math.max(0, Math.min(Number(maxWorkers) || 1,
+    ZUP_IMPORT_SETTINGS.RECOGNITION_SAFE_MAX_WORKERS) - active);
+  if (!capacity) return { queue: reclaimed, claimed: [] };
+  const claimed = [];
+  reclaimed.forEach((item) => {
+    if (claimed.length >= capacity || !item || item.status !== 'pending') return;
+    const next = normalizeZupRecognitionQueueDate_(item.nextAttempt);
+    if (next && next > at) return;
+    const token = Utilities.getUuid();
+    const updated = Object.assign({}, item, {
+      status: 'leased', attempts: Number(item.attempts) + 1,
+      leaseOwner: String(workerId || 'worker'), leaseToken: token,
+      leaseExpires: new Date(at.getTime() + (Number(leaseMs) || ZUP_IMPORT_SETTINGS.RECOGNITION_LEASE_MS)).toISOString(),
+      startedAt: item.startedAt || at.toISOString(), errorClass: '', error: '',
+    });
+    const index = reclaimed.indexOf(item);
+    reclaimed[index] = updated;
+    claimed.push(Object.assign({}, updated));
+  });
+  return { queue: reclaimed, claimed };
+}
+
+function classifyZupRecognitionError_(error) {
+  const code = Number(error && (error.code || error.status || error.httpStatus));
+  const message = String(error && error.message || error || '').toLowerCase();
+  if ([408, 429, 500, 502, 503, 504].indexOf(code) >= 0
+    || /timeout|timed out|rate limit|too many|temporar|unavailable|network/.test(message)) return 'retryable_provider';
+  if (/json|schema|parse|validation|размер|size|unsupported|auth|api key|unauthorized/.test(message)) return 'non_retryable_input';
+  return 'provider_error';
+}
+
+function getZupRecognitionRetryDelayMs_(attempt, randomValue) {
+  const count = Math.max(1, Number(attempt) || 1);
+  const base = Math.min(ZUP_IMPORT_SETTINGS.RECOGNITION_RETRY_MAX_MS,
+    ZUP_IMPORT_SETTINGS.RECOGNITION_RETRY_BASE_MS * Math.pow(2, count - 1));
+  const jitter = Math.max(0, Math.min(1, Number(randomValue) || 0));
+  return Math.round(base * (0.75 + jitter * 0.5));
+}
+
+function commitZupRecognitionQueueResult_(queue, lease, result, now) {
+  const at = now instanceof Date ? now : new Date(now || Date.now());
+  const source = lease || {};
+  const index = (queue || []).findIndex((item) => item && item.runId === source.runId
+    && item.sourceSignature === source.sourceSignature
+    && item.recognitionContract === source.recognitionContract);
+  if (index < 0) return { queue: queue || [], accepted: false, disposition: 'unknown_source' };
+  const current = queue[index];
+  if (current.status === 'succeeded' || current.status === 'failed_review'
+    || current.leaseToken !== source.leaseToken || current.leaseOwner !== source.leaseOwner) {
+    return { queue: queue || [], accepted: false, disposition: 'stale_or_duplicate' };
+  }
+  const value = result || {};
+  if (value.ok !== false) {
+    const identity = buildZupRecognitionResultIdentity_(current.runId, current.sourceSignature, current.recognitionContract);
+    queue[index] = Object.assign({}, current, {
+      status: 'succeeded', leaseOwner: '', leaseToken: '', leaseExpires: null,
+      finishedAt: at.toISOString(), resultIdentity: identity, result: value.result || value,
+      providerGeneration: String(value.providerGeneration || ''), usage: value.usage || null,
+      cost: value.cost === undefined ? null : value.cost, reviewDisposition: value.reviewDisposition || 'accepted',
+      errorClass: '', error: '', nextAttempt: null,
+    });
+    return { queue, accepted: true, disposition: 'succeeded', resultIdentity: identity };
+  }
+  const errorClass = value.errorClass || classifyZupRecognitionError_(value.error || value);
+  const attempts = Number(current.attempts) || 0;
+  const retry = errorClass === 'retryable_provider' && attempts < ZUP_IMPORT_SETTINGS.RECOGNITION_MAX_RETRIES;
+  queue[index] = Object.assign({}, current, {
+    status: retry ? 'pending' : 'failed_review', leaseOwner: '', leaseToken: '', leaseExpires: null,
+    finishedAt: at.toISOString(), errorClass, error: String(value.error || 'Ошибка распознавания'),
+    nextAttempt: retry ? new Date(at.getTime() + getZupRecognitionRetryDelayMs_(attempts, value.jitter)).toISOString() : null,
+    reviewDisposition: retry ? '' : 'failed_review',
+  });
+  return { queue, accepted: false, disposition: retry ? 'retry_scheduled' : 'failed_review' };
+}
+
+function sortZupRecognitionQueueForMaterialization_(queue) {
+  return (queue || []).slice().sort((left, right) =>
+    String(left.sourceGroupKey || '').localeCompare(String(right.sourceGroupKey || ''))
+    || String(left.sourceSignature || '').localeCompare(String(right.sourceSignature || ''))
+  );
+}
+
+function buildZupRecognitionQueueMetrics_(queue, now) {
+  const at = now instanceof Date ? now : new Date(now || Date.now());
+  const metrics = { pending: 0, leased: 0, retrying: 0, succeeded: 0, failedReview: 0,
+    activeWorkers: 0, oldestLease: null, attempts: 0, durationsMs: [], cost: 0, usage: 0 };
+  (queue || []).forEach((item) => {
+    if (!item) return;
+    metrics.attempts += Number(item.attempts) || 0;
+    if (item.status === 'pending') metrics.pending++;
+    if (item.status === 'leased') metrics.leased++;
+    if (item.status === 'failed_review') metrics.failedReview++;
+    if (item.status === 'succeeded') metrics.succeeded++;
+    if (item.status === 'pending' && normalizeZupRecognitionQueueDate_(item.nextAttempt)
+      && normalizeZupRecognitionQueueDate_(item.nextAttempt) > at) metrics.retrying++;
+    const started = normalizeZupRecognitionQueueDate_(item.startedAt);
+    const finished = normalizeZupRecognitionQueueDate_(item.finishedAt);
+    if (started && finished) metrics.durationsMs.push(Math.max(0, finished - started));
+    if (item.cost !== null && Number.isFinite(Number(item.cost))) metrics.cost += Number(item.cost);
+    if (item.usage && Number.isFinite(Number(item.usage.totalTokens))) metrics.usage += Number(item.usage.totalTokens);
+    if (item.status === 'leased') {
+      metrics.activeWorkers++;
+      if (!metrics.oldestLease || String(item.startedAt) < String(metrics.oldestLease)) metrics.oldestLease = item.startedAt;
+    }
+  });
+  return metrics;
+}
+
+function buildZupRecognitionQueueDiagnostics_(queue, now, metricsOverride) {
+  const metrics = metricsOverride || buildZupRecognitionQueueMetrics_(queue, now);
+  return [
+    ['Распознавание', 'Инфо', metrics.pending ? 'В работе' : 'Готово', '', '', '', '', '', '',
+      `Очередь: ожидают ${metrics.pending}, активны ${metrics.leased}, повторяются ${metrics.retrying}, успешно ${metrics.succeeded}, требуют проверки ${metrics.failedReview}.`,
+      metrics.oldestLease ? `Старейшая аренда: ${metrics.oldestLease}.` : 'Активных аренд нет.'],
+  ];
+}
+
+function serializeZupRecognitionQueueItem_(item) {
+  const value = item || {};
+  return [
+    value.runId || '', value.sourceGroupKey || '', value.sourceSignature || '',
+    value.recognitionContract || '', value.status || '', Number(value.attempts) || 0,
+    value.leaseOwner || '', value.leaseToken || '', value.leaseExpires || '', value.nextAttempt || '',
+    value.createdAt || '', value.startedAt || '', value.finishedAt || '', value.resultIdentity || '',
+    value.errorClass || '', value.error || '', value.providerGeneration || '',
+    value.usage ? JSON.stringify(value.usage) : '', value.cost === null || value.cost === undefined ? '' : value.cost,
+    value.reviewDisposition || '', value.result ? JSON.stringify(value.result) : '',
+  ];
+}
+
+function deserializeZupRecognitionQueueRow_(row) {
+  const value = row || [];
+  const parseJson = (raw) => {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (error) { return null; }
+  };
+  return {
+    runId: String(value[0] || ''), sourceGroupKey: String(value[1] || ''), sourceSignature: String(value[2] || ''),
+    recognitionContract: String(value[3] || ''), status: String(value[4] || 'pending'), attempts: Number(value[5]) || 0,
+    leaseOwner: String(value[6] || ''), leaseToken: String(value[7] || ''), leaseExpires: value[8] || null,
+    nextAttempt: value[9] || null, createdAt: value[10] || '', startedAt: value[11] || '', finishedAt: value[12] || '',
+    resultIdentity: String(value[13] || ''), errorClass: String(value[14] || ''), error: String(value[15] || ''),
+    providerGeneration: String(value[16] || ''), usage: parseJson(value[17]),
+    cost: value[18] === '' || value[18] === null || value[18] === undefined ? null : Number(value[18]),
+    reviewDisposition: String(value[19] || ''), result: parseJson(value[20]),
+  };
+}
+
+function readZupRecognitionQueue_(spreadsheet) {
+  const sheet = spreadsheet && spreadsheet.getSheetByName
+    ? spreadsheet.getSheetByName(ZUP_IMPORT_SETTINGS.RECOGNITION_QUEUE_SHEET_NAME) : null;
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, ZUP_RECOGNITION_QUEUE_HEADERS.length)
+    .getValues().filter((row) => row[0]).map(deserializeZupRecognitionQueueRow_);
+}
+
+function writeZupRecognitionQueue_(spreadsheet, queue, options) {
+  const settings = options || {};
+  if (settings.dryRun) return { written: 0, skipped: true };
+  const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.RECOGNITION_QUEUE_SHEET_NAME);
+  writeZupSheetData_(sheet, [ZUP_RECOGNITION_QUEUE_HEADERS].concat(
+    sortZupRecognitionQueueForMaterialization_(queue).map(serializeZupRecognitionQueueItem_)
+  ));
+  return { written: (queue || []).length };
+}
+
+function buildZupRecognitionQueueCandidates_(groups, previousState, previousRowsByFile, options) {
+  const settings = options || {};
+  return (groups || []).map((group) => {
+    const file = group && group.selected;
+    const fileName = file && file.getName ? file.getName() : String(group && group.key || '');
+    const fileId = file && file.getId ? file.getId() : '';
+    const signature = file ? buildZupFileSignature_(file) : '';
+    const unchanged = !settings.force && previousState && previousState[group.key]
+      && previousState[group.key].signature === signature && previousRowsByFile && previousRowsByFile[fileName];
+    return {
+      sourceGroupKey: group && group.key || fileName,
+      fileId, fileName, mimeType: file && file.getMimeType ? file.getMimeType() : '',
+      fileSignature: signature, group, deterministicAccepted: Boolean(unchanged),
+      deterministicResult: unchanged ? buildUnchangedZupResult_(file, previousRowsByFile[fileName]) : null,
+    };
+  });
+}
+
+function buildZupRecognitionQualitySnapshot_(rows, quality, options) {
+  const settings = options || {};
+  const formatMaybeDate = (value) => {
+    const parsed = parseDateValue_(value);
+    return parsed ? formatDate_(parsed) : '';
+  };
+  const normalizedRows = (rows || []).map((row) => ({
+    sourceGroupKey: row.sourceGroupKey || row.groupKey || row.file || '',
+    sourceRow: row.sourceRow || '', sourceOrdinal: row.sourceOrdinal || '',
+    section: row.section || '', category: row.category || '', kind: row.kind || '',
+    period: row.period ? buildPayrollAuditPeriodKey_(row.period) : row.periodKey || '',
+    accrualDate: formatMaybeDate(row.accrualDate),
+    paymentDate: formatMaybeDate(row.paymentDate),
+    statementDate: formatMaybeDate(row.statementDate),
+    accrued: row.accrued === null || row.accrued === undefined ? null : Number(row.accrued),
+    paid: row.paid === null || row.paid === undefined ? null : Number(row.paid),
+    withheld: row.withheld === null || row.withheld === undefined ? null : Number(row.withheld),
+    evidence: row.file || row.sourceRef || '',
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return {
+    corpusVersion: String(settings.corpusVersion || 'recognition-quality-baseline-v1'),
+    parserVersion: ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+    rows: normalizedRows,
+    quality: {
+      companies: (quality && quality.companies || []).slice().sort(),
+      employees: (quality && quality.employees || []).slice().sort(),
+      missingMonths: (quality && quality.missingMonths || []).slice().sort(),
+      warnings: (quality && quality.warnings || []).slice().sort(),
+    },
+    reconciliation: settings.reconciliation || null,
+    skippedDisposition: settings.skippedDisposition || [],
+    vlmAudit: settings.vlmAudit || [],
+  };
+}
+
+function compareZupRecognitionQualitySnapshots_(expected, actual) {
+  const left = expected || {};
+  const right = actual || {};
+  const mismatches = [];
+  if (left.corpusVersion !== right.corpusVersion) mismatches.push('corpusVersion');
+  const compareJson = (label, a, b) => {
+    if (JSON.stringify(a || null) !== JSON.stringify(b || null)) mismatches.push(label);
+  };
+  compareJson('rows', left.rows, right.rows);
+  compareJson('quality', left.quality, right.quality);
+  compareJson('reconciliation', left.reconciliation, right.reconciliation);
+  compareJson('skippedDisposition', left.skippedDisposition, right.skippedDisposition);
+  compareJson('vlmAudit', left.vlmAudit, right.vlmAudit);
+  return { equal: mismatches.length === 0, mismatches };
+}
+
+function assertZupRecognitionQualitySnapshotsEquivalent_(expected, actual) {
+  const comparison = compareZupRecognitionQualitySnapshots_(expected, actual);
+  if (!comparison.equal) {
+    throw new Error(`Recognition quality baseline mismatch: ${comparison.mismatches.join(', ')}`);
+  }
+  return true;
+}
+
+function ensureZupRecognitionWorkerTriggers_() {
+  const workers = getZupRecognitionMaxWorkers_();
+  if (workers <= 1 || typeof ScriptApp === 'undefined') return;
+  const active = ScriptApp.getProjectTriggers().filter((trigger) =>
+    trigger.getHandlerFunction && trigger.getHandlerFunction() === ZUP_IMPORT_SETTINGS.RECOGNITION_WORKER_TRIGGER_FUNCTION
+  ).length;
+  for (let index = active; index < workers; index++) {
+    ScriptApp.newTrigger(ZUP_IMPORT_SETTINGS.RECOGNITION_WORKER_TRIGGER_FUNCTION)
+      .timeBased().after(1000 + index * 500).create();
+  }
+}
+
+function deleteZupRecognitionWorkerTriggers_() {
+  if (typeof ScriptApp === 'undefined') return;
+  ScriptApp.getProjectTriggers().forEach((trigger) => {
+    if (trigger.getHandlerFunction && trigger.getHandlerFunction()
+      === ZUP_IMPORT_SETTINGS.RECOGNITION_WORKER_TRIGGER_FUNCTION) ScriptApp.deleteTrigger(trigger);
+  });
+}
+
+function startZupParallelRecognitionQueue_(spreadsheet, folder, options) {
+  const settings = Object.assign({ force: false, dryRun: false }, options || {});
+  const groups = selectZupImportFileGroups_(listZupFilesRecursively_(DriveApp.getFolderById(folder.id)));
+  const previousState = readZupImportState_(spreadsheet);
+  const previousRowsByFile = readExistingZupRowsByFile_(spreadsheet);
+  const runId = Utilities.getUuid();
+  const candidates = buildZupRecognitionQueueCandidates_(groups, previousState, previousRowsByFile, settings);
+  const queue = buildZupRecognitionQueue_(candidates, runId, new Date());
+  const session = {
+    spreadsheetId: spreadsheet.getId(), folderId: folder.id, source: folder.source,
+    force: Boolean(settings.force), dryRun: Boolean(settings.dryRun), runId,
+    stage: 'parallel_recognizing', total: queue.length, processed: 0,
+    startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    constructorRunId: settings.constructorRunId || '',
+    constructorNextPhase: settings.constructorNextPhase || 'reconstructing',
+  };
+  clearZupBatchImportState_();
+  deleteZupBatchImportTriggers_();
+  deleteZupRecognitionWorkerTriggers_();
+  saveZupBatchImportSession_(session);
+  writeZupRecognitionQueue_(spreadsheet, queue, settings);
+  ensureZupRecognitionWorkerTriggers_();
+  return {
+    complete: queue.length === 0, stage: queue.length ? 'parallel_recognizing' : 'complete',
+    source: folder.source, total: queue.length, processed: 0, filesRead: 0,
+    rows: [], skippedFiles: [], rowsRecognized: 0, skippedCount: 0,
+    message: `Запущено параллельное распознавание: ${queue.length} источников, workers: ${getZupRecognitionMaxWorkers_()}.`,
+  };
+}
+
+function materializeZupRecognitionQueueResults_(spreadsheet, session, queue) {
+  const rowsByFile = {};
+  const skippedFiles = [];
+  const qualityRowsByGroup = {};
+  const stateRowsByGroup = {};
+  const vlmRows = [];
+  sortZupRecognitionQueueForMaterialization_(queue).forEach((item) => {
+    if (!item || item.status === 'pending' || item.status === 'leased') return;
+    const result = item.result || {};
+    const fileName = result.fileName || item.sourceGroupKey || item.sourceSignature;
+    rowsByFile[fileName] = result.rows || [];
+    (result.skippedFiles || []).forEach((row) => skippedFiles.push(row));
+    if (result.qualityRow) qualityRowsByGroup[item.sourceGroupKey] = result.qualityRow;
+    if (result.stateRow) stateRowsByGroup[item.sourceGroupKey] = result.stateRow;
+    (result.vlmRows || []).forEach((row) => vlmRows.push(row));
+    if (item.status === 'failed_review' && !result.rows) {
+      skippedFiles.push([fileName, result.mimeType || '', item.error || 'Ошибка распознавания']);
+    }
+  });
+  const rows = flattenZupRowsByFile_(rowsByFile);
+  const terminal = (queue || []).every((item) => item.status === 'succeeded' || item.status === 'failed_review');
+  const metrics = buildZupRecognitionQueueMetrics_(queue, new Date());
+  const nextSession = Object.assign({}, session, {
+    stage: terminal ? 'finalizing' : 'parallel_recognizing',
+    processed: metrics.succeeded + metrics.failedReview,
+    total: queue.length, rowsRecognized: rows.length, skippedCount: skippedFiles.length,
+    updatedAt: new Date().toISOString(), queueMetrics: metrics,
+  });
+  writeZupBatchImportOutputs_(spreadsheet, rows, dedupeZupSkippedFiles_(skippedFiles),
+    qualityRowsByGroup, stateRowsByGroup, vlmRows, nextSession, terminal && !session.dryRun);
+  saveZupBatchImportSession_(nextSession);
+  if (nextSession.constructorRunId && typeof updateClaimConstructorImportProgress_ === 'function') {
+    try {
+      updateClaimConstructorImportProgress_(nextSession);
+    } catch (error) {
+      console.warn(`Не удалось обновить прогресс параллельного распознавания: ${error && error.message ? error.message : error}`);
+    }
+  }
+  if (terminal) {
+    deleteZupRecognitionWorkerTriggers_();
+    notifyClaimConstructorImportComplete_(nextSession, {
+      complete: true, recognitionComplete: true, stage: 'complete', source: nextSession.source,
+      total: queue.length, processed: nextSession.processed, filesRead: metrics.succeeded,
+      rows, rowsRecognized: rows.length, skippedFiles, skippedCount: skippedFiles.length,
+      dryRun: Boolean(nextSession.dryRun), processedNow: 0,
+    });
+  }
+  return { terminal, session: nextSession, rows, metrics };
+}
+
+function runZupRecognitionWorker_() {
+  const session = loadZupBatchImportSession_();
+  if (!session || session.stage !== 'parallel_recognizing') return null;
+  const spreadsheet = SpreadsheetApp.openById(session.spreadsheetId);
+  const workerId = `worker-${Utilities.getUuid()}`;
+  let lease = null;
+  let queue = null;
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    ensureZupRecognitionWorkerTriggers_();
+    return { status: 'busy' };
+  }
+  try {
+    queue = readZupRecognitionQueue_(spreadsheet);
+    const claim = claimZupRecognitionQueueItems_(queue, workerId, getZupRecognitionMaxWorkers_(), new Date());
+    queue = claim.queue;
+    lease = claim.claimed[0] || null;
+    writeZupRecognitionQueue_(spreadsheet, queue);
+  } finally {
+    lock.releaseLock();
+  }
+  if (!lease) {
+    const result = materializeZupRecognitionQueueResults_(spreadsheet, session, queue || []);
+    if (!result.terminal) ensureZupRecognitionWorkerTriggers_();
+    return result;
+  }
+  let processed;
+  try {
+    const groups = selectZupImportFileGroups_(listZupFilesRecursively_(DriveApp.getFolderById(session.folderId)));
+    const group = groups.find((candidate) => candidate.key === lease.sourceGroupKey);
+    if (!group) throw new Error(`Источник очереди не найден: ${lease.sourceGroupKey}`);
+    processed = processZupImportGroup_(group, readZupImportState_(spreadsheet),
+      readExistingZupRowsByFile_(spreadsheet), session);
+    processed.ok = true;
+  } catch (error) {
+    processed = { ok: false, error, errorClass: classifyZupRecognitionError_(error) };
+  }
+  if (!lock.tryLock(10000)) {
+    ensureZupRecognitionWorkerTriggers_();
+    return { status: 'commit_deferred' };
+  }
+  try {
+    queue = readZupRecognitionQueue_(spreadsheet);
+    const committed = commitZupRecognitionQueueResult_(queue, lease, {
+      ok: processed.ok, result: processed.ok ? processed : null,
+      error: processed.error, errorClass: processed.errorClass,
+    }, new Date());
+    writeZupRecognitionQueue_(spreadsheet, committed.queue);
+    queue = committed.queue;
+    const materialized = materializeZupRecognitionQueueResults_(spreadsheet, session, queue);
+    if (!materialized.terminal) ensureZupRecognitionWorkerTriggers_();
+    return Object.assign({ workerId, disposition: committed.disposition }, materialized);
+  } finally {
+    lock.releaseLock();
+  }
+}
 
 const ZUP_QG_HEADERS = [
   'Проверка',
@@ -573,6 +1093,7 @@ function clearZupImportSheets() {
     ZUP_IMPORT_SETTINGS.QG_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.STATE_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.VLM_LOG_SHEET_NAME,
+    ZUP_IMPORT_SETTINGS.RECOGNITION_QUEUE_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.PAYMENT_STRUCTURE_SHEET_NAME,
   ].forEach((sheetName) => {
     const sheet = spreadsheet.getSheetByName(sheetName);
@@ -673,6 +1194,9 @@ function processZupImportGroup_(group, previousState, previousRowsByFile, option
 function startZupFolderImportBatch_(spreadsheet, folder, options) {
   migrateLegacyPayrollSheetNames_(spreadsheet);
   const normalizedOptions = Object.assign({ force: false, dryRun: false }, options || {});
+  if (isZupParallelRecognitionEnabled_() && !normalizedOptions.dryRun) {
+    return startZupParallelRecognitionQueue_(spreadsheet, folder, normalizedOptions);
+  }
   clearZupBatchImportState_();
   deleteZupBatchImportTriggers_();
   clearZupVlmLogSheet_(spreadsheet);
@@ -734,6 +1258,28 @@ function continueZupFolderImportBatch_() {
       ? SpreadsheetApp.openById(session.spreadsheetId)
       : getTargetSpreadsheet_();
     session.stage = session.stage || 'recognizing';
+    if (session.stage === 'parallel_recognizing') {
+      // A manual "Продолжить" must never start the legacy sequential path
+      // while bounded recognition workers own the queue. Workers materialize
+      // completed items themselves; this branch only reports current state.
+      const queue = readZupRecognitionQueue_(spreadsheet);
+      const metrics = buildZupRecognitionQueueMetrics_(queue, new Date());
+      ensureZupRecognitionWorkerTriggers_();
+      return {
+        complete: false,
+        stage: 'parallel_recognizing',
+        source: session.source || '',
+        total: queue.length,
+        processed: metrics.succeeded + metrics.failedReview,
+        filesRead: metrics.succeeded,
+        rows: [],
+        skippedFiles: [],
+        rowsRecognized: 0,
+        skippedCount: metrics.failedReview,
+        queueMetrics: metrics,
+        message: `Параллельное распознавание выполняется: ${metrics.succeeded + metrics.failedReview} из ${queue.length}. Продолжение выполняется автоматически.`,
+      };
+    }
     if (session.stage === 'finalizing') {
       return continueZupImportFinalization_(spreadsheet, session);
     }
@@ -1086,7 +1632,7 @@ function hasZupBatchTimeLeft_(startedAtMs) {
 
 function writeZupBatchProgressQualityGateSheet_(spreadsheet, session, complete) {
   const sheet = getOrCreateZupSheet_(spreadsheet, ZUP_IMPORT_SETTINGS.QG_SHEET_NAME);
-  writeZupSheetData_(sheet, [ZUP_QG_HEADERS].concat([[
+  const rows = [[
     'Пакетный импорт',
     'Инфо',
     complete ? 'OK' : 'В работе',
@@ -1101,7 +1647,11 @@ function writeZupBatchProgressQualityGateSheet_(spreadsheet, session, complete) 
     complete
       ? 'Сверить строки на листе качества.'
       : 'Дождаться автоматического продолжения или запустить "Продолжить пакетный импорт".',
-  ]]));
+  ]];
+  if (session && session.queueMetrics) {
+    Array.prototype.push.apply(rows, buildZupRecognitionQueueDiagnostics_([], new Date(), session.queueMetrics));
+  }
+  writeZupSheetData_(sheet, [ZUP_QG_HEADERS].concat(rows));
 }
 
 function buildZupBatchStatusQualityRow_(session, complete) {
@@ -1344,6 +1894,7 @@ function isZupGeneratedSheet_(sheetName) {
     ZUP_IMPORT_SETTINGS.QG_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.STATE_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.VLM_LOG_SHEET_NAME,
+    ZUP_IMPORT_SETTINGS.RECOGNITION_QUEUE_SHEET_NAME,
     ZUP_IMPORT_SETTINGS.PAYMENT_STRUCTURE_SHEET_NAME,
   ].includes(sheetName);
 }

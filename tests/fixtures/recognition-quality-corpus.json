@@ -1,0 +1,65 @@
+{
+  "corpusVersion": "recognition-quality-baseline-v1",
+  "sources": [
+    {
+      "id": "zup-html-2024-01",
+      "vendor": "1C:ZUP",
+      "mimeType": "text/html",
+      "sourceGroupKey": "zup-html-2024-01",
+      "rows": [
+        {
+          "sourceGroupKey": "zup-html-2024-01",
+          "sourceRow": "Оклад",
+          "sourceOrdinal": 1,
+          "section": "Начислено",
+          "category": "Оклад",
+          "kind": "Оклад",
+          "period": "2024-01",
+          "accrued": 100000,
+          "paid": null,
+          "withheld": null,
+          "evidence": "zup-html-2024-01"
+        }
+      ],
+      "quality": {
+        "companies": ["ООО Альфа"],
+        "employees": ["Иванов Иван Иванович"],
+        "missingMonths": [],
+        "warnings": []
+      },
+      "reconciliation": {"status": "confirmed"},
+      "skippedDisposition": [],
+      "vlmAudit": []
+    },
+    {
+      "id": "generic-pdf-2024-02",
+      "vendor": "generic-payroll",
+      "mimeType": "application/pdf",
+      "sourceGroupKey": "generic-pdf-2024-02",
+      "rows": [
+        {
+          "sourceGroupKey": "generic-pdf-2024-02",
+          "sourceRow": "salary-1",
+          "sourceOrdinal": 1,
+          "section": "Accruals",
+          "category": "Base salary",
+          "kind": "Salary",
+          "period": "2024-02",
+          "accrued": 120000,
+          "paid": null,
+          "withheld": null,
+          "evidence": "generic-pdf-2024-02"
+        }
+      ],
+      "quality": {
+        "companies": ["Beta LLC"],
+        "employees": ["Petrov Petr Petrovich"],
+        "missingMonths": [],
+        "warnings": []
+      },
+      "reconciliation": {"status": "confirmed"},
+      "skippedDisposition": [],
+      "vlmAudit": []
+    }
+  ]
+}

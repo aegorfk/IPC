@@ -8105,6 +8105,72 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(traced.id && traced.ruleVersion && traced.evidence[0].source);
 }
 
+// Durable recognition queue characterization: deterministic candidates skip
+// remote work, leases are bounded and idempotent, retries back off, and late
+// responses cannot overwrite an accepted result.
+{
+  const harness = createHarness();
+  const now = new Date(2026, 6, 19, 12, 0, 0);
+  const queue = harness.context.buildZupRecognitionQueue_([
+    { sourceGroupKey: 'b', fileId: 'b', fileName: 'b.pdf', fileSignature: 'b1' },
+    { sourceGroupKey: 'a', fileId: 'a', fileName: 'a.pdf', fileSignature: 'a1' },
+    { sourceGroupKey: 'skip', fileId: 'skip', fileName: 'skip.html', fileSignature: 's1',
+      deterministicAccepted: true, deterministicResult: { rows: [{ sourceRow: 'det' }] } },
+  ], 'run-1', now);
+  assert.strictEqual(queue.length, 3);
+  assert.strictEqual(queue.find((item) => item.sourceGroupKey === 'skip').status, 'succeeded');
+  const claimed = harness.context.claimZupRecognitionQueueItems_(queue, 'w1', 2, now, 60000);
+  assert.strictEqual(claimed.claimed.length, 2);
+  const second = harness.context.claimZupRecognitionQueueItems_(claimed.queue, 'w2', 2, now, 60000);
+  assert.strictEqual(second.claimed.length, 0);
+  const accepted = harness.context.commitZupRecognitionQueueResult_(second.queue, claimed.claimed[0], {
+    ok: true, result: { rows: [{ sourceRow: 'accepted' }] }, providerGeneration: 'gen-1',
+  }, new Date(now.getTime() + 1000));
+  assert.strictEqual(accepted.accepted, true);
+  const late = harness.context.commitZupRecognitionQueueResult_(accepted.queue, claimed.claimed[0], {
+    ok: true, result: { rows: [{ sourceRow: 'late' }] },
+  }, new Date(now.getTime() + 2000));
+  assert.strictEqual(late.disposition, 'stale_or_duplicate');
+  const retry = harness.context.commitZupRecognitionQueueResult_(accepted.queue, claimed.claimed[1], {
+    ok: false, error: { code: 429, message: 'rate limit' }, jitter: 0.5,
+  }, new Date(now.getTime() + 1000));
+  assert.strictEqual(retry.disposition, 'retry_scheduled');
+  assert.ok(retry.queue.some((item) => item.status === 'pending' && item.nextAttempt));
+  const diagnostics = harness.context.buildZupRecognitionQueueMetrics_(retry.queue, now);
+  assert.strictEqual(diagnostics.succeeded, 2); // accepted + deterministic
+  assert.strictEqual(harness.context.sortZupRecognitionQueueForMaterialization_(retry.queue)[0].sourceGroupKey, 'a');
+}
+
+// Versioned multi-format corpus snapshots are strict: a changed amount,
+// source evidence or quality decision blocks the parallel rollout.
+{
+  const harness = createHarness();
+  const corpus = JSON.parse(fs.readFileSync(
+    require('path').join(__dirname, 'fixtures', 'recognition-quality-corpus.json'), 'utf8'
+  ));
+  corpus.sources.forEach((source) => {
+    const expected = harness.context.buildZupRecognitionQualitySnapshot_(source.rows, source.quality, {
+      corpusVersion: corpus.corpusVersion, reconciliation: source.reconciliation,
+      skippedDisposition: source.skippedDisposition, vlmAudit: source.vlmAudit,
+    });
+    const actual = JSON.parse(JSON.stringify(expected));
+    assert.strictEqual(harness.context.compareZupRecognitionQualitySnapshots_(expected, actual).equal, true);
+    actual.rows[0].accrued = Number(actual.rows[0].accrued) + 1;
+    const mismatch = harness.context.compareZupRecognitionQualitySnapshots_(expected, actual);
+    assert.strictEqual(mismatch.equal, false);
+    assert.ok(mismatch.mismatches.includes('rows'));
+    assert.throws(
+      () => harness.context.assertZupRecognitionQualitySnapshotsEquivalent_(expected, actual),
+      /baseline mismatch/i
+    );
+  });
+  const ordered = harness.context.sortZupRecognitionQueueForMaterialization_([
+    { sourceGroupKey: 'b', sourceSignature: 'b', status: 'succeeded', result: { rows: [{ sourceRow: 'b' }] } },
+    { sourceGroupKey: 'a', sourceSignature: 'a', status: 'succeeded', result: { rows: [{ sourceRow: 'a' }] } },
+  ]);
+  assert.deepStrictEqual(ordered.map((item) => item.sourceGroupKey), ['a', 'b']);
+}
+
 // Vacation events stay separate even within one payroll slip; chronology
 // retains payment timing, flags overlap, and computes a reviewable unused balance.
 {
