@@ -23,7 +23,26 @@ const PAYROLL_AUDIT_RULE_CATALOG_V1 = {
   premium_payment_delay: { version: '1.0', minimumSources: ['payroll_slip', 'due_rule'], claimFamily: 'premium_payment_delay' },
   overtime_hours: { version: '1.0', minimumSources: ['work_schedule', 'timesheet'], claimFamily: null },
   vacation_payment_timing: { version: '1.0', minimumSources: ['vacation_interval', 'payment_date'], claimFamily: 'vacation_payment_delay' },
-  payroll_source_integrity: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_source_integrity: { version: '1.1', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_arithmetic: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_date_quality: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_payment_matching: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_identity: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_work_time: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_regular_accrual: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  payroll_preliminary_category: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+  questionnaire_payment_facts: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
+  questionnaire_partial_recoveries: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
+  questionnaire_termination: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
+  questionnaire_work_time: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
+  normative_remuneration: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
+  normative_derivative_payments: { version: '1.0', minimumSources: ['local_normative_act', 'payroll_slip'], claimFamily: null },
+  normative_premium: { version: '1.0', minimumSources: ['local_normative_act', 'payroll_slip'], claimFamily: 'premium_payment_delay' },
+  normative_enhanced_work: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act', 'payroll_slip'], claimFamily: null },
+  normative_regional_coefficient: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
+  normative_wage_indexation: { version: '1.0', minimumSources: ['local_normative_act'], claimFamily: 'salary_indexation' },
+  normative_vacation_entitlement: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
+  normative_enhanced_guarantees: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
 };
 
 const EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY = {
@@ -66,6 +85,42 @@ function getPayrollAuditRuleCatalog_() {
   return JSON.parse(JSON.stringify(PAYROLL_AUDIT_RULE_CATALOG_V1));
 }
 
+/**
+ * Read-only diagnostics for the approved court-calculation template.  It is
+ * intentionally kept in the project so a future template revision can be
+ * mapped from observable headings/tables rather than by clearing the body.
+ */
+function inspectApprovedClaimTemplateStructure() {
+  const id = PropertiesService.getScriptProperties()
+    .getProperty(APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY)
+    || DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID;
+  const document = DocumentApp.openById(id);
+  const body = document.getBody();
+  const children = [];
+  for (let index = 0; index < body.getNumChildren(); index++) {
+    const child = body.getChild(index);
+    const type = child.getType();
+    if (type === DocumentApp.ElementType.PARAGRAPH) {
+      children.push({ index, type: 'paragraph', text: child.getText(), heading: String(child.getHeading()) });
+    } else if (type === DocumentApp.ElementType.TABLE) {
+      const table = child.asTable();
+      const rows = [];
+      for (let rowIndex = 0; rowIndex < table.getNumRows(); rowIndex++) {
+        const row = table.getRow(rowIndex);
+        const cells = [];
+        for (let cellIndex = 0; cellIndex < row.getNumCells(); cellIndex++) {
+          cells.push(String(row.getCell(cellIndex).getText() || '').slice(0, 300));
+        }
+        rows.push(cells);
+      }
+      children.push({ index, type: 'table', rows, numRows: table.getNumRows() });
+    } else {
+      children.push({ index, type: String(type) });
+    }
+  }
+  return { documentId: id, title: document.getName(), children };
+}
+
 function createPayrollAuditCatalogResult_(ruleId, input) {
   const rule = PAYROLL_AUDIT_RULE_CATALOG_V1[ruleId];
   if (!rule) throw new Error(`Неизвестное правило аудита: ${ruleId}`);
@@ -76,6 +131,8 @@ function createPayrollAuditCatalogResult_(ruleId, input) {
     id: buildEmploymentAuditPositionId_({ ruleId, layoutId: value.layoutId, baseKind: value.baseKind,
       periodKey: value.periodKey, calculationItem: value.calculationItem }),
     ruleId, ruleVersion: rule.version, minimumSources: rule.minimumSources.slice(), status,
+    layoutId: value.layoutId || '', baseKind: value.baseKind || '', periodKey: value.periodKey || '',
+    calculationItem: value.calculationItem || '',
     evidence: (value.evidence || []).slice(), moneyImpact: value.moneyImpact === undefined ? null : value.moneyImpact,
     claimFamily: value.claimFamily === undefined ? rule.claimFamily : value.claimFamily,
     question: String(value.question || ''), requestedDocument: String(value.requestedDocument || ''),
@@ -114,13 +171,375 @@ function buildPayrollSlipAutomaticAuditCatalog_(rows, quality) {
     } else seen.set(key, index);
   });
   (details.companyMismatchPeriods || []).forEach((periodLabel, index) => items.push(
-    createPayrollAuditCatalogResult_('payroll_source_integrity', {
+    createPayrollAuditCatalogResult_('payroll_identity', {
       layoutId: 'raw_payroll', baseKind: 'employer_identity', periodKey: periodLabel,
       calculationItem: `employer_mismatch_${index + 1}`, status: 'probable_or_disputed',
+      evidence: collectPayrollAuditEvidenceForPeriod_(sourceRows, periodLabel),
       reason: 'Работодатель отличается от основной организации в наборе листков; расчет продолжается по принятому допущению.',
       question: 'Подтвердите, относится ли этот период к тому же работодателю.',
     })
   ));
+  (details.employeeMismatchPeriods || []).forEach((periodLabel, index) => items.push(
+    createPayrollAuditCatalogResult_('payroll_identity', {
+      layoutId: 'raw_payroll', baseKind: 'employee_identity', periodKey: periodLabel,
+      calculationItem: `employee_mismatch_${index + 1}`, status: 'probable_or_disputed',
+      evidence: collectPayrollAuditEvidenceForPeriod_(sourceRows, periodLabel),
+      reason: 'ФИО отличается от основного работника в наборе расчетных листков.',
+      question: 'Подтвердите, что расчетный листок относится к этому же работнику.',
+    })
+  ));
+  Array.prototype.push.apply(items, buildPayrollSourceCompletenessAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollFileDuplicateAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollArithmeticAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollDateAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollPaymentMatchingAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollWorkTimeAnomalyAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollRegularAccrualAudit_(sourceRows));
+  Array.prototype.push.apply(items, buildPayrollPreliminaryCategoryAudit_(sourceRows));
+  return items;
+}
+
+function buildPayrollAuditSourceEvidence_(row, index) {
+  const value = row || {};
+  return {
+    source: String(value.file || ''),
+    sourceSheet: String(value.sheet || ''),
+    sourceRow: String(value.sourceRow || ''),
+    sourceOrdinal: value.sourceOrdinal === undefined ? index + 1 : value.sourceOrdinal,
+    period: value.period ? buildPayrollAuditPeriodKey_(value.period) : '',
+  };
+}
+
+function buildPayrollAuditPeriodKey_(period) {
+  return period && Number(period.year) && Number(period.month)
+    ? `${Number(period.year)}-${pad2_(Number(period.month))}` : '';
+}
+
+function collectPayrollAuditEvidenceForPeriod_(rows, periodLabel) {
+  const parsed = parseMonthYear_(periodLabel);
+  const key = parsed ? buildPayrollAuditPeriodKey_(parsed) : String(periodLabel || '');
+  return (rows || []).map((row, index) => ({ row, index }))
+    .filter((entry) => buildPayrollAuditPeriodKey_(entry.row && entry.row.period) === key)
+    .map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index));
+}
+
+function buildPayrollSourceCompletenessAudit_(rows) {
+  const items = [];
+  (rows || []).forEach((row, index) => {
+    if (!row) return;
+    const periodKey = buildPayrollAuditPeriodKey_(row.period) || 'unknown';
+    const evidence = [buildPayrollAuditSourceEvidence_(row, index)];
+    if (!String(row.section || '').trim() || !String(row.sourceRow || '').trim()) {
+      items.push(createPayrollAuditCatalogResult_('payroll_source_integrity', {
+        layoutId: 'raw_payroll', baseKind: 'source_completeness', periodKey,
+        calculationItem: `incomplete_source_${index + 1}`, status: 'cannot_verify', evidence,
+        reason: 'У распознанной позиции отсутствует раздел или исходное название строки.',
+        question: 'Что указано в этой строке исходного расчетного листка?',
+        requestedDocument: 'Исходный расчетный листок в читаемом качестве.',
+      }));
+    }
+    ['accrued', 'paid', 'withheld'].forEach((field) => {
+      const amount = row[field];
+      if (amount !== null && amount !== undefined && amount !== ''
+        && (!Number.isFinite(Number(amount)) || Number(amount) < 0)) {
+        items.push(createPayrollAuditCatalogResult_('payroll_source_integrity', {
+          layoutId: 'raw_payroll', baseKind: field, periodKey,
+          calculationItem: `invalid_amount_${field}_${index + 1}`,
+          status: 'probable_or_disputed', evidence, moneyImpact: null,
+          reason: `В исходной позиции распознана невозможная сумма в поле «${field}».`,
+          question: 'Подтвердите сумму по изображению расчетного листка.',
+        }));
+      }
+    });
+  });
+  return items;
+}
+
+function payrollAuditRowFingerprint_(row, includeFile) {
+  const value = row || {};
+  return [
+    includeFile ? value.file : '', value.sheet, value.company, value.employee,
+    buildPayrollAuditPeriodKey_(value.period), value.section, value.category, value.kind,
+    value.accrued, value.paid, value.withheld, value.sourceRow,
+    value.paymentDate && formatDate_(value.paymentDate),
+    value.statementDate && formatDate_(value.statementDate), value.accrualInterval,
+  ].map((part) => normalizeText_(part)).join('|');
+}
+
+function buildPayrollFileDuplicateAudit_(rows) {
+  const byFile = new Map();
+  (rows || []).forEach((row, index) => {
+    const file = String(row && row.file || '').trim();
+    if (!file) return;
+    if (!byFile.has(file)) byFile.set(file, []);
+    byFile.get(file).push({ row, index });
+  });
+  const fingerprints = new Map();
+  const items = [];
+  byFile.forEach((entries, file) => {
+    const fingerprint = entries.map((entry) => payrollAuditRowFingerprint_(entry.row, false))
+      .sort().join('\n');
+    if (!fingerprint) return;
+    if (fingerprints.has(fingerprint)) {
+      const first = fingerprints.get(fingerprint);
+      items.push(createPayrollAuditCatalogResult_('payroll_source_integrity', {
+        layoutId: 'raw_payroll', baseKind: 'duplicate_file',
+        periodKey: buildPayrollAuditPeriodKey_(entries[0].row.period) || 'unknown',
+        calculationItem: `duplicate_file_${items.length + 1}`, status: 'probable_or_disputed',
+        evidence: first.entries.concat(entries).map((entry) =>
+          buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+        reason: `Файлы «${first.file}» и «${file}» содержат одинаковый набор распознанных событий. Оба набора сохранены до подтверждения версии.`,
+        question: 'Это две версии одного расчетного листка или самостоятельные документы?',
+      }));
+    } else fingerprints.set(fingerprint, { file, entries });
+  });
+  return items;
+}
+
+function payrollAuditSectionKind_(row) {
+  const text = normalizeText_(`${row && row.section || ''} ${row && row.kind || ''} ${row && row.sourceRow || ''}`);
+  if (/удерж/.test(text)) return 'withheld';
+  if (/выплач|к выплате|межрасчет|межрасчёт/.test(text)) return 'paid';
+  if (/начисл/.test(text)) return 'accrued';
+  return '';
+}
+
+function buildPayrollArithmeticAudit_(rows) {
+  const groups = new Map();
+  (rows || []).forEach((row, index) => {
+    const key = `${String(row && row.file || '')}|${buildPayrollAuditPeriodKey_(row && row.period)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ row, index });
+  });
+  const items = [];
+  groups.forEach((entries, key) => {
+    const totals = {};
+    const sums = { accrued: 0, paid: 0, withheld: 0 };
+    entries.forEach((entry) => {
+      const row = entry.row || {};
+      const text = normalizeText_(`${row.kind || ''} ${row.sourceRow || ''}`);
+      const section = payrollAuditSectionKind_(row);
+      const amount = Number(row[section]);
+      if (!section || !Number.isFinite(amount)) return;
+      if (/итого|всего/.test(text)) totals[section] = amount;
+      else sums[section] += amount;
+    });
+    Object.keys(totals).forEach((section) => {
+      if (Math.abs(totals[section] - sums[section]) <= 0.01) return;
+      const first = entries[0] || {};
+      items.push(createPayrollAuditCatalogResult_('payroll_arithmetic', {
+        layoutId: 'raw_payroll', baseKind: section,
+        periodKey: buildPayrollAuditPeriodKey_(first.row && first.row.period) || 'unknown',
+        calculationItem: `section_total_${section}_${items.length + 1}`,
+        status: 'probable_or_disputed',
+        evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+        reason: `Итог раздела (${totals[section]}) не равен сумме его отдельных строк (${roundClaimAuditMoney_(sums[section])}).`,
+        question: 'Проверьте пропущенные строки и итог раздела в исходном листке.',
+      }));
+    });
+    const balanceRow = entries.map((entry) => entry.row || {}).find((row) =>
+      Number.isFinite(Number(row.openingBalance)) && Number.isFinite(Number(row.closingBalance)));
+    if (balanceRow) {
+      const expectedClosing = Number(balanceRow.openingBalance) + sums.accrued - sums.withheld - sums.paid;
+      if (Math.abs(expectedClosing - Number(balanceRow.closingBalance)) > 0.01) {
+        items.push(createPayrollAuditCatalogResult_('payroll_arithmetic', {
+          layoutId: 'raw_payroll', baseKind: 'balance', periodKey: buildPayrollAuditPeriodKey_(balanceRow.period) || key,
+          calculationItem: `balance_${items.length + 1}`, status: 'probable_or_disputed',
+          evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+          reason: `Исходящий остаток не сходится с начислениями, удержаниями и выплатами; расчетное значение ${roundClaimAuditMoney_(expectedClosing)}.`,
+          question: 'Уточните входящий и исходящий остаток расчетного листка.',
+        }));
+      }
+    }
+  });
+  return items;
+}
+
+function buildPayrollDateAudit_(rows, options) {
+  const now = parseDateValue_(options && options.now) || new Date();
+  const items = [];
+  const missingByPeriod = new Map();
+  (rows || []).forEach((row, index) => {
+    if (!row) return;
+    const periodKey = buildPayrollAuditPeriodKey_(row.period) || 'unknown';
+    const evidence = [buildPayrollAuditSourceEvidence_(row, index)];
+    ['accrualDate', 'paymentDate', 'statementDate'].forEach((field) => {
+      const raw = row[field];
+      if (!raw) return;
+      const date = parseDateValue_(raw);
+      if (!date || Number.isNaN(Number(date)) || date > now) {
+        items.push(createPayrollAuditCatalogResult_('payroll_date_quality', {
+          layoutId: 'raw_payroll', baseKind: field, periodKey,
+          calculationItem: `invalid_date_${field}_${index + 1}`, status: 'probable_or_disputed', evidence,
+          reason: !date || Number.isNaN(Number(date)) ? 'Распознана невозможная дата.' : 'Распознана дата в будущем.',
+          question: 'Подтвердите дату по исходному расчетному листку.',
+        }));
+      }
+      if (date && row.period) {
+        const monthDistance = Math.abs((date.getFullYear() - Number(row.period.year)) * 12
+          + date.getMonth() + 1 - Number(row.period.month));
+        if (monthDistance > 18) {
+          items.push(createPayrollAuditCatalogResult_('payroll_date_quality', {
+            layoutId: 'raw_payroll', baseKind: field, periodKey,
+            calculationItem: `remote_date_${field}_${index + 1}`, status: 'probable_or_disputed', evidence,
+            reason: 'Дата отстоит от периода расчетного листка более чем на 18 месяцев.',
+            question: 'Подтвердите период, к которому относится дата.',
+          }));
+        }
+      }
+    });
+    if (payrollAuditSectionKind_(row) === 'paid' && !row.paymentDate && !row.statementDate) {
+      if (!missingByPeriod.has(periodKey)) missingByPeriod.set(periodKey, []);
+      missingByPeriod.get(periodKey).push({ row, index });
+    }
+  });
+  missingByPeriod.forEach((entries, periodKey) => items.push(
+    createPayrollAuditCatalogResult_('payroll_date_quality', {
+      layoutId: 'raw_payroll', baseKind: 'actual_payment_date', periodKey,
+      calculationItem: 'missing_actual_payment_date', status: 'cannot_verify',
+      evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+      reason: 'Для одной или нескольких выплат нет фактической даты, необходимой для расчета по ст. 236 ТК РФ.',
+      question: 'В какие даты фактически поступили эти выплаты?',
+      requestedDocument: 'Банковская выписка или платежный реестр с датами поступлений.',
+    })
+  ));
+  return items;
+}
+
+function normalizePayrollAuditMatchKey_(row) {
+  const text = normalizeText_(`${row && row.category || ''} ${row && row.kind || ''}`)
+    .replace(/за первую половину месяца|зарплата за месяц|межрасчет|межрасчёт/g, '')
+    .replace(/[^а-яa-z0-9]+/g, ' ').trim();
+  return text || normalizeText_(row && row.category);
+}
+
+function buildPayrollPaymentMatchingAudit_(rows) {
+  const accrualKeys = new Set();
+  const payments = new Map();
+  (rows || []).forEach((row, index) => {
+    const periodKey = buildPayrollAuditPeriodKey_(row && row.period) || 'unknown';
+    const matchKey = normalizePayrollAuditMatchKey_(row);
+    if (payrollAuditSectionKind_(row) === 'accrued' && matchKey) accrualKeys.add(`${periodKey}|${matchKey}`);
+    if (payrollAuditSectionKind_(row) !== 'paid') return;
+    const key = `${periodKey}|${matchKey || 'unknown'}`;
+    if (!payments.has(key)) payments.set(key, []);
+    payments.get(key).push({ row, index });
+  });
+  const items = [];
+  payments.forEach((entries, key) => {
+    const parts = key.split('|');
+    const periodKey = parts.shift();
+    const matchKey = parts.join('|');
+    const dates = new Set(entries.map((entry) => {
+      const date = entry.row.statementDate || entry.row.paymentDate;
+      return date ? formatDate_(date) : '';
+    }).filter(Boolean));
+    if (dates.size > 1) {
+      items.push(createPayrollAuditCatalogResult_('payroll_payment_matching', {
+        layoutId: 'raw_payroll', baseKind: 'multiple_payment_events', periodKey,
+        calculationItem: `multiple_${items.length + 1}`, status: 'informational',
+        evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+        reason: `В периоде сохранено несколько самостоятельных выплат одного вида с датами: ${Array.from(dates).sort().join(', ')}. Они не объединены.`,
+      }));
+    }
+    if (matchKey !== 'unknown' && !accrualKeys.has(`${periodKey}|${matchKey}`)) {
+      items.push(createPayrollAuditCatalogResult_('payroll_payment_matching', {
+        layoutId: 'raw_payroll', baseKind: 'unmatched_payment', periodKey,
+        calculationItem: `unmatched_${items.length + 1}`, status: 'probable_or_disputed',
+        evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index)),
+        reason: 'Выплата не сопоставилась с начислением того же вида в нормализованных строках периода.',
+        question: 'К какому начислению относится эта выплата?',
+      }));
+    }
+  });
+  return items;
+}
+
+function buildPayrollWorkTimeAnomalyAudit_(rows) {
+  const items = [];
+  (rows || []).forEach((row, index) => {
+    const periodKey = buildPayrollAuditPeriodKey_(row && row.period) || 'unknown';
+    [['workDays', row && row.workDays], ['paidDays', row && row.paidDays],
+      ['workHours', row && (row.workHours === undefined ? row.actualHours : row.workHours)]].forEach(([field, raw]) => {
+      if (raw === null || raw === undefined || raw === '') return;
+      const value = Number(raw);
+      const limit = field === 'workHours' ? 372 : 31;
+      if (Number.isFinite(value) && value >= 0 && value <= limit) return;
+      items.push(createPayrollAuditCatalogResult_('payroll_work_time', {
+        layoutId: 'raw_payroll', baseKind: field, periodKey,
+        calculationItem: `impossible_${field}_${index + 1}`, status: 'probable_or_disputed',
+        evidence: [buildPayrollAuditSourceEvidence_(row, index)],
+        reason: `Распознано невозможное значение рабочего времени: ${raw}.`,
+        question: 'Проверьте дни/часы по расчетному листку и табелю.',
+        requestedDocument: 'Табель учета рабочего времени.',
+      }));
+    });
+  });
+  return items;
+}
+
+function isPayrollRegularAccrual_(row) {
+  const text = normalizeText_(`${row && row.category || ''} ${row && row.kind || ''}`);
+  return payrollAuditSectionKind_(row) === 'accrued'
+    && /оклад|тариф|ежемесячн.*прем|постоянн.*надбав|доплата до оклада/.test(text)
+    && Number.isFinite(Number(row.accrued));
+}
+
+function buildPayrollRegularAccrualAudit_(rows) {
+  const series = new Map();
+  (rows || []).forEach((row, index) => {
+    if (!isPayrollRegularAccrual_(row)) return;
+    const kind = normalizePayrollAuditMatchKey_(row);
+    const periodKey = buildPayrollAuditPeriodKey_(row.period);
+    const key = `${normalizeText_(row.employee)}|${kind}`;
+    if (!series.has(key)) series.set(key, new Map());
+    const periods = series.get(key);
+    if (!periods.has(periodKey)) periods.set(periodKey, { amount: 0, evidence: [] });
+    periods.get(periodKey).amount += Number(row.accrued) || 0;
+    periods.get(periodKey).evidence.push(buildPayrollAuditSourceEvidence_(row, index));
+  });
+  const items = [];
+  series.forEach((periods, seriesKey) => {
+    const ordered = Array.from(periods.entries()).sort((left, right) => left[0].localeCompare(right[0]));
+    for (let index = 1; index < ordered.length; index++) {
+      const previous = ordered[index - 1];
+      const current = ordered[index];
+      if (previous[1].amount <= 0 || current[1].amount <= 0) continue;
+      const ratio = current[1].amount / previous[1].amount;
+      if (ratio >= 0.5 && ratio <= 1.5) continue;
+      items.push(createPayrollAuditCatalogResult_('payroll_regular_accrual', {
+        layoutId: 'raw_payroll', baseKind: 'regular_accrual', periodKey: current[0],
+        calculationItem: `abrupt_change_${items.length + 1}`, status: 'probable_or_disputed',
+        evidence: previous[1].evidence.concat(current[1].evidence),
+        reason: `Регулярное начисление резко изменилось с ${roundClaimAuditMoney_(previous[1].amount)} до ${roundClaimAuditMoney_(current[1].amount)}.`,
+        question: 'Чем объясняется изменение регулярного начисления (неполный месяц, отпуск, изменение оклада или ошибка)?',
+      }));
+    }
+  });
+  return items;
+}
+
+function buildPayrollPreliminaryCategoryAudit_(rows) {
+  const items = [];
+  const seen = new Set();
+  (rows || []).forEach((row, index) => {
+    if (!row || payrollAuditSectionKind_(row) !== 'accrued') return;
+    const kind = String(row.kind || row.sourceRow || '').trim();
+    const category = String(row.category || '').trim();
+    if (!kind || (category && category !== 'Прочее')) return;
+    const key = `${normalizeText_(kind)}|${buildPayrollAuditPeriodKey_(row.period)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(createPayrollAuditCatalogResult_('payroll_preliminary_category', {
+      layoutId: 'raw_payroll', baseKind: 'preliminary_category',
+      periodKey: buildPayrollAuditPeriodKey_(row.period) || 'unknown',
+      calculationItem: `category_${index + 1}`, status: 'cannot_verify',
+      evidence: [buildPayrollAuditSourceEvidence_(row, index)],
+      reason: `Для начисления «${kind}» не определена предварительная расчетная категория.`,
+      question: 'Это основная, компенсационная, стимулирующая выплата или разовое поощрение?',
+      requestedDocument: 'Трудовой договор или ЛНА, устанавливающий выплату.',
+    }));
+  });
   return items;
 }
 
@@ -983,7 +1402,18 @@ function resolveEmploymentWorkingTimeFact_(facts, periodDate) {
     const to = parseDateValue_(fact && fact.effectiveTo);
     return !period || ((!from || from <= period) && (!to || to >= period));
   });
-  return resolveEmploymentAuditFacts_(applicable);
+  const resolution = resolveEmploymentAuditFacts_(applicable);
+  if (resolution.effective) {
+    const original = applicable.find((fact) =>
+      String(fact && fact.sourceRef || '') === String(resolution.effective.sourceRef || ''));
+    if (original) resolution.effective = Object.assign({}, resolution.effective, original);
+  }
+  resolution.candidates = resolution.candidates.map((candidate) => {
+    const original = applicable.find((fact) =>
+      String(fact && fact.sourceRef || '') === String(candidate.sourceRef || ''));
+    return original ? Object.assign({}, candidate, original) : candidate;
+  });
+  return resolution;
 }
 
 /**
@@ -995,8 +1425,14 @@ function buildEmploymentOvertimeAudit_(event, workingTimeFacts) {
   const value = event || {};
   const periodDate = parseDateValue_(value.periodDate) || resolveEmploymentPremiumPeriodEnd_(value.periodKey);
   const norm = resolveEmploymentWorkingTimeFact_(workingTimeFacts, periodDate);
-  const actualHours = Number(value.actualHours);
-  const expectedHours = Number(value.expectedHours);
+  const actualHours = value.actualHours === null || value.actualHours === undefined || value.actualHours === ''
+    ? NaN : Number(value.actualHours);
+  const expectedHours = value.expectedHours === null || value.expectedHours === undefined || value.expectedHours === ''
+    ? NaN : Number(value.expectedHours);
+  const actualDays = value.actualDays === null || value.actualDays === undefined || value.actualDays === ''
+    ? NaN : Number(value.actualDays);
+  const expectedDays = value.expectedDays === null || value.expectedDays === undefined || value.expectedDays === ''
+    ? NaN : Number(value.expectedDays);
   if (!norm.effective || norm.effective.verificationStatus !== 'confirmed') {
     return {
       id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
@@ -1006,7 +1442,9 @@ function buildEmploymentOvertimeAudit_(event, workingTimeFacts) {
       requestedDocument: 'Трудовой договор, допсоглашение или ЛНА о режиме рабочего времени.',
     };
   }
-  if (!Number.isFinite(actualHours) || !Number.isFinite(expectedHours)) {
+  const hasComparableHours = Number.isFinite(actualHours) && Number.isFinite(expectedHours);
+  const hasComparableDays = Number.isFinite(actualDays) && Number.isFinite(expectedDays);
+  if (!hasComparableHours && !hasComparableDays) {
     return {
       id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
       status: 'cannot_verify', disputed: true,
@@ -1015,19 +1453,131 @@ function buildEmploymentOvertimeAudit_(event, workingTimeFacts) {
       requestedDocument: 'Табель учета рабочего времени.',
     };
   }
-  const excessHours = Math.max(0, actualHours - expectedHours);
+  const hoursPerDay = Number(value.hoursPerDay)
+    || Number(norm.effective.value && norm.effective.value.hoursPerDay)
+    || (Number(norm.effective.value && norm.effective.value.hoursPerWeek) / 5)
+    || 8;
+  const excessDays = hasComparableDays ? Math.max(0, actualDays - expectedDays) : 0;
+  const excessHours = hasComparableHours
+    ? Math.max(0, actualHours - expectedHours)
+    : excessDays * hoursPerDay;
   const paidOvertimeHours = Math.max(0, Number(value.paidOvertimeHours) || 0);
+  const hasPaidOvertimeWithoutHours = value.hasPaidOvertime === true
+    && !Number.isFinite(Number(value.paidOvertimeHours));
+  const unpaidOvertimeHours = hasPaidOvertimeWithoutHours
+    ? null : Math.max(0, excessHours - paidOvertimeHours);
   return {
     id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
-    status: excessHours > paidOvertimeHours ? 'probable_or_disputed' : 'informational',
-    disputed: excessHours > paidOvertimeHours,
-    excessHours, paidOvertimeHours,
-    unpaidOvertimeHours: Math.max(0, excessHours - paidOvertimeHours),
+    status: unpaidOvertimeHours === null
+      ? 'cannot_verify'
+      : (excessHours > paidOvertimeHours ? 'probable_or_disputed' : 'informational'),
+    disputed: unpaidOvertimeHours === null || excessHours > paidOvertimeHours,
+    actualHours: hasComparableHours ? actualHours : null,
+    expectedHours: hasComparableHours ? expectedHours : null,
+    actualDays: hasComparableDays ? actualDays : null,
+    expectedDays: hasComparableDays ? expectedDays : null,
+    excessDays, excessHours, paidOvertimeHours, unpaidOvertimeHours,
     sourceFacts: norm.candidates,
-    reason: excessHours > paidOvertimeHours
-      ? 'Возможно, часть сверхурочной работы не оплачена; требуется сверка с табелем и правилами оплаты.'
-      : 'По доступным данным сверхурочные часы не превышают уже отраженную оплату.',
+    reason: unpaidOvertimeHours === null
+      ? 'В расчетном листке есть оплата сверхурочной работы, но нет количества оплаченных часов; требуется сверка с табелем.'
+      : (excessHours > paidOvertimeHours
+        ? 'Возможно, часть сверхурочной работы не оплачена; требуется сверка с табелем и правилами оплаты.'
+        : 'По доступным данным сверхурочные часы не превышают уже отраженную оплату.'),
+    question: unpaidOvertimeHours === null
+      ? 'Сколько сверхурочных часов уже оплачено за этот период?' : '',
+    requestedDocument: unpaidOvertimeHours === null ? 'Табель учета рабочего времени.' : '',
   };
+}
+
+function buildEmploymentOvertimeAuditCatalog_(rows, workingTimeFacts, options) {
+  const settings = options || {};
+  const groups = new Map();
+  (rows || []).forEach((row, index) => {
+    if (!row || !row.period) return;
+    const periodKey = buildPayrollAuditPeriodKey_(row.period);
+    if (!groups.has(periodKey)) groups.set(periodKey, []);
+    groups.get(periodKey).push({ row, index });
+  });
+  const scope = settings.employmentAuditScope || { active: false, startDate: null };
+  return Array.from(groups.entries()).map(([periodKey, entries]) => {
+    const period = entries[0].row.period;
+    const periodDate = new Date(period.year, period.month - 1, 1);
+    const normResolution = resolveEmploymentWorkingTimeFact_(workingTimeFacts, periodDate);
+    const normValue = normResolution.effective && normResolution.effective.value || {};
+    const schedule = normalizeText_(normResolution.effective && normResolution.effective.schedule
+      || normValue.schedule || '');
+    const actualHours = uniqueFinitePayrollAuditValue_(entries, ['actualHours', 'workHours', 'paidHours']);
+    const actualDays = uniqueFinitePayrollAuditValue_(entries, ['paidDays', 'actualDays']);
+    let expectedDays = null;
+    let expectedHours = null;
+    const shiftSchedule = /смен|суммирован|вахт|ненормир/.test(schedule);
+    if (!shiftSchedule && normResolution.effective
+      && normResolution.effective.verificationStatus === 'confirmed') {
+      expectedDays = getEmploymentExpectedWorkingDays_(
+        period, settings.productionCalendar || {}, scope.active ? scope.startDate : null,
+        settings.employmentEndDate
+      );
+      const hoursPerWeek = Number(normValue.hoursPerWeek);
+      const hoursPerDay = Number(normValue.hoursPerDay)
+        || (Number.isFinite(hoursPerWeek) && hoursPerWeek > 0 ? hoursPerWeek / 5 : null);
+      if (expectedDays !== null && hoursPerDay) expectedHours = expectedDays * hoursPerDay;
+    }
+    const overtimeRows = entries.filter((entry) =>
+      /сверхуроч/.test(normalizeText_(`${entry.row.category || ''} ${entry.row.kind || ''} ${entry.row.sourceRow || ''}`)));
+    const paidOvertimeHours = uniqueFinitePayrollAuditValue_(overtimeRows, ['paidOvertimeHours', 'actualHours', 'workHours']);
+    const audit = buildEmploymentOvertimeAudit_({
+      layoutId: 'raw_payroll', periodKey, calculationItem: 'employer_reported_time', periodDate,
+      actualHours, expectedHours, actualDays, expectedDays,
+      paidOvertimeHours: paidOvertimeHours === null ? undefined : paidOvertimeHours,
+      hasPaidOvertime: overtimeRows.length > 0,
+      hoursPerDay: Number(normValue.hoursPerDay) || (Number(normValue.hoursPerWeek) / 5),
+    }, workingTimeFacts);
+    return createPayrollAuditCatalogResult_('overtime_hours', {
+      layoutId: 'raw_payroll', baseKind: 'work_time', periodKey,
+      calculationItem: 'employer_reported_time', status: audit.status,
+      evidence: entries.map((entry) => buildPayrollAuditSourceEvidence_(entry.row, entry.index))
+        .concat(audit.sourceFacts || []),
+      reason: shiftSchedule && audit.status === 'cannot_verify'
+        ? 'Для сменного или суммированного режима месячная норма не выводится из пятидневного календаря.'
+        : audit.reason,
+      question: shiftSchedule
+        ? 'Какова утвержденная норма часов по графику за этот период?' : audit.question,
+      requestedDocument: shiftSchedule
+        ? 'Табель учета рабочего времени и утвержденный график.'
+        : (audit.requestedDocument || (audit.status === 'cannot_verify'
+          ? 'Табель учета рабочего времени.' : '')),
+    });
+  });
+}
+
+function uniqueFinitePayrollAuditValue_(entries, fields) {
+  const values = new Set();
+  (entries || []).forEach((entry) => {
+    const row = entry && entry.row || {};
+    (fields || []).some((field) => {
+      if (row[field] === null || row[field] === undefined || row[field] === '') return false;
+      const value = Number(row[field]);
+      if (Number.isFinite(value)) values.add(value);
+      return true;
+    });
+  });
+  return values.size === 1 ? Array.from(values)[0] : null;
+}
+
+function getEmploymentExpectedWorkingDays_(period, productionCalendar, employmentStartDate, employmentEndDate) {
+  if (!period || !Number(period.year) || !Number(period.month)) return null;
+  const start = parseDateValue_(employmentStartDate);
+  const end = parseDateValue_(employmentEndDate);
+  const first = new Date(Number(period.year), Number(period.month) - 1, 1);
+  const last = new Date(Number(period.year), Number(period.month), 0);
+  const from = start && start > first ? start : first;
+  const to = end && end < last ? end : last;
+  if (from > to) return 0;
+  let days = 0;
+  for (let cursor = new Date(from); cursor <= to; cursor.setDate(cursor.getDate() + 1)) {
+    if (!isNonWorkingDay_(cursor, productionCalendar || {})) days++;
+  }
+  return days;
 }
 
 /** Keeps each vacation source event separate while deriving a reviewable leave chronology. */
@@ -1109,6 +1659,20 @@ function getClaimIntakeLayout_() {
       namedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_DATE',
       sourceNamedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_SOURCE',
       statusNamedRange: 'CLAIM_INTAKE_EMPLOYMENT_START_STATUS',
+    },
+    questionnaireFacts: {
+      employmentEndDate: {
+        label: 'Дата увольнения (если есть)', labelCell: 'G3', valueCell: 'H3',
+        namedRange: 'CLAIM_INTAKE_EMPLOYMENT_END_DATE',
+      },
+      workSchedule: {
+        label: 'Режим и норма времени', labelCell: 'G4', valueCell: 'H4',
+        namedRange: 'CLAIM_INTAKE_WORK_SCHEDULE',
+      },
+      actualPaymentFacts: {
+        label: 'Фактические даты выплат', labelCell: 'G5', valueCell: 'H5',
+        namedRange: 'CLAIM_INTAKE_ACTUAL_PAYMENT_FACTS',
+      },
     },
     calculatedAverage: {
       label: 'Рассчитанный средний заработок',
@@ -1206,6 +1770,10 @@ function applyClaimIntakeStructure_(sheet, layout) {
   sheet.getRange('A2').setValue('Факты дела, настройки расчета и выбранные требования');
   sheet.getRange(layout.employerSector.labelCell).setValue(layout.employerSector.label);
   sheet.getRange(layout.employmentStartDate.labelCell).setValue(layout.employmentStartDate.label);
+  Object.keys(layout.questionnaireFacts).forEach((key) => {
+    const field = layout.questionnaireFacts[key];
+    sheet.getRange(field.labelCell).setValue(field.label);
+  });
   if (!String(sheet.getRange(layout.employmentStartDate.sourceCell).getValue() || '').trim()) {
     sheet.getRange(layout.employmentStartDate.sourceCell).setValue('источник: пользователь');
   }
@@ -1241,6 +1809,7 @@ function applyClaimIntakeStructure_(sheet, layout) {
     .build();
   sheet.getRange(layout.employerSector.valueCell).setDataValidation(sectorRule);
   sheet.getRange(layout.employmentStartDate.valueCell).setNumberFormat('dd.MM.yyyy');
+  sheet.getRange(layout.questionnaireFacts.employmentEndDate.valueCell).setNumberFormat('dd.MM.yyyy');
   const scenarioRule = SpreadsheetApp.newDataValidation()
     .requireValueInList(CLAIM_INTAKE_SETTINGS.AVERAGE_SCENARIO_VALUES, true)
     .setAllowInvalid(false)
@@ -1633,6 +2202,9 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
   [
     layout.employerSector,
     layout.employmentStartDate,
+    layout.questionnaireFacts.employmentEndDate,
+    layout.questionnaireFacts.workSchedule,
+    layout.questionnaireFacts.actualPaymentFacts,
     layout.calculatedAverage,
     layout.calculatedAverageContext,
     layout.manualAverageEnabled,
@@ -1884,6 +2456,15 @@ function captureClaimQuestionnaireState_(spreadsheet) {
   const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   const layout = getClaimIntakeLayout_();
   const employmentStartValue = target.getRangeByName(layout.employmentStartDate.namedRange).getValue();
+  const employmentEndValue = target.getRangeByName(
+    layout.questionnaireFacts.employmentEndDate.namedRange
+  ).getValue();
+  const workScheduleValue = target.getRangeByName(
+    layout.questionnaireFacts.workSchedule.namedRange
+  ).getValue();
+  const actualPaymentFactsValue = target.getRangeByName(
+    layout.questionnaireFacts.actualPaymentFacts.namedRange
+  ).getValue();
   return {
     employerSector: target.getRangeByName(layout.employerSector.namedRange).getValue(),
     employmentStartDate: employmentStartValue || null,
@@ -1902,7 +2483,201 @@ function captureClaimQuestionnaireState_(spreadsheet) {
     manualAverageEnabled: target.getRangeByName(layout.manualAverageEnabled.namedRange).getValue() === true,
     averageEarnings: readAverageEarningsState_(target),
     partialRecoveries: target.getRangeByName(layout.partialRecoveries.namedRange).getValues(),
+    employmentEndDate: employmentEndValue || null,
+    workSchedule: String(workScheduleValue || '').trim(),
+    actualPaymentFacts: String(actualPaymentFactsValue || '').trim(),
   };
+}
+
+function buildQuestionnaireAuditCatalog_(questionnaireState, rows, options) {
+  const state = questionnaireState || {};
+  const settings = options || {};
+  const items = [];
+  const start = parseDateValue_(state.employmentStartDate);
+  const end = parseDateValue_(state.employmentEndDate);
+  if (start && end && end < start) {
+    items.push(createPayrollAuditCatalogResult_('questionnaire_termination', {
+      layoutId: 'questionnaire', baseKind: 'employment_boundary', periodKey: 'case',
+      calculationItem: 'termination_before_start', status: 'probable_or_disputed',
+      evidence: [{ source: 'Анкета и требования!B4' }, { source: 'Анкета и требования!H3' }],
+      reason: 'Дата увольнения раньше даты начала трудовых отношений.',
+      question: 'Проверьте даты приема и увольнения в анкете.',
+    }));
+  }
+  (rows || []).forEach((row, index) => {
+    const periodKey = buildPayrollAuditPeriodKey_(row && row.period) || 'unknown';
+    const periodStart = row && row.period ? new Date(row.period.year, row.period.month - 1, 1) : null;
+    const periodEnd = row && row.period ? new Date(row.period.year, row.period.month, 0) : null;
+    const evidence = [buildPayrollAuditSourceEvidence_(row, index)];
+    if (start && periodEnd && periodEnd < start) {
+      items.push(createPayrollAuditCatalogResult_('employment_start_boundary', {
+        layoutId: 'raw_payroll', baseKind: 'before_employment', periodKey,
+        calculationItem: `questionnaire_boundary_${index + 1}`, status: 'informational', evidence,
+        reason: 'Период находится до подтвержденной даты начала трудовых отношений и исключен из применимого аудита.',
+      }));
+    }
+    if (end && periodStart && periodStart > end) {
+      items.push(createPayrollAuditCatalogResult_('questionnaire_termination', {
+        layoutId: 'raw_payroll', baseKind: 'after_termination', periodKey,
+        calculationItem: `questionnaire_after_end_${index + 1}`, status: 'probable_or_disputed', evidence,
+        reason: 'Период находится после подтвержденной даты увольнения.',
+        question: 'Подтвердите дату увольнения или объясните начисление после нее.',
+      }));
+    }
+    if (payrollAuditSectionKind_(row) === 'paid' && !row.paymentDate && !row.statementDate
+      && !String(state.actualPaymentFacts || '').trim()) {
+      items.push(createPayrollAuditCatalogResult_('questionnaire_payment_facts', {
+        layoutId: 'raw_payroll', baseKind: 'actual_payment_date', periodKey,
+        calculationItem: 'user_payment_date', status: 'cannot_verify', evidence,
+        reason: 'Расчетный листок не содержит подтвержденной фактической даты выплаты.',
+        question: `Укажите фактическую дату выплаты за ${periodKey}.`,
+        requestedDocument: 'Банковская выписка или платежный реестр.',
+      }));
+    }
+  });
+  const recoveries = Array.isArray(state.partialRecoveries) ? state.partialRecoveries : [];
+  recoveries.forEach((row, index) => {
+    if (!Array.isArray(row) || row[0] !== true) return;
+    const date = parseDateValue_(row[1]);
+    const amount = parseMoney_(row[2]);
+    if (!date || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      items.push(createPayrollAuditCatalogResult_('questionnaire_partial_recoveries', {
+        layoutId: 'questionnaire', baseKind: 'partial_recovery', periodKey: 'case',
+        calculationItem: `invalid_recovery_${index + 1}`, status: 'cannot_verify',
+        evidence: [{ source: `Анкета и требования!${14 + index}:C${14 + index}` }],
+        reason: 'Отмеченное частичное погашение не содержит понятных даты и суммы.',
+        question: 'Укажите дату и сумму каждого частичного погашения.',
+        requestedDocument: 'Судебный акт, платежное поручение или банковская выписка.',
+      }));
+    }
+  });
+  if (!String(state.workSchedule || '').trim()
+    && (rows || []).some((row) => row && (row.workDays !== null || row.paidDays !== null))) {
+    items.push(createPayrollAuditCatalogResult_('questionnaire_work_time', {
+      layoutId: 'questionnaire', baseKind: 'work_schedule', periodKey: 'case',
+      calculationItem: 'missing_work_schedule', status: 'cannot_verify',
+      evidence: [{ source: 'Анкета и требования!H4' }],
+      reason: 'В расчетных листках есть дни работы, но режим и норма рабочего времени не указаны.',
+      question: 'Какой режим работы и норма часов действовали в спорные периоды?',
+      requestedDocument: 'Трудовой договор, ЛНА и табель учета рабочего времени.',
+    }));
+  }
+  return items;
+}
+
+function buildNormativeDocumentAuditCatalog_(normativeImport, rows, options) {
+  const value = normativeImport || {};
+  const settings = options || {};
+  if (value.status === 'disabled') return [];
+  if (!value.facts) {
+    return [createPayrollAuditCatalogResult_('normative_remuneration', {
+      layoutId: 'normative', baseKind: 'documents', periodKey: 'case',
+      calculationItem: 'normative_sources_missing', status: 'cannot_verify',
+      evidence: [], reason: 'Договор и ЛНА не подключены или недоступны.',
+      question: 'Укажите папку с трудовым договором, допсоглашениями и ЛНА.',
+      requestedDocument: 'Папка Google Drive с нормативными документами.',
+    })];
+  }
+  const facts = value.facts;
+  const items = [];
+  const evidenceFromFacts = (list) => (list || []).map((fact) => ({
+    source: fact.sourceRef || fact.source || '', fragment: fact.fragment || fact.notes || '',
+  }));
+  if (!(facts.remunerationElements || []).length) {
+    items.push(createPayrollAuditCatalogResult_('normative_remuneration', {
+      layoutId: 'normative', baseKind: 'remuneration_system', periodKey: 'case',
+      calculationItem: 'remuneration_elements_missing', status: 'cannot_verify', evidence: [],
+      reason: 'В подключенных документах не найден состав системы оплаты труда.',
+      question: 'Какие выплаты входят в систему оплаты труда?',
+      requestedDocument: 'Трудовой договор и ЛНА об оплате труда.',
+    }));
+  } else {
+    items.push(createPayrollAuditCatalogResult_('normative_remuneration', {
+      layoutId: 'normative', baseKind: 'remuneration_system', periodKey: 'case',
+      calculationItem: 'remuneration_elements_found', status: 'informational',
+      evidence: evidenceFromFacts(facts.remunerationElements),
+      reason: `Извлечено элементов системы оплаты труда: ${(facts.remunerationElements || []).length}.`,
+    }));
+  }
+  const premiums = facts.premiumMentions || [];
+  if (!premiums.length) {
+    items.push(createPayrollAuditCatalogResult_('normative_premium', {
+      layoutId: 'normative', baseKind: 'premium', periodKey: 'case',
+      calculationItem: 'premium_rule_missing', status: 'cannot_verify', evidence: [],
+      reason: 'Правила классификации и сроков премий не извлечены.',
+      question: 'Есть ли в договоре или ЛНА правила начисления и выплаты премий?',
+      requestedDocument: 'Положение о премировании или иной ЛНА.',
+    }));
+  } else premiums.forEach((premium, index) => {
+    const classification = premium.classification && premium.classification.kind;
+    const dueRule = premium.dueRule;
+    const status = classification === 'disputed' || !dueRule ? 'probable_or_disputed' : 'informational';
+    items.push(createPayrollAuditCatalogResult_('normative_premium', {
+      layoutId: 'normative', baseKind: 'premium', periodKey: 'case',
+      calculationItem: `premium_rule_${index + 1}`, status,
+      evidence: evidenceFromFacts([premium]),
+      reason: !dueRule ? 'Срок выплаты премии не установлен однозначно.'
+        : (classification === 'disputed' ? 'Правовая природа премии остается спорной.' : 'Правило премии извлечено из документов.'),
+      question: !dueRule ? 'Какой срок выплаты установлен для этой премии?' : '',
+      requestedDocument: !dueRule ? 'Положение о премировании.' : '',
+    }));
+  });
+  const workFacts = facts.workingTimeFacts || [];
+  if (!workFacts.length) {
+    items.push(createPayrollAuditCatalogResult_('normative_enhanced_work', {
+      layoutId: 'normative', baseKind: 'work_schedule', periodKey: 'case',
+      calculationItem: 'work_schedule_missing', status: 'cannot_verify', evidence: [],
+      reason: 'В договоре/ЛНА не найдены применимые режим и норма рабочего времени.',
+      question: 'Какой график, норма часов и условия работы действовали?',
+      requestedDocument: 'Трудовой договор, ЛНА и табель.',
+    }));
+  }
+  const derivativeRows = (rows || []).filter((row) =>
+    /отпуск|больнич|средн.*заработ|командиров|пособи/.test(normalizeText_(`${row.category || ''} ${row.kind || ''}`)));
+  if (derivativeRows.length) {
+    items.push(createPayrollAuditCatalogResult_('normative_derivative_payments', {
+      layoutId: 'raw_payroll', baseKind: 'derivative_payment', periodKey: 'case',
+      calculationItem: 'derivative_base_review', status: 'probable_or_disputed',
+      evidence: derivativeRows.slice(0, 50).map((row, index) => buildPayrollAuditSourceEvidence_(row, index)),
+      reason: 'В расчетных листках есть производные выплаты; при изменении базы их нужно пересчитать отдельно.',
+      question: 'Проверьте расчет производных выплат после уточнения базы.',
+      requestedDocument: 'Расчетные листки и ЛНА, определяющие базу производных выплат.',
+    }));
+  }
+  const searchableText = JSON.stringify(facts).toLowerCase();
+  [
+    ['normative_regional_coefficient', 'regional_coefficient', /районн|северн|коэффициент/,
+      'Применимость районного коэффициента и северной надбавки не подтверждена.', 'ЛНА о районных коэффициентах и месте работы.'],
+    ['normative_wage_indexation', 'wage_indexation', /индексац/,
+      'Правила индексации заработной платы требуют отдельной проверки по ЛНА.', 'ЛНА об индексации заработной платы.'],
+    ['normative_vacation_entitlement', 'vacation_entitlement', /отпускн|ежегодн.*отпуск/,
+      'Отпускной стаж и повышенная продолжительность отпуска требуют кадровых документов.', 'Трудовой договор, график отпусков и кадровые документы.'],
+    ['normative_enhanced_guarantees', 'enhanced_guarantees', /ночн|выходн|празднич|вредн|гаранти/,
+      'Повышенные гарантии за ночную, выходную или особую работу требуют подтверждения.', 'Трудовой договор, ЛНА и табель.'],
+  ].forEach(([ruleId, baseKind, pattern, reason, requestedDocument]) => {
+    if (pattern.test(searchableText)) {
+      items.push(createPayrollAuditCatalogResult_(ruleId, {
+        layoutId: 'normative', baseKind, periodKey: 'case',
+        calculationItem: `${baseKind}_review`, status: 'probable_or_disputed',
+        evidence: value.documents ? value.documents.map((doc) => ({ source: doc.url || doc.name })) : [],
+        reason, question: 'Подтвердите применимое правило и период его действия.', requestedDocument,
+      }));
+    }
+  });
+  return items;
+}
+
+function payrollAuditCatalogToWarnings_(items) {
+  return (items || []).filter((item) => item && item.status !== 'informational').map((item) => ({
+    code: `payroll_audit_${item.ruleId}`,
+    disputed: item.disputed === true,
+    source: (item.evidence && item.evidence[0] && (item.evidence[0].source || item.evidence[0].sourceRef)) || item.id,
+    reason: `${item.reason || 'Проверка требует внимания.'}`
+      + (item.question ? ` Вопрос: ${item.question}` : '')
+      + (item.requestedDocument ? ` Запрос: ${item.requestedDocument}` : ''),
+    auditResult: item,
+    reviewStatus: item.status === 'cannot_verify' ? 'нужно уточнить' : 'требует проверки',
+  }));
 }
 
 function readClaimQuestionnaireState_(spreadsheet) {
@@ -1955,6 +2730,18 @@ function normalizeClaimQuestionnaireStateForWrite_(state, layout) {
     while (normalized.partialRecoveries.length < layout.partialRecoveries.rowCount) {
       normalized.partialRecoveries.push(['', '', '', '']);
     }
+  }
+  if (value.employmentEndDate !== undefined) {
+    const parsedEndDate = value.employmentEndDate === null || value.employmentEndDate === ''
+      ? null : parseDateValue_(value.employmentEndDate);
+    if (value.employmentEndDate && !parsedEndDate) {
+      throw new Error('Дата увольнения должна быть понятной датой');
+    }
+    normalized.employmentEndDate = parsedEndDate;
+  }
+  if (value.workSchedule !== undefined) normalized.workSchedule = String(value.workSchedule || '');
+  if (value.actualPaymentFacts !== undefined) {
+    normalized.actualPaymentFacts = String(value.actualPaymentFacts || '');
   }
   return normalized;
 }
@@ -2080,6 +2867,24 @@ function writeClaimQuestionnaireState_(state, spreadsheet) {
           layout.partialRecoveries.columnCount
         ),
         values: normalized.partialRecoveries,
+      });
+    }
+    if (normalized.employmentEndDate !== undefined) {
+      mutations.push({
+        range: sheet.getRange(layout.questionnaireFacts.employmentEndDate.valueCell),
+        values: [[normalized.employmentEndDate]],
+      });
+    }
+    if (normalized.workSchedule !== undefined) {
+      mutations.push({
+        range: sheet.getRange(layout.questionnaireFacts.workSchedule.valueCell),
+        values: [[normalized.workSchedule]],
+      });
+    }
+    if (normalized.actualPaymentFacts !== undefined) {
+      mutations.push({
+        range: sheet.getRange(layout.questionnaireFacts.actualPaymentFacts.valueCell),
+        values: [[normalized.actualPaymentFacts]],
       });
     }
     const snapshots = mutations.map((mutation) => mutation.range.getValues());

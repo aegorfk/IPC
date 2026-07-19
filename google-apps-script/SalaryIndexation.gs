@@ -579,8 +579,45 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
       });
     }
     recoveryEffects.normativeImport = normativeImport;
+    const rawPayrollRows = typeof readZupImportObjects_ === 'function'
+      ? readZupImportObjects_(spreadsheet) : [];
+    const rawPayrollQuality = typeof buildZupReconstructionQuality_ === 'function'
+      ? buildZupReconstructionQuality_(rawPayrollRows) : {};
+    const automaticAuditItems = typeof buildPayrollSlipAutomaticAuditCatalog_ === 'function'
+      ? buildPayrollSlipAutomaticAuditCatalog_(rawPayrollRows, rawPayrollQuality) : [];
+    const questionnaireAuditItems = typeof buildQuestionnaireAuditCatalog_ === 'function'
+      ? buildQuestionnaireAuditCatalog_(questionnaireState, rawPayrollRows, {
+        employmentAuditScope,
+      }) : [];
+    const questionnaireWorkingFacts = [];
+    if (questionnaireState.workSchedule) {
+      const hoursMatch = String(questionnaireState.workSchedule).match(/(\d+(?:[.,]\d+)?)\s*(?:час|ч\.?)\s*(?:в\s*нед|\/\s*нед)?/i);
+      questionnaireWorkingFacts.push(createEmploymentWorkingTimeFact_(
+        { hoursPerWeek: hoursMatch ? Number(String(hoursMatch[1]).replace(',', '.')) : null,
+          schedule: questionnaireState.workSchedule },
+        { sourceType: 'user_confirmed', sourceRef: 'Анкета и требования!H4',
+          confidence: 1, verificationStatus: 'confirmed', schedule: questionnaireState.workSchedule }
+      ));
+    }
+    const normativeWorkingFacts = normativeImport.facts && normativeImport.facts.workingTimeFacts
+      ? normativeImport.facts.workingTimeFacts : [];
+    const overtimeAuditItems = typeof buildEmploymentOvertimeAuditCatalog_ === 'function'
+      ? buildEmploymentOvertimeAuditCatalog_(rawPayrollRows,
+        questionnaireWorkingFacts.concat(normativeWorkingFacts), {
+          productionCalendar, employmentAuditScope,
+          employmentEndDate: questionnaireState.employmentEndDate,
+        }) : [];
+    const normativeAuditItems = typeof buildNormativeDocumentAuditCatalog_ === 'function'
+      ? buildNormativeDocumentAuditCatalog_(normativeImport, rawPayrollRows, {
+        productionCalendar, employmentAuditScope,
+      }) : [];
+    const auditCatalog = automaticAuditItems.concat(questionnaireAuditItems,
+      overtimeAuditItems, normativeAuditItems);
+    recoveryEffects.auditCatalog = auditCatalog;
     recoveryEffects.warnings = mergeCalculationWarnings_(results, employmentScopeWarnings
-      .concat(normativeImport.warnings || [], recoveryEffects.warnings, derivativeEffects.warnings));
+      .concat(normativeImport.warnings || [], recoveryEffects.warnings, derivativeEffects.warnings,
+        typeof payrollAuditCatalogToWarnings_ === 'function'
+          ? payrollAuditCatalogToWarnings_(auditCatalog) : []));
     SpreadsheetApp.flush();
     if (recoveryWriteResult.written > 0 || derivativeWriteResult.written > 0) {
       results.forEach((result, index) => {

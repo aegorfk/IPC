@@ -7977,8 +7977,93 @@ assertRollbackPreflightFailurePreservesRunState(
     { file: 'a.pdf', section: 'Начислено', sourceRow: 'Оклад', accrued: 10, period: { year: 2024, month: 1 } },
     { file: 'a.pdf', section: 'Начислено', sourceRow: 'Оклад', accrued: 10, period: { year: 2024, month: 1 } },
   ], { missingMonths: ['02.2024'], companyMismatchPeriods: ['03.2024'] });
-  assert.strictEqual(items.length, 3);
-  assert.ok(items.every((item) => item.ruleId === 'payroll_source_integrity'));
+  assert.ok(items.length >= 3);
+  assert.ok(items.some((item) => item.ruleId === 'payroll_source_integrity'));
+  assert.ok(items.some((item) => item.ruleId === 'payroll_identity'));
+  assert.ok(items.some((item) => item.ruleId === 'payroll_preliminary_category'));
+}
+
+// The payroll catalog keeps source rows separate while checking arithmetic,
+// dates, independent payment events and abrupt regular-accrual changes.
+{
+  const harness = createHarness();
+  const rows = [
+    { file: 'a.pdf', sheet: 'Январь', company: 'А', employee: 'Иванов',
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '1',
+      accrued: 100, period: { year: 2024, month: 1 }, paymentDate: new Date(2024, 0, 31) },
+    { file: 'a.pdf', sheet: 'Январь', company: 'А', employee: 'Иванов',
+      section: 'Начислено', category: 'Итого', kind: 'Итого начислено', sourceRow: '2',
+      accrued: 120, period: { year: 2024, month: 1 } },
+    { file: 'a.pdf', sheet: 'Январь', company: 'А', employee: 'Иванов',
+      section: 'Выплачено', category: 'Оклад', kind: 'Зарплата', sourceRow: '3',
+      paid: 100, period: { year: 2024, month: 1 }, paymentDate: new Date(2024, 1, 5) },
+    { file: 'a.pdf', sheet: 'Январь', company: 'А', employee: 'Иванов',
+      section: 'Выплачено', category: 'Оклад', kind: 'Зарплата', sourceRow: '4',
+      paid: 20, period: { year: 2024, month: 1 }, paymentDate: new Date(2024, 1, 7) },
+    { file: 'a.pdf', sheet: 'Февраль', company: 'А', employee: 'Иванов',
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '5',
+      accrued: 300, period: { year: 2024, month: 2 } },
+  ];
+  const items = harness.context.buildPayrollSlipAutomaticAuditCatalog_(rows, {
+    missingMonths: [], companyMismatchPeriods: [], employeeMismatchPeriods: [],
+  });
+  assert.ok(items.some((item) => item.ruleId === 'payroll_arithmetic'));
+  assert.ok(items.some((item) => item.ruleId === 'payroll_payment_matching'));
+  assert.ok(items.some((item) => item.ruleId === 'payroll_regular_accrual'));
+  const multiple = items.find((item) => item.baseKind === 'multiple_payment_events');
+  assert.ok(multiple);
+  assert.strictEqual(multiple.status, 'informational');
+  assert.ok(multiple.evidence.length >= 2);
+}
+
+// Overtime catalog supports full and partial months, while shift schedules
+// remain an explicit request instead of an invented five-day norm.
+{
+  const harness = createHarness();
+  const norm = harness.context.createEmploymentWorkingTimeFact_({ hoursPerWeek: 40 }, {
+    sourceType: 'user_confirmed', sourceRef: 'Анкета', confidence: 1,
+    verificationStatus: 'confirmed', schedule: 'пятидневная неделя', effectiveFrom: '01.01.2024',
+  });
+  const items = harness.context.buildEmploymentOvertimeAuditCatalog_([
+    { file: 'march.pdf', sheet: 'Март', employee: 'Иванов', period: { year: 2024, month: 3 },
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '1',
+      workDays: 21, paidDays: 23 },
+  ], [norm], { productionCalendar: {}, employmentAuditScope: { active: false } });
+  assert.strictEqual(items.length, 1);
+  assert.strictEqual(items[0].ruleId, 'overtime_hours');
+  assert.strictEqual(items[0].status, 'probable_or_disputed');
+
+  const shift = harness.context.buildEmploymentOvertimeAuditCatalog_([
+    { file: 'shift.pdf', sheet: 'Март', employee: 'Иванов', period: { year: 2024, month: 3 },
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '1',
+      paidDays: 23 },
+  ], [harness.context.createEmploymentWorkingTimeFact_({ hoursPerWeek: 40 }, {
+    sourceType: 'document_confirmed', sourceRef: 'Договор', confidence: 1,
+    verificationStatus: 'confirmed', schedule: 'сменный график', effectiveFrom: '01.01.2024',
+  })], { productionCalendar: {}, employmentAuditScope: { active: false } });
+  assert.strictEqual(shift[0].status, 'cannot_verify');
+  assert.ok(shift[0].requestedDocument.includes('график'));
+}
+
+// Second- and third-level checks route missing questionnaire/document facts to
+// concrete requests without blocking the payroll-only scenario.
+{
+  const harness = createHarness();
+  const questionnaireItems = harness.context.buildQuestionnaireAuditCatalog_({
+    employmentStartDate: new Date(2024, 0, 1), employmentEndDate: new Date(2023, 11, 1),
+    partialRecoveries: [[true, '', 0, '']], workSchedule: '', actualPaymentFacts: '',
+  }, [{ file: 'x.pdf', sheet: 'Январь', period: { year: 2024, month: 1 },
+    section: 'Выплачено', category: 'Оклад', kind: 'Зарплата', sourceRow: '1', paid: 100,
+    workDays: 21, paidDays: 21 }]);
+  assert.ok(questionnaireItems.some((item) => item.ruleId === 'questionnaire_termination'));
+  assert.ok(questionnaireItems.some((item) => item.ruleId === 'questionnaire_partial_recoveries'));
+  assert.ok(questionnaireItems.some((item) => item.ruleId === 'questionnaire_payment_facts'));
+  assert.ok(questionnaireItems.some((item) => item.ruleId === 'questionnaire_work_time'));
+  const missingNormative = harness.context.buildNormativeDocumentAuditCatalog_(
+    { status: 'cannot_verify', facts: null, documents: [] }, [], {}
+  );
+  assert.strictEqual(missingNormative[0].status, 'cannot_verify');
+  assert.ok(missingNormative[0].requestedDocument.includes('Google Drive'));
 }
 
 // Vacation events stay separate even within one payroll slip; chronology
