@@ -753,6 +753,7 @@ function extractEmploymentNormativeFacts_(documents) {
   const remunerationElements = [];
   const premiumMentions = [];
   const conditions = [];
+  const workingTimeFacts = [];
   (documents || []).forEach((document) => {
     const text = readEmploymentNormativeDocumentText_(document);
     if (!text) return;
@@ -768,6 +769,18 @@ function extractEmploymentNormativeFacts_(documents) {
       }
       if (/оклад|надбавк|доплат|компенсацион|стимулирующ/i.test(sentence)) {
         remunerationElements.push({ text: sentence, sourceRef, documentId: document.id });
+      }
+      const workTime = sentence.match(/(\d{1,2})\s*час(?:а|ов)?\s*(?:в|за)\s*недел/i);
+      if (workTime || /(?:пятиднев|сменн\w*\s+график|режим\s+рабочего\s+времени)/i.test(sentence)) {
+        workingTimeFacts.push(createEmploymentWorkingTimeFact_({
+          hoursPerWeek: workTime ? Number(workTime[1]) : null,
+        }, {
+          sourceType: 'document_confirmed', sourceRef, confidence: workTime ? 0.8 : 0.6,
+          verificationStatus: 'probable_or_disputed',
+          schedule: /пятиднев/i.test(sentence) ? 'пятидневная неделя'
+            : (/сменн/i.test(sentence) ? 'сменный график' : ''),
+          notes: sentence,
+        }));
       }
       if (/преми|бонус/i.test(sentence)) {
         const dueRule = extractEmploymentPremiumDueRuleFromText_(sentence, sourceRef);
@@ -786,7 +799,7 @@ function extractEmploymentNormativeFacts_(documents) {
     });
   });
   return {
-    employmentStartFacts, remunerationElements, premiumMentions, conditions,
+    employmentStartFacts, remunerationElements, premiumMentions, conditions, workingTimeFacts,
     premiumDueRules: resolveEmploymentNormativePremiumDueRules_(conditions),
   };
 }
@@ -882,6 +895,70 @@ function employmentNormativeDocumentTypeLabel_(type) {
     employment_addendum: 'дополнительное соглашение',
     local_normative_act: 'локальный нормативный акт',
   }[type] || 'документ';
+}
+
+function createEmploymentWorkingTimeFact_(value, options) {
+  const fact = createEmploymentAuditFact_(value, options);
+  const settings = options || {};
+  return Object.assign(fact, {
+    schedule: String(settings.schedule || ''),
+    effectiveFrom: parseDateValue_(settings.effectiveFrom) || null,
+    effectiveTo: parseDateValue_(settings.effectiveTo) || null,
+  });
+}
+
+function resolveEmploymentWorkingTimeFact_(facts, periodDate) {
+  const period = parseDateValue_(periodDate);
+  const applicable = (facts || []).filter((fact) => {
+    const from = parseDateValue_(fact && fact.effectiveFrom);
+    const to = parseDateValue_(fact && fact.effectiveTo);
+    return !period || ((!from || from <= period) && (!to || to >= period));
+  });
+  return resolveEmploymentAuditFacts_(applicable);
+}
+
+/**
+ * An overtime check never estimates a statutory norm from payroll days alone.
+ * It reports a concrete gap only when both the contractual schedule and the
+ * employer-recorded hours are present; otherwise it asks for the missing fact.
+ */
+function buildEmploymentOvertimeAudit_(event, workingTimeFacts) {
+  const value = event || {};
+  const periodDate = parseDateValue_(value.periodDate) || resolveEmploymentPremiumPeriodEnd_(value.periodKey);
+  const norm = resolveEmploymentWorkingTimeFact_(workingTimeFacts, periodDate);
+  const actualHours = Number(value.actualHours);
+  const expectedHours = Number(value.expectedHours);
+  if (!norm.effective || norm.effective.verificationStatus !== 'confirmed') {
+    return {
+      id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
+      status: 'cannot_verify', disputed: true,
+      reason: 'Не подтверждены норма рабочего времени и применимый график; укажите их в договоре, ЛНА или анкете.',
+      question: 'Какова норма рабочего времени и график работника в этом периоде?',
+      requestedDocument: 'Трудовой договор, допсоглашение или ЛНА о режиме рабочего времени.',
+    };
+  }
+  if (!Number.isFinite(actualHours) || !Number.isFinite(expectedHours)) {
+    return {
+      id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
+      status: 'cannot_verify', disputed: true,
+      reason: 'В расчетных листках нет сопоставимых фактически отраженных и нормативных часов.',
+      question: 'Укажите табель/график с количеством часов за период.',
+      requestedDocument: 'Табель учета рабочего времени.',
+    };
+  }
+  const excessHours = Math.max(0, actualHours - expectedHours);
+  const paidOvertimeHours = Math.max(0, Number(value.paidOvertimeHours) || 0);
+  return {
+    id: buildEmploymentAuditPositionId_({ ruleId: 'overtime_hours', layoutId: value.layoutId, baseKind: 'work_time', periodKey: value.periodKey, calculationItem: value.calculationItem }),
+    status: excessHours > paidOvertimeHours ? 'probable_or_disputed' : 'informational',
+    disputed: excessHours > paidOvertimeHours,
+    excessHours, paidOvertimeHours,
+    unpaidOvertimeHours: Math.max(0, excessHours - paidOvertimeHours),
+    sourceFacts: norm.candidates,
+    reason: excessHours > paidOvertimeHours
+      ? 'Возможно, часть сверхурочной работы не оплачена; требуется сверка с табелем и правилами оплаты.'
+      : 'По доступным данным сверхурочные часы не превышают уже отраженную оплату.',
+  };
 }
 
 function getClaimIntakeSettings_() {

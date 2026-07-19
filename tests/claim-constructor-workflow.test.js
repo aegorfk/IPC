@@ -7900,7 +7900,7 @@ assertRollbackPreflightFailurePreservesRunState(
     getFiles: () => makeIterator(documents),
   });
   harness.documents.set('contract', {
-    getBody: () => ({ getText: () => 'Работник приступает к работе 15.03.2024. Оклад составляет 100 000 рублей.' }),
+    getBody: () => ({ getText: () => 'Работник приступает к работе 15.03.2024. Оклад составляет 100 000 рублей. Норма — 40 часов в неделю, пятидневная неделя.' }),
   });
   harness.documents.set('addendum-a', { getBody: () => ({ getText: () => 'Доплата 5 000 рублей.' }) });
   harness.documents.set('addendum-b', { getBody: () => ({ getText: () => 'Надбавка 7 000 рублей.' }) });
@@ -7925,6 +7925,7 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(imported.warnings.some((warning) => warning.code === 'normative_document_version_conflict'));
   assert.ok(imported.warnings.some((warning) => warning.code === 'premium_due_rule_conflict'));
   assert.strictEqual(imported.facts.employmentStartFacts.length, 1);
+  assert.strictEqual(imported.facts.workingTimeFacts[0].value.hoursPerWeek, 40);
   assert.ok(imported.facts.remunerationElements.length >= 2);
   assert.strictEqual(imported.facts.premiumMentions[0].classification.kind, 'disputed');
   assert.strictEqual(imported.facts.premiumMentions[0].dueRule.type, 'period_year_month_day');
@@ -7933,6 +7934,27 @@ assertRollbackPreflightFailurePreservesRunState(
   });
   assert.strictEqual(missing.status, 'cannot_verify');
   assert.strictEqual(missing.warnings[0].code, 'normative_folder_missing');
+}
+
+// Overtime remains a non-blocking audit: it needs a confirmed schedule and
+// comparable hours, while partial/missing data becomes a precise request.
+{
+  const harness = createHarness();
+  const norm = harness.context.createEmploymentWorkingTimeFact_({ hoursPerWeek: 40 }, {
+    sourceType: 'user_confirmed', sourceRef: 'Анкета', confidence: 1,
+    verificationStatus: 'confirmed', schedule: 'пятидневная неделя', effectiveFrom: '01.01.2024',
+  });
+  const delayed = harness.context.buildEmploymentOvertimeAudit_({
+    layoutId: 'salary', periodKey: '2024-03', calculationItem: 'hours',
+    actualHours: 184, expectedHours: 176, paidOvertimeHours: 2,
+  }, [norm]);
+  assert.strictEqual(delayed.status, 'probable_or_disputed');
+  assert.strictEqual(delayed.unpaidOvertimeHours, 6);
+  const missing = harness.context.buildEmploymentOvertimeAudit_({
+    layoutId: 'salary', periodKey: '2024-03', calculationItem: 'hours', actualHours: 184,
+  }, []);
+  assert.strictEqual(missing.status, 'cannot_verify');
+  assert.ok(missing.requestedDocument.includes('Табель') || missing.requestedDocument.includes('договор'));
 }
 
 function installVersionedDocsFakes(harness) {
