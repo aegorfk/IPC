@@ -7529,6 +7529,25 @@ assertRollbackPreflightFailurePreservesRunState(
   );
 }
 
+// The approved court template is protected: a fresh copy must never be
+// cleared and rebuilt before every retained table has an in-place mapping.
+{
+  const harness = createHarness();
+  const approvedTemplateBody = {
+    findText() { return {}; },
+  };
+  assert.throws(
+    () => harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody),
+    /не менять согласованную структуру и форматирование/i
+  );
+  try {
+    harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody);
+  } catch (error) {
+    assert.strictEqual(error.code, 'approved_template_preservation_required');
+    assert.strictEqual(harness.context.isSelectedClaimDocumentCorrectiveError_(error), true);
+  }
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];

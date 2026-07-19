@@ -1880,6 +1880,7 @@ function isSelectedClaimDocumentCorrectiveError_(error) {
     'selected_claims_missing',
     'document_parent_unresolvable',
     'approved_layout_unmapped_basis',
+    'approved_template_preservation_required',
   ].indexOf(error.code) >= 0);
 }
 
@@ -1907,6 +1908,7 @@ function buildSelectedClaimDocumentTitle_(payload, now) {
 
 function populateSelectedClaimDocument_(document, payload, now) {
   const body = document.getBody();
+  assertApprovedClaimTemplateCanBePreserved_(body);
   clearNewSelectedClaimDocumentBody_(body);
   const model = buildApprovedClaimDocumentModel_(payload, now);
   appendApprovedClaimHeading_(body, 'Расчет заявленных сумм', DocumentApp.ParagraphHeading.HEADING1);
@@ -1954,6 +1956,39 @@ function populateSelectedClaimDocument_(document, payload, now) {
       + 'Google Sheets. Снятые позиции в суммы и таблицы документа не включены.'
   );
   reconcileApprovedClaimDocumentModel_(model, payload);
+}
+
+/**
+ * A generated court calculation is always copied from the approved template.
+ * Do not clear or rebuild that document until every retained table has an
+ * explicit in-place mapping.  Rebuilding it here would silently change the
+ * court-approved layout, table geometry, and detailed Article 236 evidence.
+ */
+function assertApprovedClaimTemplateCanBePreserved_(body) {
+  const requiredHeadings = [
+    'Расчет заявленных сумм',
+    'Сводка',
+    '1. Оклад: индексация, индексация недоплаты, матответственность',
+    '5. Расчет среднего заработка',
+    '7. Подробный расчет матответственности по ст. 236 ТК РФ',
+  ];
+  const hasFindText = body && typeof body.findText === 'function';
+  const hasAllHeadings = hasFindText && requiredHeadings.every((heading) =>
+    Boolean(body.findText(escapeApprovedClaimTemplateRegex_(heading)))
+  );
+  if (hasAllHeadings) {
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'approved_template_preservation_required',
+      'Автоматическое обновление судебного расчета временно остановлено: '
+        + 'для утвержденного макета еще не настроено построчное заполнение всех таблиц. '
+        + 'Это сделано, чтобы не менять согласованную структуру и форматирование документа.'
+    );
+  }
+  return true;
+}
+
+function escapeApprovedClaimTemplateRegex_(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function clearNewSelectedClaimDocumentBody_(body) {
