@@ -524,6 +524,18 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     });
 
     reportCalculationProgress_(transactionOptions, { stage: 'recoveries' });
+    const employmentAuditScope = typeof resolveEmploymentAuditScope_ === 'function'
+      ? resolveEmploymentAuditScope_(questionnaireState)
+      : { active: false, warnings: [] };
+    const scopeExcludedFacts = [];
+    results.forEach((result) => {
+      if (!result || !Array.isArray(result.claimFacts)) return;
+      const scoped = typeof filterClaimFactsByEmploymentAuditScope_ === 'function'
+        ? filterClaimFactsByEmploymentAuditScope_(result.claimFacts, employmentAuditScope)
+        : { included: result.claimFacts, excluded: [] };
+      result.claimFacts = scoped.included;
+      Array.prototype.push.apply(scopeExcludedFacts, scoped.excluded || []);
+    });
     const preparedRecoveryFacts = prepareRecoveryBaselineFacts_(
       results.reduce((facts, result) => facts.concat(result.claimFacts || []), []), recoveryState
     );
@@ -548,8 +560,23 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     );
     derivativeEffects.warnings = derivativeEffects.warnings.concat(derivativeWriteResult.warnings);
     recoveryEffects.derivativeEffects = derivativeEffects;
-    recoveryEffects.warnings = mergeCalculationWarnings_(results, recoveryEffects.warnings
-      .concat(derivativeEffects.warnings));
+    const scopedRecoveryAuditFacts = typeof filterClaimFactsByEmploymentAuditScope_ === 'function'
+      ? filterClaimFactsByEmploymentAuditScope_(recoveryEffects.auditFacts || [], employmentAuditScope)
+      : { included: recoveryEffects.auditFacts || [], excluded: [] };
+    recoveryEffects.auditFacts = scopedRecoveryAuditFacts.included;
+    Array.prototype.push.apply(scopeExcludedFacts, scopedRecoveryAuditFacts.excluded || []);
+    const employmentScopeWarnings = (employmentAuditScope.warnings || []).slice();
+    if (scopeExcludedFacts.length) {
+      employmentScopeWarnings.push({
+        code: 'employment_start_scope_applied',
+        disputed: false,
+        source: employmentAuditScope.fact && employmentAuditScope.fact.sourceRef
+          || 'Анкета и требования!B4',
+        reason: `Из итогового аудита исключены позиции за ${scopeExcludedFacts.length} период(а) до подтвержденной даты начала трудовых отношений.`,
+      });
+    }
+    recoveryEffects.warnings = mergeCalculationWarnings_(results, employmentScopeWarnings
+      .concat(recoveryEffects.warnings, derivativeEffects.warnings));
     SpreadsheetApp.flush();
     if (recoveryWriteResult.written > 0 || derivativeWriteResult.written > 0) {
       results.forEach((result, index) => {

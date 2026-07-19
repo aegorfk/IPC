@@ -7608,6 +7608,87 @@ assertRollbackPreflightFailurePreservesRunState(
   );
 }
 
+// A confirmed start date limits only fully preceding monthly audit facts. The
+// starting month stays visible, while an absent or unconfirmed date never
+// silently discards the available payroll-slip audit.
+{
+  const harness = createHarness();
+  const confirmed = harness.context.resolveEmploymentAuditScope_({
+    employmentStartFact: {
+      value: new Date(2024, 2, 15), sourceType: 'user_confirmed',
+      sourceRef: 'Анкета и требования!B4', confidence: 1,
+      verificationStatus: 'confirmed',
+    },
+  });
+  const facts = ['2024-02', '2024-03', '2024-04'].map((periodKey) => ({ periodKey }));
+  const scoped = harness.context.filterClaimFactsByEmploymentAuditScope_(facts, confirmed);
+  assert.deepStrictEqual(Array.from(scoped.included, (fact) => fact.periodKey), ['2024-03', '2024-04']);
+  assert.deepStrictEqual(Array.from(scoped.excluded, (fact) => fact.periodKey), ['2024-02']);
+
+  const missing = harness.context.resolveEmploymentAuditScope_({ employmentStartDate: null });
+  assert.strictEqual(missing.active, false);
+  assert.strictEqual(missing.warnings[0].code, 'employment_start_date_missing');
+  assert.strictEqual(
+    harness.context.filterClaimFactsByEmploymentAuditScope_(facts, missing).included.length,
+    3
+  );
+
+  const extracted = harness.context.createEmploymentAuditFact_(new Date(2024, 1, 1), {
+    sourceType: 'payroll_slip', sourceRef: 'Расчетные_листы_Свод!E2',
+    confidence: 0.8, verificationStatus: 'probable_or_disputed',
+  });
+  const manual = harness.context.createEmploymentAuditFact_(new Date(2024, 2, 15), {
+    sourceType: 'user_confirmed', sourceRef: 'Анкета и требования!B4',
+    confidence: 1, verificationStatus: 'confirmed',
+  });
+  const conflict = harness.context.resolveEmploymentAuditScope_({
+    employmentStartFacts: [extracted, manual],
+  });
+  assert.strictEqual(conflict.active, true);
+  assert.strictEqual(conflict.startDate.getMonth(), 2);
+  assert.ok(conflict.warnings.some((warning) => warning.code === 'employment_start_date_conflict'));
+}
+
+// Calculation orchestration passes only in-scope facts into the selectable
+// audit and its totals, and turns a missing lower boundary into a visible
+// non-blocking constructor issue.
+{
+  const harness = createHarness(['Источник', 'Анкета и требования']);
+  const source = harness.spreadsheet.getSheetByName('Источник');
+  const descriptor = {
+    id: 'monthlyPremiums', layout: { id: 'monthlyPremiums' }, sheet: source,
+    headerRow: 1, semanticColumns: {},
+  };
+  harness.context.discoverCalculationSheetDescriptors_ = () => [descriptor];
+  harness.context.loadConsultantIndexes_ = () => ({});
+  harness.context.loadProductionCalendar_ = () => ({});
+  harness.context.loadSalaryCompensationRates_ = () => ([]);
+  harness.context.captureClaimQuestionnaireState_ = () => ({
+    employmentStartFact: {
+      value: new Date(2024, 2, 15), sourceType: 'user_confirmed',
+      sourceRef: 'Анкета и требования!B4', confidence: 1, verificationStatus: 'confirmed',
+    },
+    partialRecoveries: [],
+  });
+  harness.context.normalizePartialRecoveries_ = () => ({ valid: [], invalid: [], unallocated: [] });
+  harness.context.updateUnpaidSalaryIndexationCore_ = () => ({
+    sheetName: 'Источник', layoutId: 'monthlyPremiums', calculated: 3, skipped: 0,
+    totals: {}, derivativeWarnings: [], derivativeDependencies: [],
+    claimFacts: ['2024-02', '2024-03', '2024-04'].map((periodKey, index) => ({
+      family: 'underpayment', layoutId: 'monthlyPremiums', baseKind: 'monthly_premium',
+      baseLabel: 'Премия', periodKey, periodLabel: periodKey, calculationItem: `principal_${index}`,
+      amount: 100,
+    })),
+  });
+  harness.context.deleteLegacyGeneratedSheets_ = () => {};
+  const results = harness.context.runAllSheetsIndexation_(harness.spreadsheet);
+  assert.deepStrictEqual(Array.from(results[0].claimFacts, (fact) => fact.periodKey), ['2024-03', '2024-04']);
+  assert.strictEqual(results[0].totals.underpayment, 200);
+  assert.ok(results.calculationEffects.warnings.some((warning) =>
+    warning.code === 'employment_start_scope_applied'
+  ));
+}
+
 // Premium identifiers stay source-provider-neutral while source ordinals keep
 // independent payment events separate; classification remains reviewable.
 {

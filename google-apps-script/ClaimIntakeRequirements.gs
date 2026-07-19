@@ -117,6 +117,96 @@ function normalizeEmploymentPaymentTimeline_(value) {
 }
 
 /**
+ * Determines the lower boundary of claim audit from the questionnaire without
+ * inventing a date from the first available payroll slip.  A confirmed user
+ * correction remains authoritative even where document candidates disagree;
+ * the disagreement is retained as a non-blocking review warning.
+ */
+function resolveEmploymentAuditScope_(questionnaireState) {
+  const state = questionnaireState || {};
+  const hasEmploymentStartAnswer = Object.prototype.hasOwnProperty.call(state, 'employmentStartDate')
+    || Object.prototype.hasOwnProperty.call(state, 'employmentStartFact')
+    || Object.prototype.hasOwnProperty.call(state, 'employmentStartFacts');
+  const suppliedFacts = Array.isArray(state.employmentStartFacts)
+    ? state.employmentStartFacts
+    : (state.employmentStartFact ? [state.employmentStartFact] : []);
+  if (!suppliedFacts.length && state.employmentStartDate) {
+    suppliedFacts.push(createEmploymentAuditFact_(state.employmentStartDate, {
+      sourceType: 'user_confirmed',
+      sourceRef: 'Анкета и требования!B4',
+      confidence: 1,
+      verificationStatus: 'confirmed',
+    }));
+  }
+  const resolution = resolveEmploymentAuditFacts_(suppliedFacts);
+  const fact = resolution.effective;
+  const startDate = fact && parseDateValue_(fact.value);
+  const source = fact && fact.sourceRef ? fact.sourceRef : 'Анкета и требования!B4';
+  const warnings = [];
+  if (!startDate) {
+    // Older programmatic callers did not yet provide the questionnaire field.
+    // They retain the previous neutral behavior; the real questionnaire always
+    // supplies an explicit null when the user leaves the answer blank.
+    if (!hasEmploymentStartAnswer) {
+      return { active: false, startDate: null, fact: null, resolution, warnings };
+    }
+    warnings.push({
+      code: 'employment_start_date_missing',
+      disputed: true,
+      source,
+      reason: 'Не задана дата начала трудовых отношений: нижняя граница аудита не проверена; расчет продолжается за весь доступный период.',
+    });
+    return { active: false, startDate: null, fact: null, resolution, warnings };
+  }
+  if (fact.verificationStatus !== 'confirmed') {
+    warnings.push({
+      code: 'employment_start_date_unconfirmed',
+      disputed: true,
+      source,
+      reason: 'Дата начала трудовых отношений не подтверждена: нижняя граница аудита не ограничена до подтверждения пользователем.',
+    });
+    return { active: false, startDate, fact, resolution, warnings };
+  }
+  if (resolution.conflict) {
+    warnings.push({
+      code: 'employment_start_date_conflict',
+      disputed: true,
+      source,
+      reason: 'Дата начала трудовых отношений расходится между источниками: для аудита использована подтвержденная пользователем дата.',
+    });
+  }
+  return { active: true, startDate, fact, resolution, warnings };
+}
+
+/**
+ * Claim facts are monthly at this stage.  The month in which employment
+ * starts is deliberately preserved: a monthly row can contain work after the
+ * start date, while a month ending before it cannot form a claim.
+ */
+function filterClaimFactsByEmploymentAuditScope_(claimFacts, scope) {
+  const source = claimFacts || [];
+  if (!scope || !scope.active || !(scope.startDate instanceof Date)) {
+    return { included: source.slice(), excluded: [] };
+  }
+  const firstEmploymentMonth = new Date(
+    scope.startDate.getFullYear(), scope.startDate.getMonth(), 1
+  );
+  const included = [];
+  const excluded = [];
+  source.forEach((fact) => {
+    const match = String(fact && fact.periodKey || '').match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+    if (!match) {
+      included.push(fact);
+      return;
+    }
+    const periodMonth = new Date(Number(match[1]), Number(match[2]) - 1, 1);
+    if (periodMonth < firstEmploymentMonth) excluded.push(fact);
+    else included.push(fact);
+  });
+  return { included, excluded };
+}
+
+/**
  * A premium identity deliberately excludes employer and payroll-system labels.
  * The persisted source ordinal keeps visually identical source events apart
  * until a later calculation layer explicitly decides to aggregate them.
