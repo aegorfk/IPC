@@ -7957,6 +7957,20 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(missing.requestedDocument.includes('Табель') || missing.requestedDocument.includes('договор'));
 }
 
+// Every catalog item is versioned and turns missing evidence into a concrete
+// question rather than a false zero-valued conclusion.
+{
+  const harness = createHarness();
+  const item = harness.context.createPayrollAuditCatalogResult_('overtime_hours', {
+    layoutId: 'salary', baseKind: 'work_time', periodKey: '2024-03', calculationItem: 'hours',
+    status: 'cannot_verify', requestedDocument: 'Табель учета рабочего времени.',
+  });
+  assert.strictEqual(item.ruleVersion, '1.0');
+  assert.strictEqual(item.moneyImpact, null);
+  assert.strictEqual(item.claimFamily, null);
+  assert.ok(item.requestedDocument.includes('Табель'));
+}
+
 // Vacation events stay separate even within one payroll slip; chronology
 // retains payment timing, flags overlap, and computes a reviewable unused balance.
 {

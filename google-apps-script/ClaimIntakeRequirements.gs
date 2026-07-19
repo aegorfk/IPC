@@ -18,6 +18,13 @@ const EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_PROPERTY = 'EMPLOYMENT_NORMATIVE_IMPOR
 const EMPLOYMENT_NORMATIVE_DOCUMENT_MIME_TYPE = 'application/vnd.google-apps.document';
 const EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_PROPERTY = 'EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_V1';
 const EMPLOYMENT_PREMIUM_DELAY_DETAILS_SHEET_NAME = 'Детализация просрочки премий';
+const PAYROLL_AUDIT_RULE_CATALOG_V1 = {
+  employment_start_boundary: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
+  premium_payment_delay: { version: '1.0', minimumSources: ['payroll_slip', 'due_rule'], claimFamily: 'premium_payment_delay' },
+  overtime_hours: { version: '1.0', minimumSources: ['work_schedule', 'timesheet'], claimFamily: null },
+  vacation_payment_timing: { version: '1.0', minimumSources: ['vacation_interval', 'payment_date'], claimFamily: 'vacation_payment_delay' },
+  payroll_source_integrity: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
+};
 
 const EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY = {
   user_confirmed: 400,
@@ -53,6 +60,31 @@ function createEmploymentAuditFact_(value, options) {
     verificationStatus,
     notes: String(settings.notes || ''),
   };
+}
+
+function getPayrollAuditRuleCatalog_() {
+  return JSON.parse(JSON.stringify(PAYROLL_AUDIT_RULE_CATALOG_V1));
+}
+
+function createPayrollAuditCatalogResult_(ruleId, input) {
+  const rule = PAYROLL_AUDIT_RULE_CATALOG_V1[ruleId];
+  if (!rule) throw new Error(`Неизвестное правило аудита: ${ruleId}`);
+  const value = input || {};
+  const status = EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.indexOf(value.status) >= 0
+    ? value.status : 'cannot_verify';
+  const result = {
+    id: buildEmploymentAuditPositionId_({ ruleId, layoutId: value.layoutId, baseKind: value.baseKind,
+      periodKey: value.periodKey, calculationItem: value.calculationItem }),
+    ruleId, ruleVersion: rule.version, minimumSources: rule.minimumSources.slice(), status,
+    evidence: (value.evidence || []).slice(), moneyImpact: value.moneyImpact === undefined ? null : value.moneyImpact,
+    claimFamily: value.claimFamily === undefined ? rule.claimFamily : value.claimFamily,
+    question: String(value.question || ''), requestedDocument: String(value.requestedDocument || ''),
+    reason: String(value.reason || ''), disputed: status === 'probable_or_disputed' || status === 'cannot_verify',
+  };
+  if (status === 'cannot_verify' && !result.question && !result.requestedDocument) {
+    result.question = 'Уточните недостающий факт для проверки.';
+  }
+  return result;
 }
 
 function normalizeEmploymentAuditConfidence_(value) {
