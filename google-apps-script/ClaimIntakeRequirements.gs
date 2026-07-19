@@ -87,6 +87,43 @@ function createPayrollAuditCatalogResult_(ruleId, input) {
   return result;
 }
 
+function buildPayrollSlipAutomaticAuditCatalog_(rows, quality) {
+  const items = [];
+  const sourceRows = rows || [];
+  const details = quality || {};
+  (details.missingMonths || []).forEach((periodLabel, index) => items.push(
+    createPayrollAuditCatalogResult_('payroll_source_integrity', {
+      layoutId: 'raw_payroll', baseKind: 'period_completeness', periodKey: periodLabel,
+      calculationItem: `missing_period_${index + 1}`, status: 'probable_or_disputed',
+      evidence: [{ periodLabel }], reason: `Между расчетными листками пропущен период ${periodLabel}.`,
+      question: 'Есть ли расчетный листок за этот период?', requestedDocument: 'Расчетный листок за пропущенный период.',
+    })
+  ));
+  const seen = new Map();
+  sourceRows.forEach((row, index) => {
+    if (!row || !row.file || !row.sourceRow) return;
+    const key = [row.file, row.section, row.sourceRow, row.accrued, row.paid, row.withheld].join('|');
+    if (seen.has(key)) {
+      items.push(createPayrollAuditCatalogResult_('payroll_source_integrity', {
+        layoutId: 'raw_payroll', baseKind: 'source_row', periodKey: row.period && `${row.period.year}-${pad2_(row.period.month)}`,
+        calculationItem: `possible_duplicate_${index + 1}`, status: 'probable_or_disputed',
+        evidence: [{ source: row.file, sourceRow: row.sourceRow }, { source: sourceRows[seen.get(key)].file }],
+        reason: 'Найдены две одинаковые исходные позиции; они сохранены отдельно до проверки технического дубля.',
+        question: 'Это один и тот же расчетный листок/строка или самостоятельные позиции?',
+      }));
+    } else seen.set(key, index);
+  });
+  (details.companyMismatchPeriods || []).forEach((periodLabel, index) => items.push(
+    createPayrollAuditCatalogResult_('payroll_source_integrity', {
+      layoutId: 'raw_payroll', baseKind: 'employer_identity', periodKey: periodLabel,
+      calculationItem: `employer_mismatch_${index + 1}`, status: 'probable_or_disputed',
+      reason: 'Работодатель отличается от основной организации в наборе листков; расчет продолжается по принятому допущению.',
+      question: 'Подтвердите, относится ли этот период к тому же работодателю.',
+    })
+  ));
+  return items;
+}
+
 function normalizeEmploymentAuditConfidence_(value) {
   if (value === undefined || value === null || value === '') return null;
   const numeric = Number(value);

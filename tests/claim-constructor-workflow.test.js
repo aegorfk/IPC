@@ -7971,6 +7971,16 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(item.requestedDocument.includes('Табель'));
 }
 
+{
+  const harness = createHarness();
+  const items = harness.context.buildPayrollSlipAutomaticAuditCatalog_([
+    { file: 'a.pdf', section: 'Начислено', sourceRow: 'Оклад', accrued: 10, period: { year: 2024, month: 1 } },
+    { file: 'a.pdf', section: 'Начислено', sourceRow: 'Оклад', accrued: 10, period: { year: 2024, month: 1 } },
+  ], { missingMonths: ['02.2024'], companyMismatchPeriods: ['03.2024'] });
+  assert.strictEqual(items.length, 3);
+  assert.ok(items.every((item) => item.ruleId === 'payroll_source_integrity'));
+}
+
 // Vacation events stay separate even within one payroll slip; chronology
 // retains payment timing, flags overlap, and computes a reviewable unused balance.
 {
