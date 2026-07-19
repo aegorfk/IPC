@@ -7957,6 +7957,25 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(missing.requestedDocument.includes('Табель') || missing.requestedDocument.includes('договор'));
 }
 
+// Vacation events stay separate even within one payroll slip; chronology
+// retains payment timing, flags overlap, and computes a reviewable unused balance.
+{
+  const harness = createHarness();
+  const chronology = harness.context.buildEmploymentVacationChronology_([
+    { id: 'a', vacationPeriod: '01.10.2025-05.10.2025', paymentDate: new Date(2025, 8, 25), amount: 15320.85, paidAmount: 15320.85, sourceRef: 'лист 1' },
+    { id: 'b', vacationStartDate: new Date(2025, 10, 20), vacationEndDate: new Date(2025, 10, 24), paymentDate: new Date(2025, 10, 19), amount: 3094.05, paidAmount: 3094.05, sourceRef: 'лист 2' },
+    { id: 'c', vacationStartDate: new Date(2025, 10, 23), vacationEndDate: new Date(2025, 10, 25), paymentDate: null, amount: 100, paidAmount: 0, sourceRef: 'лист 3' },
+  ], { employmentStartDate: new Date(2025, 0, 1), employmentEndDate: new Date(2025, 11, 31), averageDailyEarnings: 3000 });
+  assert.strictEqual(chronology.items.length, 3);
+  assert.strictEqual(chronology.items[0].days, 5);
+  assert.ok(chronology.warnings.some((warning) => warning.code === 'vacation_interval_overlap'));
+  assert.ok(chronology.warnings.some((warning) => warning.code === 'vacation_interval_missing') === false);
+  assert.ok(chronology.warnings.some((warning) => warning.code === 'vacation_payment_date_missing'));
+  assert.strictEqual(chronology.usedDays, 13);
+  assert.strictEqual(chronology.unusedDays, 15);
+  assert.strictEqual(chronology.unusedCompensation, 45000);
+}
+
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];

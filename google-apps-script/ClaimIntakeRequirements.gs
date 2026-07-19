@@ -961,6 +961,63 @@ function buildEmploymentOvertimeAudit_(event, workingTimeFacts) {
   };
 }
 
+/** Keeps each vacation source event separate while deriving a reviewable leave chronology. */
+function buildEmploymentVacationChronology_(events, options) {
+  const settings = options || {};
+  const entitlement = Number(settings.annualEntitlementDays || 28);
+  const start = parseDateValue_(settings.employmentStartDate);
+  const end = parseDateValue_(settings.employmentEndDate);
+  const items = (events || []).map((event, index) => {
+    const value = event || {};
+    const interval = resolveEmploymentVacationInterval_(value);
+    const paymentDate = parseDateValue_(value.paymentDate);
+    const timing = typeof buildZupVacationTimingAudit_ === 'function'
+      ? buildZupVacationTimingAudit_({ vacationStartDate: interval.startDate, paymentDate,
+        entitledAmount: value.amount, paidAmount: value.paidAmount })
+      : { status: 'cannot_verify', reason: 'Не загружен модуль проверки отпускных.' };
+    return {
+      id: String(value.id || `vacation_event_${index + 1}`), sourceRef: value.sourceRef || value.file || '',
+      startDate: interval.startDate, endDate: interval.endDate, days: interval.days,
+      paymentDate, amount: parseMoney_(value.amount), paidAmount: parseMoney_(value.paidAmount),
+      timing, status: interval.startDate && interval.endDate ? 'available' : 'cannot_verify',
+    };
+  }).sort((a, b) => Number(a.startDate || 0) - Number(b.startDate || 0));
+  const warnings = [];
+  items.forEach((item, index) => {
+    if (item.status === 'cannot_verify') warnings.push({ code: 'vacation_interval_missing', disputed: true,
+      source: item.sourceRef, reason: 'Не распознан точный интервал отпуска; требуется уточнение кадрового документа.' });
+    if (item.timing && item.timing.status === 'cannot_verify') warnings.push({ code: 'vacation_payment_date_missing', disputed: true,
+      source: item.sourceRef, reason: 'Не подтверждена фактическая дата выплаты отпускных; срок по ст. 236 ТК РФ требует уточнения.' });
+    if (index && item.startDate && items[index - 1].endDate && item.startDate <= items[index - 1].endDate) {
+      warnings.push({ code: 'vacation_interval_overlap', disputed: true, source: item.sourceRef,
+        reason: 'Интервалы отпусков пересекаются; позиции сохранены раздельно и требуют сверки.' });
+    }
+  });
+  const usedDays = items.reduce((sum, item) => sum + (Number(item.days) || 0), 0);
+  const accrualEnd = end || new Date();
+  const months = start && accrualEnd >= start
+    ? (accrualEnd.getFullYear() - start.getFullYear()) * 12 + accrualEnd.getMonth() - start.getMonth() + 1 : null;
+  const accruedDays = months === null || !Number.isFinite(entitlement) ? null : Math.max(0, months * entitlement / 12);
+  const unusedDays = accruedDays === null ? null : Math.max(0, accruedDays - usedDays);
+  const averageDailyEarnings = parseMoney_(settings.averageDailyEarnings);
+  const unusedCompensation = end && unusedDays !== null && averageDailyEarnings !== null
+    ? roundClaimAuditMoney_(unusedDays * averageDailyEarnings) : null;
+  return { items, warnings, usedDays, accruedDays, unusedDays, unusedCompensation,
+    status: warnings.length ? 'complete_with_warnings' : 'complete' };
+}
+
+function resolveEmploymentVacationInterval_(event) {
+  const value = event || {};
+  let startDate = parseDateValue_(value.vacationStartDate || value.startDate);
+  let endDate = parseDateValue_(value.vacationEndDate || value.endDate);
+  const dates = String(value.vacationPeriod || '').match(/\d{1,2}[.]\d{1,2}[.]\d{4}/g) || [];
+  if (!startDate && dates[0]) startDate = parseDateValue_(dates[0]);
+  if (!endDate && dates[1]) endDate = parseDateValue_(dates[1]);
+  const days = startDate && endDate && endDate >= startDate
+    ? Math.round((endDate - startDate) / 86400000) + 1 : Number(value.days) || null;
+  return { startDate, endDate, days };
+}
+
 function getClaimIntakeSettings_() {
   return CLAIM_INTAKE_SETTINGS;
 }
