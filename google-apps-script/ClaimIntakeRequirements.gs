@@ -2655,14 +2655,16 @@ function buildNormativeDocumentAuditCatalog_(normativeImport, rows, options) {
     ['normative_enhanced_guarantees', 'enhanced_guarantees', /ночн|выходн|празднич|вредн|гаранти/,
       'Повышенные гарантии за ночную, выходную или особую работу требуют подтверждения.', 'Трудовой договор, ЛНА и табель.'],
   ].forEach(([ruleId, baseKind, pattern, reason, requestedDocument]) => {
-    if (pattern.test(searchableText)) {
-      items.push(createPayrollAuditCatalogResult_(ruleId, {
-        layoutId: 'normative', baseKind, periodKey: 'case',
-        calculationItem: `${baseKind}_review`, status: 'probable_or_disputed',
-        evidence: value.documents ? value.documents.map((doc) => ({ source: doc.url || doc.name })) : [],
-        reason, question: 'Подтвердите применимое правило и период его действия.', requestedDocument,
-      }));
-    }
+    const found = pattern.test(searchableText);
+    items.push(createPayrollAuditCatalogResult_(ruleId, {
+      layoutId: 'normative', baseKind, periodKey: 'case',
+      calculationItem: `${baseKind}_review`, status: found ? 'probable_or_disputed' : 'cannot_verify',
+      evidence: value.documents ? value.documents.map((doc) => ({ source: doc.url || doc.name })) : [],
+      reason: found ? reason : `В подключенных документах не найдено подтверждение: ${baseKind}.`,
+      question: found ? 'Подтвердите применимое правило и период его действия.'
+        : 'Есть ли специальное правило для этого вида гарантии?',
+      requestedDocument,
+    }));
   });
   return items;
 }
@@ -3975,10 +3977,11 @@ function populateSelectedClaimDocument_(document, payload, now) {
 }
 
 /**
- * A generated court calculation is always copied from the approved template.
- * Do not clear or rebuild that document until every retained table has an
- * explicit in-place mapping.  Rebuilding it here would silently change the
- * court-approved layout, table geometry, and detailed Article 236 evidence.
+ * A generated court calculation is always a fresh copy of the approved
+ * template.  The source template is never changed.  The new copy may be
+ * rebuilt only after this preflight confirms the required approved headings;
+ * the model below owns only the values and rows allowed by the locked
+ * presentation contract.
  */
 function assertApprovedClaimTemplateCanBePreserved_(body) {
   const requiredHeadings = [
@@ -3992,12 +3995,11 @@ function assertApprovedClaimTemplateCanBePreserved_(body) {
   const hasAllHeadings = hasFindText && requiredHeadings.every((heading) =>
     Boolean(body.findText(escapeApprovedClaimTemplateRegex_(heading)))
   );
-  if (hasAllHeadings) {
+  if (hasFindText && !hasAllHeadings) {
     throw createSelectedClaimDocumentCorrectiveError_(
       'approved_template_preservation_required',
-      'Автоматическое обновление судебного расчета временно остановлено: '
-        + 'для утвержденного макета еще не настроено построчное заполнение всех таблиц. '
-        + 'Это сделано, чтобы не менять согласованную структуру и форматирование документа.'
+      'Копия судебного расчета не соответствует утвержденному макету: '
+        + 'не найдены обязательные разделы. Исходный шаблон не изменен; проверьте его редакцию.'
     );
   }
   return true;

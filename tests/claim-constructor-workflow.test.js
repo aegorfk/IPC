@@ -7529,23 +7529,21 @@ assertRollbackPreflightFailurePreservesRunState(
   );
 }
 
-// The approved court template is protected: a fresh copy must never be
-// cleared and rebuilt before every retained table has an in-place mapping.
+// The approved source template is protected: a fresh copy can be rebuilt only
+// after the required headings are present; a mismatched template is rejected.
 {
   const harness = createHarness();
   const approvedTemplateBody = {
     findText() { return {}; },
   };
-  assert.throws(
-    () => harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody),
-    /не менять согласованную структуру и форматирование/i
+  assert.strictEqual(
+    harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody), true
   );
-  try {
-    harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody);
-  } catch (error) {
-    assert.strictEqual(error.code, 'approved_template_preservation_required');
-    assert.strictEqual(harness.context.isSelectedClaimDocumentCorrectiveError_(error), true);
-  }
+  const missingTemplateBody = { findText() { return null; } };
+  assert.throws(
+    () => harness.context.assertApprovedClaimTemplateCanBePreserved_(missingTemplateBody),
+    /не соответствует утвержденному макету/i
+  );
 }
 
 // Employment/remuneration facts retain all source versions. A confirmed user
@@ -8032,6 +8030,21 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(items.length, 1);
   assert.strictEqual(items[0].ruleId, 'overtime_hours');
   assert.strictEqual(items[0].status, 'probable_or_disputed');
+  const partial = harness.context.buildEmploymentOvertimeAuditCatalog_([
+    { file: 'first.pdf', sheet: 'Январь', employee: 'Иванов', period: { year: 2024, month: 1 },
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '1',
+      paidDays: 12 },
+  ], [norm], { productionCalendar: {}, employmentAuditScope: {
+    active: true, startDate: new Date(2024, 0, 15),
+  } });
+  assert.strictEqual(partial[0].status, 'informational');
+
+  const paid = harness.context.buildEmploymentOvertimeAudit_({
+    layoutId: 'salary', periodKey: '2024-03', actualHours: 184, expectedHours: 176,
+    paidOvertimeHours: 8,
+  }, [norm]);
+  assert.strictEqual(paid.status, 'informational');
+  assert.strictEqual(paid.unpaidOvertimeHours, 0);
 
   const shift = harness.context.buildEmploymentOvertimeAuditCatalog_([
     { file: 'shift.pdf', sheet: 'Март', employee: 'Иванов', period: { year: 2024, month: 3 },
@@ -8043,6 +8056,11 @@ assertRollbackPreflightFailurePreservesRunState(
   })], { productionCalendar: {}, employmentAuditScope: { active: false } });
   assert.strictEqual(shift[0].status, 'cannot_verify');
   assert.ok(shift[0].requestedDocument.includes('график'));
+  const unknown = harness.context.buildEmploymentOvertimeAuditCatalog_([
+    { file: 'unknown.pdf', sheet: 'Март', employee: 'Иванов', period: { year: 2024, month: 3 },
+      section: 'Начислено', category: 'Оклад', kind: 'Оклад', sourceRow: '1', paidDays: 23 },
+  ], [], { productionCalendar: {}, employmentAuditScope: { active: false } });
+  assert.strictEqual(unknown[0].status, 'cannot_verify');
 }
 
 // Second- and third-level checks route missing questionnaire/document facts to
@@ -8064,6 +8082,27 @@ assertRollbackPreflightFailurePreservesRunState(
   );
   assert.strictEqual(missingNormative[0].status, 'cannot_verify');
   assert.ok(missingNormative[0].requestedDocument.includes('Google Drive'));
+}
+
+// Vendor-neutral tabular fixtures and mutation checks exercise the same
+// adapter-facing contract with different source labels and keep row traces.
+{
+  const harness = createHarness();
+  const fixtures = [
+    { file: 'vendor-a.xlsx', sheet: 'Payroll', company: 'ООО А', employee: 'Петров',
+      period: { year: 2025, month: 1 }, section: 'Accruals', category: 'Base salary',
+      kind: 'Salary', sourceRow: 'r-1', accrued: 1000 },
+    { file: 'vendor-b.pdf', sheet: 'Листок', company: 'ООО Б', employee: 'Сидоров',
+      period: { year: 2025, month: 1 }, section: 'Начислено', category: 'Оклад',
+      kind: 'Оклад', sourceRow: 'строка 2', accrued: -5 },
+  ];
+  const mutated = harness.context.buildPayrollSlipAutomaticAuditCatalog_(fixtures, {
+    missingMonths: [], companyMismatchPeriods: [], employeeMismatchPeriods: [],
+  });
+  assert.ok(mutated.some((item) => item.baseKind === 'accrued'));
+  assert.ok(mutated.some((item) => item.evidence.some((evidence) => evidence.sourceRow === 'строка 2')));
+  const traced = mutated.find((item) => item.evidence && item.evidence.length);
+  assert.ok(traced.id && traced.ruleVersion && traced.evidence[0].source);
 }
 
 // Vacation events stay separate even within one payroll slip; chronology
