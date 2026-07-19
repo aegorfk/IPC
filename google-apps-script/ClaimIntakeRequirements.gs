@@ -14,6 +14,10 @@ const CLAIM_INTAKE_SETTINGS = {
 
 const APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY = 'APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID_V1';
 const DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID = '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE';
+const EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_PROPERTY = 'EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_V1';
+const EMPLOYMENT_NORMATIVE_DOCUMENT_MIME_TYPE = 'application/vnd.google-apps.document';
+const EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_PROPERTY = 'EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_V1';
+const EMPLOYMENT_PREMIUM_DELAY_DETAILS_SHEET_NAME = 'Детализация просрочки премий';
 
 const EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY = {
   user_confirmed: 400,
@@ -308,6 +312,16 @@ function resolveEmploymentPremiumDueDate_(premium, dueRule) {
     if (end && Number.isFinite(days)) date = new Date(
       end.getFullYear(), end.getMonth(), end.getDate() + Math.trunc(days)
     );
+  } else if (rule.type === 'period_year_month_day') {
+    const periodMatch = String(premiumValue.premiumPeriod || premiumValue.accrualPeriod || '')
+      .match(/^(\d{4})(?:-(?:Q[1-4]|\d{2}))?$/i);
+    const month = Number(parameters.month);
+    const day = Number(parameters.day);
+    if (periodMatch && Number.isInteger(month) && month >= 1 && month <= 12
+      && Number.isInteger(day) && day >= 1 && day <= 31) {
+      const candidate = new Date(Number(periodMatch[1]), month - 1, day);
+      if (candidate.getMonth() === month - 1) date = candidate;
+    }
   }
   if (!date) {
     return {
@@ -426,6 +440,448 @@ function calculateEmploymentPremiumArticle236_(premium, delayAudit, compensation
     disputed: hasAssumption,
     reason: hasAssumption ? 'Расчет использует явно отмеченное допущение о сроке или дате выплаты.' : '',
   };
+}
+
+/**
+ * Adapts independently sourced premium-payment timelines to selectable claim
+ * facts.  It does not infer either date from a payroll-slip month, and keeps
+ * every source event separate by ordinal for user-level selection.
+ */
+function buildEmploymentPremiumDelayClaimFacts_(premiums, options) {
+  const settings = options || {};
+  const facts = [];
+  const warnings = [];
+  (premiums || []).forEach((input, index) => {
+    const premium = Object.assign({}, input || {});
+    const timeline = normalizeEmploymentPaymentTimeline_(premium);
+    premium.actualPaymentDateFact = premium.actualPaymentDateFact || timeline.actualPaymentDateFact;
+    const delay = buildEmploymentPremiumDelayAudit_(premium, premium.dueRule);
+    const sourceRef = String(premium.sourceRef || premium.source || `premium_event_${index + 1}`);
+    if (delay.status === 'cannot_verify') {
+      warnings.push({
+        code: 'premium_payment_delay_cannot_verify', disputed: true, source: sourceRef,
+        reason: delay.reason,
+      });
+      return;
+    }
+    if (!delay.delayed) return;
+    const compensation = calculateEmploymentPremiumArticle236_(
+      premium, delay, settings.compensationRates || [], settings.calculationEndDate
+    );
+    if (!Number.isFinite(compensation.amount) || compensation.amount <= 0) {
+      warnings.push({
+        code: 'premium_payment_delay_amount_unavailable', disputed: true, source: sourceRef,
+        reason: compensation.reason || 'Не удалось оценить материальную ответственность за просрочку премии.',
+      });
+      return;
+    }
+    const periodKey = String(premium.premiumPeriod || timeline.accrualPeriod || 'unknown_period');
+    const sourceOrdinal = Number.isInteger(premium.sourceOrdinal) ? premium.sourceOrdinal : index + 1;
+    const nature = classifyEmploymentPremiumNature_(premium);
+    const disputed = delay.status !== 'confirmed' || compensation.disputed === true || nature.disputed === true;
+    facts.push({
+      family: 'premium_payment_delay',
+      layoutId: premium.layoutId || 'premium',
+      baseKind: premium.baseKind || 'premium_payment',
+      baseLabel: premium.baseLabel || premium.label || 'Премия',
+      periodKey,
+      periodLabel: formatEmploymentPremiumPeriodLabel_(periodKey),
+      calculationItem: `premium_event_${sourceOrdinal}`,
+      premiumAuditId: buildEmploymentPremiumAuditId_(Object.assign({}, premium, { sourceOrdinal })),
+      amount: roundClaimAuditMoney_(compensation.amount),
+      disputed,
+      sourceRef,
+      dueDate: delay.dueDateFact && delay.dueDateFact.value || null,
+      actualPaymentDate: delay.actualPaymentDateFact && delay.actualPaymentDateFact.value || null,
+      delayDays: delay.delayDays,
+      premiumAmount: parseMoney_(premium.amount !== undefined ? premium.amount : premium.accrued),
+      premiumNature: nature.kind,
+      dueRule: delay.rule,
+      assumptions: [delay.reason, compensation.reason, nature.reason].filter(Boolean),
+      verificationStatus: disputed ? 'probable_or_disputed' : 'confirmed',
+      auditDetails: {
+        kind: 'premium_payment_delay',
+        premiumLabel: premium.label || premium.baseLabel || 'Премия',
+        premiumPeriod: periodKey,
+        premiumAmount: parseMoney_(premium.amount !== undefined ? premium.amount : premium.accrued),
+        dueDate: delay.dueDateFact && delay.dueDateFact.value || null,
+        actualPaymentDate: delay.actualPaymentDateFact && delay.actualPaymentDateFact.value || null,
+        delayDays: delay.delayDays,
+        liabilityAmount: roundClaimAuditMoney_(compensation.amount),
+        sourceRef,
+        dueRule: delay.rule,
+        assumptions: [delay.reason, compensation.reason, nature.reason].filter(Boolean),
+        verificationStatus: disputed ? 'probable_or_disputed' : 'confirmed',
+      },
+    });
+  });
+  return { facts, warnings };
+}
+
+function formatEmploymentPremiumPeriodLabel_(periodKey) {
+  const quarter = String(periodKey || '').match(/^(\d{4})-Q([1-4])$/i);
+  if (quarter) return `${quarter[2]} квартал ${quarter[1]}`;
+  const month = String(periodKey || '').match(/^(\d{4})-(\d{2})$/);
+  if (month) return `${month[2]}.${month[1]}`;
+  return String(periodKey || 'период не определен');
+}
+
+function isEmploymentPremiumDelayDetailsEnabled_() {
+  if (typeof PropertiesService === 'undefined') return false;
+  return PropertiesService.getDocumentProperties()
+    .getProperty(EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_PROPERTY) === 'true';
+}
+
+function setEmploymentPremiumDelayDetailsEnabled_(enabled) {
+  PropertiesService.getDocumentProperties().setProperty(
+    EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_PROPERTY,
+    enabled === true ? 'true' : 'false'
+  );
+  return enabled === true;
+}
+
+/**
+ * This optional sheet mirrors selected audit facts only. It is intentionally
+ * not read back into calculations and therefore cannot become a second source
+ * of truth for Article 236.
+ */
+function renderEmploymentPremiumDelayDetails_(spreadsheet, premiumClaimFacts, options) {
+  const settings = options || {};
+  const enabled = settings.enabled === undefined
+    ? isEmploymentPremiumDelayDetailsEnabled_()
+    : settings.enabled === true;
+  if (!enabled) return null;
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = target.getSheetByName(EMPLOYMENT_PREMIUM_DELAY_DETAILS_SHEET_NAME);
+  if (!sheet) sheet = target.insertSheet(EMPLOYMENT_PREMIUM_DELAY_DETAILS_SHEET_NAME);
+  const headers = [[
+    'Премия', 'Период', 'Сумма премии', 'Срок выплаты', 'Фактическая дата',
+    'Дней задержки', 'Материальная ответственность по ст. 236 ТК РФ',
+    'Статус', 'Источник и допущения', 'Технический идентификатор',
+  ]];
+  const rows = (premiumClaimFacts || []).filter((fact) => fact && fact.family === 'premium_payment_delay')
+    .map((fact) => {
+      const detail = fact.auditDetails || {};
+      return [
+        detail.premiumLabel || fact.baseLabel || 'Премия',
+        fact.periodLabel || fact.periodKey,
+        detail.premiumAmount === null || detail.premiumAmount === undefined ? '' : detail.premiumAmount,
+        detail.dueDate || fact.dueDate || '',
+        detail.actualPaymentDate || fact.actualPaymentDate || '',
+        detail.delayDays === null || detail.delayDays === undefined ? '' : detail.delayDays,
+        detail.liabilityAmount === null || detail.liabilityAmount === undefined ? fact.amount : detail.liabilityAmount,
+        detail.verificationStatus === 'probable_or_disputed' ? 'спорное' : 'подтверждено',
+        [detail.sourceRef || fact.sourceRef, (detail.assumptions || []).join(' ')].filter(Boolean).join(' · '),
+        fact.premiumAuditId || buildStableClaimKey_(fact),
+      ];
+    });
+  const rowCount = Math.max(sheet.getLastRow(), headers.length + rows.length, 1);
+  sheet.getRange(1, 1, rowCount, headers[0].length).clearContent();
+  sheet.getRange(1, 1, 1, headers[0].length).setValues(headers)
+    .setBackground('#E8F0FE').setFontWeight('bold');
+  if (rows.length) sheet.getRange(2, 1, rows.length, headers[0].length).setValues(rows);
+  sheet.getRange(2, 3, Math.max(rows.length, 1), 1).setNumberFormat('#,##0.00');
+  sheet.getRange(2, 4, Math.max(rows.length, 1), 2).setNumberFormat('dd.MM.yyyy');
+  sheet.getRange(2, 7, Math.max(rows.length, 1), 1).setNumberFormat('#,##0.00');
+  if (typeof sheet.getRange(1, 1, Math.max(rows.length + 1, 2), headers[0].length).createFilter === 'function') {
+    const existingFilter = typeof sheet.getFilter === 'function' ? sheet.getFilter() : null;
+    if (existingFilter && typeof existingFilter.remove === 'function') existingFilter.remove();
+    sheet.getRange(1, 1, Math.max(rows.length + 1, 2), headers[0].length).createFilter();
+  }
+  return sheet;
+}
+
+/**
+ * Normative-document analysis is deliberately opt-in.  Until it is enabled,
+ * the calculator retains its payroll-slip-only workflow and never reads the
+ * optional folder simply because a link happens to be present in Constructor.
+ */
+function isEmploymentNormativeImportEnabled_() {
+  if (typeof PropertiesService === 'undefined') return false;
+  return PropertiesService.getDocumentProperties()
+    .getProperty(EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_PROPERTY) === 'true';
+}
+
+function setEmploymentNormativeImportEnabled_(enabled) {
+  if (typeof PropertiesService === 'undefined') {
+    throw new Error('Недоступно хранилище настроек для включения анализа нормативных документов.');
+  }
+  PropertiesService.getDocumentProperties().setProperty(
+    EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_PROPERTY,
+    enabled === true ? 'true' : 'false'
+  );
+  return enabled === true;
+}
+
+function readEmploymentNormativeFolderInput_(spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const range = target.getRangeByName('CLAIM_CONSTRUCTOR_NORMATIVE_FOLDER');
+  const url = range ? String(range.getValue() || '').trim() : '';
+  return { url, folderId: extractEmploymentNormativeFolderId_(url) };
+}
+
+function extractEmploymentNormativeFolderId_(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/(?:drive\.google\.com\/drive\/folders\/|folders\/)([a-zA-Z0-9_-]{8,})/i);
+  return match ? match[1] : '';
+}
+
+function listEmploymentNormativeDocuments_(folder) {
+  const documents = [];
+  const files = folder && typeof folder.getFiles === 'function' ? folder.getFiles() : null;
+  if (!files || typeof files.hasNext !== 'function') return documents;
+  while (files.hasNext()) {
+    const file = files.next();
+    const name = String(file.getName ? file.getName() : '');
+    const mimeType = String(file.getMimeType ? file.getMimeType() : '');
+    const classification = classifyEmploymentNormativeDocument_(name, mimeType);
+    documents.push({
+      id: String(file.getId ? file.getId() : ''),
+      name,
+      mimeType,
+      url: String(file.getUrl ? file.getUrl() : ''),
+      type: classification.type,
+      supported: classification.supported,
+      revision: resolveEmploymentNormativeDocumentRevision_(file, name),
+    });
+  }
+  return documents.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+}
+
+function classifyEmploymentNormativeDocument_(name, mimeType) {
+  const title = normalizeText_(name);
+  const supported = mimeType === EMPLOYMENT_NORMATIVE_DOCUMENT_MIME_TYPE;
+  if (/доп(?:олнительн)?\s*(?:ое)?\s*соглашен|допсоглашен/i.test(title)) {
+    return { type: 'employment_addendum', supported };
+  }
+  if (/трудов(?:ой|ого)?\s+договор/i.test(title)) {
+    return { type: 'employment_contract', supported };
+  }
+  if (/пвтр|правил[а-я\s]*внутренн|положени|премирован|оплат[аы]\s+труд|индексац|коллективн/i.test(title)) {
+    return { type: 'local_normative_act', supported };
+  }
+  return { type: 'unknown', supported };
+}
+
+function resolveEmploymentNormativeDocumentRevision_(file, name) {
+  const title = String(name || '');
+  const explicitDate = extractEmploymentNormativeDate_(title);
+  const modified = file && typeof file.getLastUpdated === 'function' ? file.getLastUpdated() : null;
+  return {
+    explicitDate: explicitDate || null,
+    modifiedAt: modified instanceof Date ? new Date(modified) : null,
+    label: explicitDate
+      ? `редакция от ${formatDate_(explicitDate)}`
+      : (modified instanceof Date ? `изменен ${formatDate_(modified)}` : 'дата редакции не определена'),
+  };
+}
+
+function extractEmploymentNormativeDate_(text) {
+  const match = String(text || '').match(/(?:редакц(?:ия|ии)?\s*)?(?:от\s*)?(\d{1,2}[.]\d{1,2}[.]\d{4})/i);
+  return match ? parseDateValue_(match[1]) : null;
+}
+
+/**
+ * Reads one folder containing a contract, integral addenda and local acts.
+ * An inaccessible folder or unsupported file is a review item, never a hard
+ * failure for unrelated payroll reconstruction.
+ */
+function importEmploymentNormativeFolder_(spreadsheet, options) {
+  const settings = options || {};
+  const enabled = settings.enabled === undefined
+    ? isEmploymentNormativeImportEnabled_()
+    : settings.enabled === true;
+  if (!enabled) return { status: 'disabled', documents: [], warnings: [], facts: null };
+  const input = settings.input || readEmploymentNormativeFolderInput_(spreadsheet);
+  if (!input.folderId) {
+    return {
+      status: 'cannot_verify', documents: [], facts: null,
+      warnings: [{
+        code: 'normative_folder_missing', disputed: true,
+        source: 'Конструктор!B6',
+        reason: 'Не указана папка с трудовым договором, дополнительными соглашениями и ЛНА.',
+      }],
+    };
+  }
+  let folder;
+  try {
+    if (typeof DriveApp === 'undefined' || !DriveApp.getFolderById) throw new Error('DriveApp unavailable');
+    folder = DriveApp.getFolderById(input.folderId);
+  } catch (error) {
+    return {
+      status: 'cannot_verify', documents: [], facts: null,
+      warnings: [{
+        code: 'normative_folder_inaccessible', disputed: true,
+        source: input.url || input.folderId,
+        reason: 'Папка нормативных документов не найдена или недоступна; расчет по расчетным листкам продолжен.',
+      }],
+    };
+  }
+  const documents = listEmploymentNormativeDocuments_(folder);
+  const warnings = documents.filter((document) => !document.supported).map((document) => ({
+    code: 'normative_document_unsupported', disputed: true,
+    source: document.url || document.name,
+    reason: `Файл «${document.name}» пока не поддерживается для извлечения; он не блокирует расчет.`,
+  }));
+  const resolved = resolveEmploymentNormativeDocumentVersions_(documents);
+  warnings.push.apply(warnings, resolved.conflicts);
+  const facts = extractEmploymentNormativeFacts_(documents.filter((document) => document.supported));
+  warnings.push.apply(warnings, facts.premiumDueRules.conflicts);
+  return {
+    status: warnings.length ? 'complete_with_warnings' : 'complete',
+    folderId: input.folderId,
+    documents,
+    resolved,
+    facts,
+    warnings,
+  };
+}
+
+function readEmploymentNormativeDocumentText_(document) {
+  if (!document || !document.id || document.mimeType !== EMPLOYMENT_NORMATIVE_DOCUMENT_MIME_TYPE) return '';
+  try {
+    if (typeof DocumentApp === 'undefined' || !DocumentApp.openById) return '';
+    const body = DocumentApp.openById(document.id).getBody();
+    return body && typeof body.getText === 'function' ? String(body.getText() || '') : '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function extractEmploymentNormativeFacts_(documents) {
+  const employmentStartFacts = [];
+  const remunerationElements = [];
+  const premiumMentions = [];
+  const conditions = [];
+  (documents || []).forEach((document) => {
+    const text = readEmploymentNormativeDocumentText_(document);
+    if (!text) return;
+    const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((item) => item.trim()).filter(Boolean);
+    sentences.forEach((sentence, index) => {
+      const sourceRef = `${document.name}#${index + 1}`;
+      const date = extractEmploymentNormativeDate_(sentence);
+      if (date && /приступ|начал[а-я\s]*работ|принят[а-я\s]*на\s+работ|трудов(?:ой|ого)?\s+договор/i.test(sentence)) {
+        employmentStartFacts.push(createEmploymentAuditFact_(date, {
+          sourceType: 'document_confirmed', sourceRef, confidence: 0.8,
+          verificationStatus: 'probable_or_disputed', notes: sentence,
+        }));
+      }
+      if (/оклад|надбавк|доплат|компенсацион|стимулирующ/i.test(sentence)) {
+        remunerationElements.push({ text: sentence, sourceRef, documentId: document.id });
+      }
+      if (/преми|бонус/i.test(sentence)) {
+        const dueRule = extractEmploymentPremiumDueRuleFromText_(sentence, sourceRef);
+        premiumMentions.push({
+          text: sentence, sourceRef, documentId: document.id,
+          classification: classifyEmploymentPremiumNature_({ label: sentence, evidence: [{ text: sentence }] }),
+          dueRule,
+        });
+      }
+      if (/срок|выплат|не позднее|ежемесяч|ежеквартал/i.test(sentence)) {
+        conditions.push({
+          text: sentence, sourceRef, documentId: document.id,
+          dueRule: extractEmploymentPremiumDueRuleFromText_(sentence, sourceRef),
+        });
+      }
+    });
+  });
+  return {
+    employmentStartFacts, remunerationElements, premiumMentions, conditions,
+    premiumDueRules: resolveEmploymentNormativePremiumDueRules_(conditions),
+  };
+}
+
+function extractEmploymentPremiumDueRuleFromText_(text, sourceRef) {
+  const sentence = String(text || '');
+  if (!/преми|бонус/i.test(sentence)) return null;
+  const monthNames = {
+    января: 1, февраля: 2, марта: 3, апреля: 4, мая: 5, июня: 6,
+    июля: 7, августа: 8, сентября: 9, октября: 10, ноября: 11, декабря: 12,
+  };
+  const fixed = sentence.match(/(?:не\s+позднее|до)\s+(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)/i);
+  if (fixed) {
+    return {
+      id: `document_month_day_${monthNames[fixed[2].toLowerCase()]}_${fixed[1]}`,
+      type: 'period_year_month_day',
+      parameters: { month: monthNames[fixed[2].toLowerCase()], day: Number(fixed[1]) },
+      sourceType: 'document_confirmed', sourceRef, confidence: 0.75,
+      notes: sentence,
+    };
+  }
+  const offset = sentence.match(/(?:в\s+течение|не\s+позднее)\s+(\d+)\s+(?:календарн\w*\s+)?дн(?:ей|я)?\s+(?:после|по\s+окончании)/i);
+  if (offset) {
+    return {
+      id: `document_period_offset_${offset[1]}`,
+      type: 'period_end_offset', parameters: { days: Number(offset[1]) },
+      sourceType: 'document_confirmed', sourceRef, confidence: 0.7,
+      notes: sentence,
+    };
+  }
+  return null;
+}
+
+function resolveEmploymentNormativePremiumDueRules_(conditions) {
+  const rules = (conditions || []).filter((condition) => condition && condition.dueRule)
+    .map((condition) => Object.assign({ text: condition.text, sourceRef: condition.sourceRef }, condition.dueRule));
+  const bySemantic = {};
+  rules.forEach((rule) => {
+    const semantic = /ежеквартал/i.test(rule.notes || rule.text || '') ? 'quarterly'
+      : (/ежемесяч/i.test(rule.notes || rule.text || '') ? 'monthly' : 'premium');
+    if (!bySemantic[semantic]) bySemantic[semantic] = [];
+    bySemantic[semantic].push(rule);
+  });
+  const conflicts = [];
+  Object.keys(bySemantic).forEach((semantic) => {
+    const signatures = new Set(bySemantic[semantic].map((rule) =>
+      `${rule.type}:${JSON.stringify(rule.parameters || {})}`
+    ));
+    if (signatures.size > 1) {
+      conflicts.push({
+        code: 'premium_due_rule_conflict', disputed: true,
+        source: bySemantic[semantic].map((rule) => rule.sourceRef).join('; '),
+        reason: `В нормативных документах найдены противоречащие сроки выплаты премии (${semantic}); срок не выбран автоматически.`,
+      });
+    }
+  });
+  return { rules, conflicts };
+}
+
+function resolveEmploymentNormativeDocumentVersions_(documents) {
+  const byType = {};
+  (documents || []).filter((document) => document.type !== 'unknown').forEach((document) => {
+    if (!byType[document.type]) byType[document.type] = [];
+    byType[document.type].push(document);
+  });
+  const activeByType = {};
+  const conflicts = [];
+  Object.keys(byType).forEach((type) => {
+    const versions = byType[type].slice().sort((left, right) => {
+      const leftDate = left.revision.explicitDate || left.revision.modifiedAt || new Date(0);
+      const rightDate = right.revision.explicitDate || right.revision.modifiedAt || new Date(0);
+      return Number(rightDate) - Number(leftDate) || right.id.localeCompare(left.id);
+    });
+    activeByType[type] = versions[0];
+    const sameEffectiveDate = versions.length > 1 && versions[0].revision.explicitDate
+      && versions[1].revision.explicitDate
+      && Number(versions[0].revision.explicitDate) === Number(versions[1].revision.explicitDate)
+      && versions[0].id !== versions[1].id;
+    if (sameEffectiveDate) {
+      conflicts.push({
+        code: 'normative_document_version_conflict', disputed: true,
+        source: `${versions[0].name}; ${versions[1].name}`,
+        reason: `Для типа «${employmentNormativeDocumentTypeLabel_(type)}» найдены разные документы с одной датой редакции; требуется выбрать применимую редакцию.`,
+      });
+    }
+  });
+  return { activeByType, conflicts };
+}
+
+function employmentNormativeDocumentTypeLabel_(type) {
+  return {
+    employment_contract: 'трудовой договор',
+    employment_addendum: 'дополнительное соглашение',
+    local_normative_act: 'локальный нормативный акт',
+  }[type] || 'документ';
 }
 
 function getClaimIntakeSettings_() {
@@ -638,6 +1094,7 @@ function buildClaimAuditModel_(claimFacts) {
   const familyDefinitions = [
     { family: 'underpayment', label: 'Взыскать недоплату' },
     { family: 'material_liability', label: 'Материальная ответственность' },
+    { family: 'premium_payment_delay', label: 'Материальная ответственность за просрочку выплаты премии' },
     { family: 'vacation_payment_delay', label: 'Нарушение срока выплаты отпускных' },
     { family: 'salary_indexation', label: 'Индексация заработной платы' },
     { family: 'underpayment_indexation', label: 'Индексация недоплаты' },
@@ -655,6 +1112,7 @@ function buildClaimAuditModel_(claimFacts) {
     if (existing) {
       existing.amount = roundClaimAuditMoney_(existing.amount + amount);
       existing.disputed = existing.disputed || fact.disputed === true;
+      if (fact.auditDetails) existing.auditDetails.push(fact.auditDetails);
       if (fact.sourceRef && existing.sourceRefs.indexOf(fact.sourceRef) < 0) {
         existing.sourceRefs.push(fact.sourceRef);
       }
@@ -677,6 +1135,7 @@ function buildClaimAuditModel_(claimFacts) {
       badge: fact.disputed === true ? 'спорное' : '',
       selected: true,
       sourceRefs: fact.sourceRef ? [fact.sourceRef] : [],
+      auditDetails: fact.auditDetails ? [fact.auditDetails] : [],
     });
   });
 
@@ -727,6 +1186,7 @@ function buildClaimViolationLabel_(fact) {
   const labels = {
     underpayment: `Недоплата по ${basis}`,
     material_liability: `Материальная ответственность за задержку выплаты по ${basis}`,
+    premium_payment_delay: 'Материальная ответственность за просрочку выплаты премии',
     vacation_payment_delay: 'Нарушение срока выплаты отпускных',
     salary_indexation: `Индексация заработной платы по ${basis}`,
     underpayment_indexation: `Индексация недоплаты по ${basis}`,
@@ -820,9 +1280,11 @@ function renderClaimAudit_(sheet, claimFacts, options) {
   });
 
   const rows = [];
+  const notes = [];
   const checkboxRanges = [];
   model.groups.forEach((group) => {
     rows.push(['', `${group.label} — ${formatClaimAuditAmount_(group.total)}`, '', '', '', '']);
+    notes.push(['', '', '', '', '', '']);
     const firstItemOffset = rows.length;
     group.items.forEach((item) => {
       rows.push([
@@ -833,10 +1295,14 @@ function renderClaimAudit_(sheet, claimFacts, options) {
         item.badge,
         item.key,
       ]);
+      notes.push(['', buildClaimAuditDetailNote_(item), '', '', '', '']);
     });
     checkboxRanges.push({ firstItemOffset, rowCount: group.items.length });
   });
-  if (!rows.length) rows.push(['', 'Расчетные позиции пока не найдены', '', '', '', '']);
+  if (!rows.length) {
+    rows.push(['', 'Расчетные позиции пока не найдены', '', '', '', '']);
+    notes.push(['', '', '', '', '', '']);
+  }
   const spreadsheet = sheet.getParent();
   const namedRange = spreadsheet.getRangeByName(audit.namedRange);
   const previousExtent = getClaimAuditRenderedExtent_(sheet, audit, namedRange);
@@ -844,9 +1310,15 @@ function renderClaimAudit_(sheet, claimFacts, options) {
   const clearExtent = Math.max(previousExtent, rows.length);
   const range = sheet.getRange(audit.firstRow, 1, clearExtent, audit.columnCount);
   range.clearContent();
+  if (typeof range.setNotes === 'function') {
+    range.setNotes(Array.from({ length: clearExtent }, () => Array(audit.columnCount).fill('')));
+  }
   if (typeof range.clearDataValidations === 'function') range.clearDataValidations();
   sheet.getRange(audit.titleCell).setValue('Аудит и требования');
   sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount).setValues(rows);
+  if (typeof sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount).setNotes === 'function') {
+    sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount).setNotes(notes);
+  }
   checkboxRanges.forEach((checkboxRange) => {
     if (!checkboxRange.rowCount) return;
     const values = rows
@@ -876,6 +1348,27 @@ function renderClaimAudit_(sheet, claimFacts, options) {
   if (typeof sheet.hideColumns === 'function') sheet.hideColumns(6);
   model.durableUncheckedClaimKeys = Array.from(durableUnchecked);
   return model;
+}
+
+function buildClaimAuditDetailNote_(item) {
+  const details = item && item.auditDetails || [];
+  if (!details.length) return '';
+  return details.map((detail) => {
+    if (!detail || detail.kind !== 'premium_payment_delay') return '';
+    const dates = [
+      detail.dueDate ? `срок: ${formatDate_(parseDateValue_(detail.dueDate))}` : '',
+      detail.actualPaymentDate ? `выплачено: ${formatDate_(parseDateValue_(detail.actualPaymentDate))}` : '',
+      Number.isFinite(Number(detail.delayDays)) ? `задержка: ${detail.delayDays} дн.` : '',
+    ].filter(Boolean).join('; ');
+    const amount = Number.isFinite(Number(detail.premiumAmount))
+      ? `сумма премии: ${formatClaimAuditAmount_(detail.premiumAmount)}` : '';
+    const liability = Number.isFinite(Number(detail.liabilityAmount))
+      ? `ст. 236 ТК РФ: ${formatClaimAuditAmount_(detail.liabilityAmount)}` : '';
+    const source = detail.sourceRef ? `источник: ${detail.sourceRef}` : '';
+    const assumptions = detail.assumptions && detail.assumptions.length
+      ? `допущения: ${detail.assumptions.join(' ')}` : '';
+    return [amount, dates, liability, source, assumptions].filter(Boolean).join('\n');
+  }).filter(Boolean).join('\n\n');
 }
 
 function ensureClaimAuditRows_(sheet, requiredLastRow) {
@@ -2024,7 +2517,8 @@ function summarizeSelectedClaimDashboardTotals_(payload) {
       if (item.family === 'salary_indexation' || item.family === 'underpayment_indexation') {
         result.indexation += amount;
       }
-      if (item.family === 'material_liability' || item.family === 'vacation_payment_delay') {
+      if (item.family === 'material_liability' || item.family === 'vacation_payment_delay'
+        || item.family === 'premium_payment_delay') {
         result.liability += amount;
       }
     });

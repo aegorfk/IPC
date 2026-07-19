@@ -431,6 +431,9 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const questionnaireState = typeof captureClaimQuestionnaireState_ === 'function'
       ? captureClaimQuestionnaireState_(spreadsheet)
       : { partialRecoveries: [] };
+    const normativeImport = typeof importEmploymentNormativeFolder_ === 'function'
+      ? importEmploymentNormativeFolder_(spreadsheet)
+      : { status: 'disabled', documents: [], warnings: [] };
     const recoveryState = typeof normalizePartialRecoveries_ === 'function'
       ? normalizePartialRecoveries_(questionnaireState.partialRecoveries || [])
       : { valid: [], invalid: [], unallocated: [] };
@@ -575,8 +578,9 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
         reason: `Из итогового аудита исключены позиции за ${scopeExcludedFacts.length} период(а) до подтвержденной даты начала трудовых отношений.`,
       });
     }
+    recoveryEffects.normativeImport = normativeImport;
     recoveryEffects.warnings = mergeCalculationWarnings_(results, employmentScopeWarnings
-      .concat(recoveryEffects.warnings, derivativeEffects.warnings));
+      .concat(normativeImport.warnings || [], recoveryEffects.warnings, derivativeEffects.warnings));
     SpreadsheetApp.flush();
     if (recoveryWriteResult.written > 0 || derivativeWriteResult.written > 0) {
       results.forEach((result, index) => {
@@ -1874,7 +1878,8 @@ function summarizeClaimFactsForConstructor_(claimFacts) {
     if (fact.family === 'salary_indexation' || fact.family === 'underpayment_indexation') {
       result.indexation += amount;
     }
-    if (fact.family === 'material_liability' || fact.family === 'vacation_payment_delay') {
+    if (fact.family === 'material_liability' || fact.family === 'vacation_payment_delay'
+      || fact.family === 'premium_payment_delay') {
       result.liability += amount;
     }
     return result;

@@ -7737,6 +7737,13 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(resolved.dueDateFact.value.getFullYear(), 2024);
   assert.strictEqual(resolved.dueDateFact.value.getMonth(), 2);
   assert.strictEqual(resolved.dueDateFact.value.getDate(), 31);
+  const relative = harness.context.resolveEmploymentPremiumDueDate_({ premiumPeriod: '2024-Q1' }, {
+    id: 'quarterly-offset', type: 'period_end_offset', parameters: { days: 15 },
+    sourceRef: 'Положение о премировании, п. 6', sourceType: 'document_confirmed',
+  });
+  assert.strictEqual(relative.dueDateFact.value.getFullYear(), 2024);
+  assert.strictEqual(relative.dueDateFact.value.getMonth(), 3);
+  assert.strictEqual(relative.dueDateFact.value.getDate(), 15);
   const delay = harness.context.buildEmploymentPremiumDelayAudit_({
     premiumPeriod: '2024-Q1',
     actualPaymentDateFact: harness.context.createEmploymentAuditFact_(new Date(2024, 6, 9), {
@@ -7750,6 +7757,44 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(delay.delayed, true);
   assert.ok(delay.delayDays > 90);
   assert.strictEqual(delay.status, 'confirmed');
+}
+
+// Premium-delay audit does not create a claim for a timely payment or invent
+// either date.  A declared assumption remains expressly disputed.
+{
+  const harness = createHarness();
+  const rule = {
+    id: 'fixed', type: 'fixed_date', date: '31.03.2024',
+    sourceType: 'document_confirmed', sourceRef: 'Положение, п. 5',
+  };
+  const timely = harness.context.buildEmploymentPremiumDelayAudit_({
+    actualPaymentDateFact: harness.context.createEmploymentAuditFact_(new Date(2024, 2, 31), {
+      sourceType: 'payroll_slip', sourceRef: 'платежное поручение', confidence: 1,
+      verificationStatus: 'confirmed',
+    }),
+  }, rule);
+  assert.strictEqual(timely.delayed, false);
+  assert.strictEqual(timely.status, 'informational');
+  assert.strictEqual(
+    harness.context.buildEmploymentPremiumDelayAudit_({}, rule).status,
+    'cannot_verify'
+  );
+  assert.strictEqual(
+    harness.context.buildEmploymentPremiumDelayAudit_({ actualPaymentDateFact: timely.actualPaymentDateFact }, null).status,
+    'cannot_verify'
+  );
+  const assumed = harness.context.buildEmploymentPremiumDelayAudit_({
+    premiumPeriod: '2024-Q1',
+    actualPaymentDateFact: harness.context.createEmploymentAuditFact_(new Date(2024, 6, 9), {
+      sourceType: 'payroll_slip', sourceRef: 'платежное поручение', confidence: 1,
+      verificationStatus: 'confirmed',
+    }),
+  }, {
+    id: 'assumed-quarter-end', type: 'quarter_end_day', parameters: { day: 31 },
+    sourceType: 'calculated_assumption', assumed: true, sourceRef: 'Анкета',
+  });
+  assert.strictEqual(assumed.delayed, true);
+  assert.strictEqual(assumed.status, 'probable_or_disputed');
 }
 
 // Article 236 for a premium uses the independent due date and closes each
@@ -7776,6 +7821,118 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.strictEqual(result.intervals[1].kind, 'outstanding');
   assert.strictEqual(result.amount, 100);
   assert.strictEqual(result.status, 'confirmed');
+}
+
+// Every delayed premium becomes its own selectable, default-included Article
+// 236 requirement. Its audit detail is derived from the same fact and can be
+// rendered to an optional sheet without becoming a calculation input.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const result = harness.context.buildEmploymentPremiumDelayClaimFacts_([{
+    layoutId: 'quarterlyPremiums', baseKind: 'quarterly_premium',
+    baseLabel: 'Ежеквартальная премия', label: 'Премия за I квартал',
+    premiumPeriod: '2024-Q1', sourceOrdinal: 7, amount: 10000,
+    remunerationSystem: true, sourceRef: 'Расчетные_листы_Свод!R42',
+    dueRule: {
+      id: 'q1-march', type: 'quarter_end_day', parameters: { day: 31 },
+      sourceType: 'document_confirmed', sourceRef: 'Положение о премировании, п. 5',
+    },
+    actualPaymentDateFact: {
+      value: new Date(2024, 6, 9), sourceType: 'payroll_slip',
+      sourceRef: 'платежное поручение № 211', confidence: 1, verificationStatus: 'confirmed',
+    },
+  }], {
+    compensationRates: [{ date: new Date(2024, 0, 1), rate: 15 }],
+    calculationEndDate: new Date(2024, 6, 9),
+  });
+  assert.strictEqual(result.warnings.length, 0);
+  assert.strictEqual(result.facts.length, 1);
+  const fact = result.facts[0];
+  assert.strictEqual(fact.family, 'premium_payment_delay');
+  assert.strictEqual(fact.periodLabel, '1 квартал 2024');
+  assert.ok(fact.amount > 0);
+  assert.strictEqual(fact.disputed, false);
+  const model = harness.context.buildClaimAuditModel_(result.facts);
+  const group = model.groups.find((item) => item.family === 'premium_payment_delay');
+  assert.ok(group);
+  assert.strictEqual(group.items[0].selected, true);
+  assert.strictEqual(group.items[0].auditDetails[0].delayDays, 100);
+  const intake = harness.context.ensureClaimConstructorWorkspace_(harness.spreadsheet).questionnaire;
+  const rendered = harness.context.renderClaimAudit_(intake, result.facts);
+  assert.strictEqual(rendered.groups[0].items[0].selected, true);
+  assert.ok(intake.getRange(
+    harness.context.getClaimIntakeLayout_().claimSelections.firstRow + 1, 2
+  ).getNote().includes('задержка: 100 дн.'));
+  const details = harness.context.renderEmploymentPremiumDelayDetails_(
+    harness.spreadsheet, result.facts, { enabled: true }
+  );
+  assert.strictEqual(details.getName(), 'Детализация просрочки премий');
+  assert.strictEqual(details.getRange(2, 2).getValue(), '1 квартал 2024');
+  assert.strictEqual(details.getRange(2, 7).getValue(), fact.amount);
+}
+
+// Normative documents are opt-in and live in one Drive folder.  Supported
+// Google Docs retain type, revision and source fragments; a missing folder,
+// competing addenda and an unsupported file stay visible but never block the
+// payroll-slip calculation.
+{
+  const harness = createHarness();
+  const makeIterator = (items) => {
+    let index = 0;
+    return { hasNext: () => index < items.length, next: () => items[index++] };
+  };
+  const makeFile = (id, name, mimeType, updated) => ({
+    getId: () => id,
+    getName: () => name,
+    getMimeType: () => mimeType,
+    getUrl: () => `https://drive.google.com/open?id=${id}`,
+    getLastUpdated: () => updated,
+  });
+  const documents = [
+    makeFile('contract', 'Трудовой договор от 01.03.2024', 'application/vnd.google-apps.document', new Date(2024, 2, 1)),
+    makeFile('addendum-a', 'Дополнительное соглашение от 01.04.2024', 'application/vnd.google-apps.document', new Date(2024, 3, 1)),
+    makeFile('addendum-b', 'Допсоглашение от 01.04.2024', 'application/vnd.google-apps.document', new Date(2024, 3, 2)),
+    makeFile('lna', 'Положение о премировании редакция от 01.01.2024', 'application/vnd.google-apps.document', new Date(2024, 0, 1)),
+    makeFile('lna-conflict', 'Положение о премировании редакция от 01.01.2024 № 2', 'application/vnd.google-apps.document', new Date(2024, 0, 2)),
+    makeFile('scan', 'ПВТР скан.pdf', 'application/pdf', new Date(2024, 0, 1)),
+  ];
+  harness.driveFolders.set('normative-folder-123456', {
+    getFiles: () => makeIterator(documents),
+  });
+  harness.documents.set('contract', {
+    getBody: () => ({ getText: () => 'Работник приступает к работе 15.03.2024. Оклад составляет 100 000 рублей.' }),
+  });
+  harness.documents.set('addendum-a', { getBody: () => ({ getText: () => 'Доплата 5 000 рублей.' }) });
+  harness.documents.set('addendum-b', { getBody: () => ({ getText: () => 'Надбавка 7 000 рублей.' }) });
+  harness.documents.set('lna', {
+    getBody: () => ({ getText: () => 'Ежеквартальная премия выплачивается не позднее 31 марта.' }),
+  });
+  harness.documents.set('lna-conflict', {
+    getBody: () => ({ getText: () => 'Ежеквартальная премия выплачивается не позднее 15 апреля.' }),
+  });
+  assert.strictEqual(harness.context.importEmploymentNormativeFolder_(harness.spreadsheet, {
+    enabled: false, input: { folderId: 'normative-folder-123456', url: 'https://drive.google.com/drive/folders/normative-folder-123456' },
+  }).status, 'disabled');
+  const imported = harness.context.importEmploymentNormativeFolder_(harness.spreadsheet, {
+    enabled: true,
+    input: { folderId: 'normative-folder-123456', url: 'https://drive.google.com/drive/folders/normative-folder-123456' },
+  });
+  assert.strictEqual(imported.status, 'complete_with_warnings');
+  assert.strictEqual(imported.documents.length, 6);
+  assert.strictEqual(imported.resolved.activeByType.employment_contract.id, 'contract');
+  assert.strictEqual(imported.resolved.activeByType.employment_addendum.id, 'addendum-b');
+  assert.ok(imported.warnings.some((warning) => warning.code === 'normative_document_unsupported'));
+  assert.ok(imported.warnings.some((warning) => warning.code === 'normative_document_version_conflict'));
+  assert.ok(imported.warnings.some((warning) => warning.code === 'premium_due_rule_conflict'));
+  assert.strictEqual(imported.facts.employmentStartFacts.length, 1);
+  assert.ok(imported.facts.remunerationElements.length >= 2);
+  assert.strictEqual(imported.facts.premiumMentions[0].classification.kind, 'disputed');
+  assert.strictEqual(imported.facts.premiumMentions[0].dueRule.type, 'period_year_month_day');
+  const missing = harness.context.importEmploymentNormativeFolder_(harness.spreadsheet, {
+    enabled: true, input: { folderId: '', url: '' },
+  });
+  assert.strictEqual(missing.status, 'cannot_verify');
+  assert.strictEqual(missing.warnings[0].code, 'normative_folder_missing');
 }
 
 function installVersionedDocsFakes(harness) {
