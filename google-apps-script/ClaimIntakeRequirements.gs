@@ -14,36 +14,213 @@ const CLAIM_INTAKE_SETTINGS = {
 
 const APPROVED_CLAIM_DOCUMENT_TEMPLATE_PROPERTY = 'APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID_V1';
 const DEFAULT_APPROVED_CLAIM_DOCUMENT_TEMPLATE_ID = '1qwMjRD99FNWnF2Wu8T7wbkSuvDOiH5tu82aSxovxArE';
+const APPROVED_CLAIM_DOCUMENT_START_MARKER = '[[AUTO_SELECTED_CLAIM_START]]';
+const APPROVED_CLAIM_DOCUMENT_END_MARKER = '[[AUTO_SELECTED_CLAIM_END]]';
+const CLAIM_CALCULATED_FACTS_SNAPSHOT_SHEET_NAME = 'Аудит_снимок_требований';
+const CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE = 'CLAIM_CALCULATED_FACTS_SNAPSHOT';
+const CLAIM_CALCULATED_FACTS_SNAPSHOT_PROTECTION = 'Автоматический снимок расчетных требований';
+const CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS = [
+  'key', 'family', 'layoutId', 'baseKind', 'periodKey', 'calculationItem',
+  'violation', 'period', 'amount', 'disputed', 'groupLabel', 'excludedFromClaimTotals',
+];
 const EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_PROPERTY = 'EMPLOYMENT_NORMATIVE_IMPORT_ENABLED_V1';
 const EMPLOYMENT_NORMATIVE_DOCUMENT_MIME_TYPE = 'application/vnd.google-apps.document';
 const EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_PROPERTY = 'EMPLOYMENT_PREMIUM_DELAY_DETAILS_ENABLED_V1';
 const EMPLOYMENT_PREMIUM_DELAY_DETAILS_SHEET_NAME = 'Детализация просрочки премий';
+const PAYROLL_AUDIT_RULE_SCHEMA_VERSION = '1.0';
+const PAYROLL_AUDIT_LEGAL_REVIEW_OWNER = 'Владелец методологии трудового аудита';
+const PAYROLL_AUDIT_LAST_LEGAL_REVIEW = '2026-07-21';
+const PAYROLL_AUDIT_LEGAL_REVIEW_VALID_UNTIL = '2027-01-31';
+const PAYROLL_AUDIT_TK_OFFICIAL_URL = 'https://pravo.gov.ru/proxy/ips/?docbody=&nd=102074279';
+const PAYROLL_AUDIT_ARTICLE_236_OFFICIAL_URL =
+  'https://publication.pravo.gov.ru/document/0001202401300034';
+const PAYROLL_AUDIT_VS_PLENUM_OFFICIAL_URL = 'https://www.vsrf.ru/documents/own/8223/';
+
+const PAYROLL_AUDIT_METHOD_BASIS = [{
+  type: 'methodology',
+  citation: 'Методология доказуемого финансово-трудового аудита, версия 1',
+  officialUrl: '',
+}];
+const PAYROLL_AUDIT_REMUNERATION_BASIS = [{
+  type: 'law', citation: 'статьи 129, 134, 135 и 191 ТК РФ',
+  officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL,
+}];
+const PAYROLL_AUDIT_DELAY_BASIS = [{
+  type: 'law', citation: 'статья 236 ТК РФ в редакции Федерального закона от 30.01.2024 № 3-ФЗ',
+  officialUrl: PAYROLL_AUDIT_ARTICLE_236_OFFICIAL_URL,
+}, {
+  type: 'judicial', citation: 'Постановление Пленума ВС РФ от 17.03.2004 № 2',
+  officialUrl: PAYROLL_AUDIT_VS_PLENUM_OFFICIAL_URL,
+}];
+
+function createPayrollAuditRuleDefinition_(id, config) {
+  const value = config || {};
+  return {
+    id,
+    schemaVersion: PAYROLL_AUDIT_RULE_SCHEMA_VERSION,
+    version: String(value.version || '1.0'),
+    title: String(value.title || id),
+    legalBasis: (value.legalBasis || PAYROLL_AUDIT_METHOD_BASIS).map((basis) => Object.assign({}, basis)),
+    effectiveFrom: String(value.effectiveFrom || '2002-02-01'),
+    effectiveTo: value.effectiveTo ? String(value.effectiveTo) : null,
+    requiresEventDate: value.requiresEventDate === true,
+    requiredFacts: (value.requiredFacts || value.minimumSources || []).slice(),
+    minimumSources: (value.minimumSources || value.requiredFacts || []).slice(),
+    missingFactBehavior: String(value.missingFactBehavior || 'cannot_verify'),
+    formulaVersion: String(value.formulaVersion || 'observation-v1'),
+    owner: String(value.owner || PAYROLL_AUDIT_LEGAL_REVIEW_OWNER),
+    lastLegalReview: String(value.lastLegalReview || PAYROLL_AUDIT_LAST_LEGAL_REVIEW),
+    legalReviewValidUntil: String(
+      value.legalReviewValidUntil || PAYROLL_AUDIT_LEGAL_REVIEW_VALID_UNTIL
+    ),
+    claimFamily: value.claimFamily || null,
+  };
+}
+
 const PAYROLL_AUDIT_RULE_CATALOG_V1 = {
-  employment_start_boundary: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
-  premium_payment_delay: { version: '1.0', minimumSources: ['payroll_slip', 'due_rule'], claimFamily: 'premium_payment_delay' },
-  overtime_hours: { version: '1.0', minimumSources: ['work_schedule', 'timesheet'], claimFamily: null },
-  vacation_payment_timing: { version: '1.0', minimumSources: ['vacation_interval', 'payment_date'], claimFamily: 'vacation_payment_delay' },
-  payroll_source_integrity: { version: '1.1', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_arithmetic: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_date_quality: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_payment_matching: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_identity: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_work_time: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_regular_accrual: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  payroll_preliminary_category: { version: '1.0', minimumSources: ['payroll_slip'], claimFamily: null },
-  questionnaire_payment_facts: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
-  questionnaire_partial_recoveries: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
-  questionnaire_termination: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
-  questionnaire_work_time: { version: '1.0', minimumSources: ['questionnaire'], claimFamily: null },
-  normative_remuneration: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
-  normative_derivative_payments: { version: '1.0', minimumSources: ['local_normative_act', 'payroll_slip'], claimFamily: null },
-  normative_premium: { version: '1.0', minimumSources: ['local_normative_act', 'payroll_slip'], claimFamily: 'premium_payment_delay' },
-  normative_enhanced_work: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act', 'payroll_slip'], claimFamily: null },
-  normative_regional_coefficient: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
-  normative_wage_indexation: { version: '1.0', minimumSources: ['local_normative_act'], claimFamily: 'salary_indexation' },
-  normative_vacation_entitlement: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
-  normative_enhanced_guarantees: { version: '1.0', minimumSources: ['employment_contract', 'local_normative_act'], claimFamily: null },
+  employment_start_boundary: createPayrollAuditRuleDefinition_('employment_start_boundary', {
+    title: 'Граница трудовых отношений', requiredFacts: ['employment_start_date'],
+    minimumSources: ['questionnaire'],
+  }),
+  premium_payment_delay: createPayrollAuditRuleDefinition_('premium_payment_delay', {
+    title: 'Компенсация за задержку выплаты премии', version: '2.0',
+    legalBasis: PAYROLL_AUDIT_DELAY_BASIS, effectiveFrom: '2024-01-30', requiresEventDate: true,
+    requiredFacts: ['payable_amount', 'legal_due_date', 'actual_payment_date_or_calculation_end_date', 'key_rate_periods'],
+    minimumSources: ['payroll_slip', 'due_rule'], formulaVersion: 'article-236-2024-v1',
+    claimFamily: 'premium_payment_delay',
+  }),
+  overtime_hours: createPayrollAuditRuleDefinition_('overtime_hours', {
+    title: 'Проверка сверхурочной и повышенно оплачиваемой работы',
+    legalBasis: [{ type: 'law', citation: 'статьи 99, 152–154 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['work_schedule', 'timesheet', 'paid_enhanced_work'],
+    minimumSources: ['work_schedule', 'timesheet'], formulaVersion: 'enhanced-work-audit-v1',
+  }),
+  vacation_payment_timing: createPayrollAuditRuleDefinition_('vacation_payment_timing', {
+    title: 'Срок выплаты отпускных', legalBasis: [{
+      type: 'law', citation: 'статьи 136 и 236 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL,
+    }],
+    requiredFacts: ['vacation_interval', 'legal_due_date', 'actual_payment_date', 'payable_amount'],
+    minimumSources: ['vacation_interval', 'payment_date'], formulaVersion: 'vacation-delay-v1',
+    claimFamily: 'vacation_payment_delay',
+  }),
+  payroll_source_integrity: createPayrollAuditRuleDefinition_('payroll_source_integrity', {
+    title: 'Целостность исходных расчётных листков', version: '1.2', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_arithmetic: createPayrollAuditRuleDefinition_('payroll_arithmetic', {
+    title: 'Арифметическая сверка расчётного листка', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_date_quality: createPayrollAuditRuleDefinition_('payroll_date_quality', {
+    title: 'Качество и независимость дат', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_payment_matching: createPayrollAuditRuleDefinition_('payroll_payment_matching', {
+    title: 'Сопоставление начислений и выплат', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_identity: createPayrollAuditRuleDefinition_('payroll_identity', {
+    title: 'Идентичность работника и работодателя', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_work_time: createPayrollAuditRuleDefinition_('payroll_work_time', {
+    title: 'Сигналы по рабочему времени', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_regular_accrual: createPayrollAuditRuleDefinition_('payroll_regular_accrual', {
+    title: 'Изменения регулярных начислений', requiredFacts: ['payroll_slip'],
+  }),
+  payroll_preliminary_category: createPayrollAuditRuleDefinition_('payroll_preliminary_category', {
+    title: 'Предварительная классификация выплаты', legalBasis: PAYROLL_AUDIT_REMUNERATION_BASIS,
+    requiredFacts: ['payroll_slip', 'remuneration_rule'],
+  }),
+  questionnaire_payment_facts: createPayrollAuditRuleDefinition_('questionnaire_payment_facts', {
+    title: 'Фактические даты выплат', requiredFacts: ['actual_payment_date'],
+    minimumSources: ['questionnaire'],
+  }),
+  questionnaire_partial_recoveries: createPayrollAuditRuleDefinition_('questionnaire_partial_recoveries', {
+    title: 'Частичные погашения', requiredFacts: ['partial_recovery_date', 'partial_recovery_amount'],
+    minimumSources: ['questionnaire'],
+  }),
+  questionnaire_termination: createPayrollAuditRuleDefinition_('questionnaire_termination', {
+    title: 'Хронология прекращения трудовых отношений', requiredFacts: ['employment_end_date'],
+    minimumSources: ['questionnaire'],
+  }),
+  questionnaire_work_time: createPayrollAuditRuleDefinition_('questionnaire_work_time', {
+    title: 'Режим и норма рабочего времени', requiredFacts: ['work_schedule'],
+    minimumSources: ['questionnaire'],
+  }),
+  normative_remuneration: createPayrollAuditRuleDefinition_('normative_remuneration', {
+    title: 'Состав системы оплаты труда', legalBasis: PAYROLL_AUDIT_REMUNERATION_BASIS,
+    requiredFacts: ['employment_contract', 'local_normative_act', 'remuneration_rule'],
+  }),
+  normative_derivative_payments: createPayrollAuditRuleDefinition_('normative_derivative_payments', {
+    title: 'Производные выплаты и средний заработок',
+    legalBasis: [{ type: 'law', citation: 'статья 139 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['local_normative_act', 'payroll_slip', 'average_earnings_base'],
+  }),
+  normative_premium: createPayrollAuditRuleDefinition_('normative_premium', {
+    title: 'Правовая природа и срок премии', legalBasis: PAYROLL_AUDIT_REMUNERATION_BASIS,
+    requiredFacts: ['local_normative_act', 'payroll_slip', 'premium_entitlement_rule', 'premium_due_rule'],
+    claimFamily: 'premium_payment_delay',
+  }),
+  normative_enhanced_work: createPayrollAuditRuleDefinition_('normative_enhanced_work', {
+    title: 'Повышенная оплата особой работы',
+    legalBasis: [{ type: 'law', citation: 'статьи 146–154 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['employment_contract', 'local_normative_act', 'payroll_slip', 'timesheet'],
+  }),
+  normative_regional_coefficient: createPayrollAuditRuleDefinition_('normative_regional_coefficient', {
+    title: 'Районные коэффициенты и надбавки',
+    legalBasis: [{ type: 'law', citation: 'статьи 146, 148 и 315–317 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['employment_contract', 'local_normative_act', 'work_location'],
+  }),
+  normative_wage_indexation: createPayrollAuditRuleDefinition_('normative_wage_indexation', {
+    title: 'Индексация заработной платы работодателем',
+    legalBasis: [{ type: 'law', citation: 'статья 134 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['employer_sector', 'local_normative_act', 'indexation_mechanism'],
+    formulaVersion: 'wage-indexation-audit-v1', claimFamily: 'salary_indexation',
+  }),
+  normative_vacation_entitlement: createPayrollAuditRuleDefinition_('normative_vacation_entitlement', {
+    title: 'Отпускной стаж и право на отпуск',
+    legalBasis: [{ type: 'law', citation: 'статьи 114–127 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['employment_contract', 'local_normative_act', 'personnel_chronology'],
+  }),
+  normative_enhanced_guarantees: createPayrollAuditRuleDefinition_('normative_enhanced_guarantees', {
+    title: 'Дополнительные гарантии и компенсации',
+    legalBasis: [{ type: 'law', citation: 'раздел VII ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['employment_contract', 'local_normative_act', 'timesheet'],
+  }),
+  wage_underpayment_qualification: createPayrollAuditRuleDefinition_('wage_underpayment_qualification', {
+    title: 'Квалификация возможной недоплаты заработной платы',
+    legalBasis: [{ type: 'law', citation: 'статьи 21, 22, 129 и 135 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['remuneration_entitlement', 'work_performed', 'actual_accruals', 'actual_payments'],
+    formulaVersion: 'wage-underpayment-qualification-v1', claimFamily: 'underpayment',
+  }),
+  article_236_delay_compensation: createPayrollAuditRuleDefinition_('article_236_delay_compensation', {
+    title: 'Компенсация за задержку выплаты', version: '2024-01',
+    legalBasis: PAYROLL_AUDIT_DELAY_BASIS, effectiveFrom: '2024-01-30', requiresEventDate: true,
+    requiredFacts: ['payable_amount', 'legal_due_date', 'actual_payment_date_or_calculation_end_date', 'key_rate_periods'],
+    formulaVersion: 'article-236-2024-v1', claimFamily: 'material_liability',
+  }),
+  recoverable_sum_indexation: createPayrollAuditRuleDefinition_('recoverable_sum_indexation', {
+    title: 'Индексация присуждённой денежной суммы',
+    legalBasis: [{
+      type: 'law', citation: 'статья 208 ГПК РФ в редакции Федерального закона от 16.04.2022 № 98-ФЗ',
+      officialUrl: 'https://publication.pravo.gov.ru/Document/View/0001202204160007',
+    }, {
+      type: 'judicial', citation: 'Обзор судебной практики ВС РФ от 18.12.2024 по индексации присуждённых сумм',
+      officialUrl: 'https://www.vsrf.ru/documents/all/34122/',
+    }],
+    requiredFacts: ['court_award', 'award_date', 'execution_payments', 'applicable_index'],
+    formulaVersion: 'awarded-sum-indexation-audit-v1', claimFamily: 'underpayment_indexation',
+  }),
+  forced_absence_average_earnings: createPayrollAuditRuleDefinition_('forced_absence_average_earnings', {
+    title: 'Средний заработок за время вынужденного прогула',
+    legalBasis: [{ type: 'law', citation: 'статьи 234 и 394 ТК РФ', officialUrl: PAYROLL_AUDIT_TK_OFFICIAL_URL }],
+    requiredFacts: ['dismissal_or_suspension_basis', 'absence_start', 'restoration_or_end_date',
+      'average_earnings_base', 'excluded_periods'],
+    formulaVersion: 'forced-absence-coverage-v1', claimFamily: 'forced_absence',
+  }),
 };
+
+const CASE_EVIDENCE_SELECTABLE_CLAIM_FAMILIES = [
+  'underpayment', 'material_liability', 'premium_payment_delay',
+  'vacation_payment_delay', 'salary_indexation', 'underpayment_indexation',
+];
 
 const EMPLOYMENT_AUDIT_FACT_SOURCE_PRIORITY = {
   user_confirmed: 400,
@@ -71,10 +248,18 @@ function createEmploymentAuditFact_(value, options) {
   if (EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.indexOf(verificationStatus) < 0) {
     throw new Error(`Неизвестный статус проверки факта: ${verificationStatus}`);
   }
+  const sourceRef = String(settings.sourceRef || '');
+  const factId = settings.factId || [sourceType, sourceRef, settings.factType || '', value]
+    .map((part) => encodeURIComponent(String(part === undefined || part === null ? '' : part)))
+    .join('|');
   return {
+    factId,
+    factType: String(settings.factType || ''),
     value: value === undefined ? null : value,
     sourceType,
-    sourceRef: String(settings.sourceRef || ''),
+    sourceRef,
+    evidence: (settings.evidence || []).map((item, index) =>
+      createPayrollEvidenceReference_(item, index + 1)),
     confidence: normalizeEmploymentAuditConfidence_(settings.confidence),
     verificationStatus,
     notes: String(settings.notes || ''),
@@ -82,7 +267,513 @@ function createEmploymentAuditFact_(value, options) {
 }
 
 function getPayrollAuditRuleCatalog_() {
+  validatePayrollAuditRuleRegistry_(PAYROLL_AUDIT_RULE_CATALOG_V1);
   return JSON.parse(JSON.stringify(PAYROLL_AUDIT_RULE_CATALOG_V1));
+}
+
+function parsePayrollAuditRegistryDate_(value, field, ruleId) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) throw new Error(`Правило ${ruleId}: поле ${field} должно иметь формат YYYY-MM-DD`);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (date.getFullYear() !== Number(match[1]) || date.getMonth() !== Number(match[2]) - 1
+    || date.getDate() !== Number(match[3])) {
+    throw new Error(`Правило ${ruleId}: поле ${field} содержит невозможную дату`);
+  }
+  return date;
+}
+
+function validatePayrollAuditRuleRegistry_(registry) {
+  const value = registry || {};
+  const requiredStrings = [
+    'id', 'schemaVersion', 'version', 'title', 'effectiveFrom', 'missingFactBehavior',
+    'formulaVersion', 'owner', 'lastLegalReview', 'legalReviewValidUntil',
+  ];
+  Object.keys(value).forEach((key) => {
+    const rule = value[key] || {};
+    requiredStrings.forEach((field) => {
+      if (!String(rule[field] || '').trim()) {
+        throw new Error(`Правило ${key}: отсутствует обязательное поле ${field}`);
+      }
+    });
+    if (rule.id !== key) throw new Error(`Правило ${key}: id не совпадает с ключом реестра`);
+    if (!Array.isArray(rule.requiredFacts) || !Array.isArray(rule.minimumSources)) {
+      throw new Error(`Правило ${key}: requiredFacts и minimumSources должны быть массивами`);
+    }
+    if (!Array.isArray(rule.legalBasis) || !rule.legalBasis.length) {
+      throw new Error(`Правило ${key}: не указан legalBasis`);
+    }
+    rule.legalBasis.forEach((basis, index) => {
+      if (!basis || !String(basis.type || '').trim() || !String(basis.citation || '').trim()) {
+        throw new Error(`Правило ${key}: неполное основание legalBasis[${index}]`);
+      }
+      if ((basis.type === 'law' || basis.type === 'judicial')
+        && !/^https:\/\//.test(String(basis.officialUrl || ''))) {
+        throw new Error(`Правило ${key}: для ${basis.type} нужен официальный URL`);
+      }
+    });
+    const effectiveFrom = parsePayrollAuditRegistryDate_(rule.effectiveFrom, 'effectiveFrom', key);
+    const effectiveTo = parsePayrollAuditRegistryDate_(rule.effectiveTo, 'effectiveTo', key);
+    const lastReview = parsePayrollAuditRegistryDate_(rule.lastLegalReview, 'lastLegalReview', key);
+    const reviewUntil = parsePayrollAuditRegistryDate_(
+      rule.legalReviewValidUntil, 'legalReviewValidUntil', key
+    );
+    if (effectiveTo && effectiveTo < effectiveFrom) {
+      throw new Error(`Правило ${key}: effectiveTo раньше effectiveFrom`);
+    }
+    if (reviewUntil < lastReview) {
+      throw new Error(`Правило ${key}: legalReviewValidUntil раньше lastLegalReview`);
+    }
+    if (rule.missingFactBehavior !== 'cannot_verify') {
+      throw new Error(`Правило ${key}: неподдерживаемый missingFactBehavior`);
+    }
+  });
+  return true;
+}
+
+function resolvePayrollAuditRule_(ruleId, options) {
+  validatePayrollAuditRuleRegistry_(PAYROLL_AUDIT_RULE_CATALOG_V1);
+  const rule = PAYROLL_AUDIT_RULE_CATALOG_V1[ruleId];
+  if (!rule) throw new Error(`Неизвестное правило аудита: ${ruleId}`);
+  const settings = options || {};
+  const eventDate = settings.eventDate ? parseDateValue_(settings.eventDate) : null;
+  const asOfDate = settings.asOfDate ? parseDateValue_(settings.asOfDate) : new Date();
+  if (!asOfDate) throw new Error(`Правило ${ruleId}: непонятная дата юридической проверки`);
+  const effectiveFrom = parsePayrollAuditRegistryDate_(rule.effectiveFrom, 'effectiveFrom', ruleId);
+  const effectiveTo = parsePayrollAuditRegistryDate_(rule.effectiveTo, 'effectiveTo', ruleId);
+  const reviewUntil = parsePayrollAuditRegistryDate_(
+    rule.legalReviewValidUntil, 'legalReviewValidUntil', ruleId
+  );
+  let applicability = 'applicable';
+  if (rule.requiresEventDate && settings.evaluateEventDate !== false && !eventDate) {
+    applicability = 'event_date_missing';
+  } else if (eventDate && eventDate < effectiveFrom) applicability = 'not_yet_effective';
+  else if (eventDate && effectiveTo && eventDate > effectiveTo) applicability = 'expired';
+  const staleReview = asOfDate > reviewUntil;
+  return {
+    rule: JSON.parse(JSON.stringify(rule)),
+    applicability,
+    staleReview,
+    automaticCalculationAllowed: applicability === 'applicable' && !staleReview,
+    asOfDate,
+    eventDate,
+  };
+}
+
+function evaluatePayrollAuditRule_(ruleId, options) {
+  const settings = options || {};
+  const resolution = resolvePayrollAuditRule_(ruleId, settings);
+  const available = new Set((settings.availableFacts || []).map(String));
+  const missingFacts = resolution.rule.requiredFacts.filter((fact) => !available.has(fact));
+  let status = settings.status || 'informational';
+  let reason = String(settings.reason || '');
+  if (resolution.staleReview) {
+    status = 'cannot_verify';
+    reason = `Юридическая проверка правила ${ruleId}@${resolution.rule.version} просрочена `
+      + `(действительна по ${resolution.rule.legalReviewValidUntil}).`;
+  } else if (resolution.applicability !== 'applicable') {
+    status = 'cannot_verify';
+    reason = resolution.applicability === 'event_date_missing'
+      ? 'Не установлена дата события для выбора применимой редакции правила.'
+      : 'Правило не действует на дату события.';
+  } else if (missingFacts.length) {
+    status = resolution.rule.missingFactBehavior;
+    reason = reason || `Не хватает обязательных фактов: ${missingFacts.join(', ')}.`;
+  }
+  return Object.assign({}, resolution, {
+    status,
+    reason,
+    availableFacts: Array.from(available),
+    missingFacts,
+    automaticCalculationAllowed: resolution.automaticCalculationAllowed && !missingFacts.length,
+  });
+}
+
+function createPayrollEvidenceReference_(source, fallbackOrdinal) {
+  const value = source || {};
+  const sourceOrdinal = value.sourceOrdinal === undefined || value.sourceOrdinal === null
+    || value.sourceOrdinal === '' ? (fallbackOrdinal === undefined ? null : fallbackOrdinal) : value.sourceOrdinal;
+  const documentId = value.documentId || value.fileId || null;
+  const documentUrl = value.documentUrl || value.sourceUrl || value.url || null;
+  const documentSignature = value.documentSignature || value.fileSignature || value.hash || null;
+  const sourceLabel = String(value.source || value.sourceRef || value.file || '').trim() || null;
+  const sourceSheet = String(value.sourceSheet || value.sheet || '').trim() || null;
+  const sourcePage = value.sourcePage === undefined || value.sourcePage === null || value.sourcePage === ''
+    ? (value.page === undefined || value.page === null || value.page === '' ? null : value.page)
+    : value.sourcePage;
+  const sourceRow = String(value.sourceRow || value.rowLabel || value.fragment || '').trim() || null;
+  const recognitionVersion = value.recognitionVersion || value.parserVersion || null;
+  const confidence = value.confidence === undefined || value.confidence === null || value.confidence === ''
+    ? null : normalizeEmploymentAuditConfidence_(value.confidence);
+  const stableDocumentIdentity = documentId || documentSignature || documentUrl;
+  const stableCoordinate = sourceOrdinal !== null || (sourcePage !== null && sourceRow);
+  const identity = [
+    stableDocumentIdentity || sourceLabel || 'unknown_document', sourceSheet || sourcePage || '',
+    sourceOrdinal === null ? sourceRow || '' : sourceOrdinal,
+  ].map((part) => encodeURIComponent(String(part))).join('|');
+  return Object.assign({}, value, {
+    evidenceId: identity,
+    documentId,
+    documentUrl,
+    documentSignature,
+    source: sourceLabel,
+    sourceSheet,
+    sourcePage,
+    sourceRow,
+    sourceOrdinal,
+    recognitionVersion,
+    confidence,
+    traceabilityComplete: Boolean(stableDocumentIdentity && stableCoordinate),
+    traceabilityStatus: stableDocumentIdentity && stableCoordinate ? 'complete' : 'incomplete',
+  });
+}
+
+function buildPayrollAuditEvidenceChain_(ruleEvaluation, value, evidence) {
+  const input = value || {};
+  const references = (evidence || []).map((item, index) =>
+    createPayrollEvidenceReference_(item, index + 1));
+  const amount = input.status === 'cannot_verify'
+    ? null : (input.moneyImpact === undefined ? null : input.moneyImpact);
+  return {
+    sourceFacts: references,
+    calculation: {
+      ruleId: ruleEvaluation.rule.id,
+      ruleVersion: ruleEvaluation.rule.version,
+      formulaVersion: ruleEvaluation.rule.formulaVersion,
+      inputs: (input.calculationInputs || []).slice(),
+      amount,
+      period: input.periodKey || '',
+      assumptions: (input.assumptions || []).slice(),
+      status: input.status,
+      traceabilityStatus: references.length && references.every((item) => item.traceabilityComplete)
+        ? 'complete' : 'incomplete',
+    },
+    qualification: {
+      claimFamily: input.claimFamily === undefined
+        ? ruleEvaluation.rule.claimFamily : input.claimFamily,
+      status: input.status,
+      reason: input.reason || ruleEvaluation.reason || '',
+      missingFacts: (input.missingFacts || ruleEvaluation.missingFacts || []).slice(),
+      requestedDocument: String(input.requestedDocument || ''),
+      automaticClaimAllowed: input.automaticClaimAllowed === true
+        && ruleEvaluation.automaticCalculationAllowed === true,
+    },
+  };
+}
+
+function buildCaseEvidenceCoverage_(rows, quality, auditResults, claimFacts, options) {
+  return buildCaseEvidenceCoverageLegacy_(auditResults, claimFacts, rows, quality, options);
+}
+
+const CASE_EVIDENCE_DIRECTIONS_V1 = [
+  {
+    id: 'wage_underpayment', title: 'Возможная недоплата заработной платы',
+    primaryRuleId: 'wage_underpayment_qualification',
+    claimFamilies: ['underpayment'], excludeClaimBaseKinds: ['vacation', 'vacation_payment'],
+    auditRuleIds: ['payroll_arithmetic', 'payroll_regular_accrual', 'payroll_preliminary_category',
+      'normative_remuneration', 'normative_premium'],
+    requiredFacts: ['remuneration_entitlement', 'work_performed', 'actual_accruals', 'actual_payments'],
+    requestedDocuments: ['Трудовой договор и допсоглашения',
+      'ЛНА об оплате труда и премировании', 'Табель или иное подтверждение выполненной работы'],
+  },
+  {
+    id: 'payment_delay', title: 'Компенсация за задержку выплаты (ст. 236 ТК РФ)',
+    primaryRuleId: 'article_236_delay_compensation',
+    claimFamilies: ['material_liability', 'premium_payment_delay', 'vacation_payment_delay'],
+    auditRuleIds: ['premium_payment_delay', 'vacation_payment_timing', 'payroll_date_quality',
+      'payroll_payment_matching', 'questionnaire_payment_facts'],
+    requiredFacts: ['payable_amount', 'legal_due_date',
+      'actual_payment_date_or_calculation_end_date', 'key_rate_periods'],
+    requestedDocuments: ['Банковская выписка или платёжный реестр',
+      'Трудовой договор или ЛНА со сроками выплаты'],
+  },
+  {
+    id: 'wage_indexation', title: 'Индексация заработной платы работодателем',
+    primaryRuleId: 'normative_wage_indexation', claimFamilies: ['salary_indexation'],
+    auditRuleIds: ['normative_wage_indexation'],
+    requiredFacts: ['employer_sector', 'local_normative_act', 'indexation_mechanism'],
+    requestedDocuments: ['ЛНА, коллективный договор или трудовой договор об индексации'],
+  },
+  {
+    id: 'recoverable_sum_indexation', title: 'Индексация присуждённой денежной суммы',
+    primaryRuleId: 'recoverable_sum_indexation', claimFamilies: ['underpayment_indexation'],
+    auditRuleIds: ['recoverable_sum_indexation'],
+    requiredFacts: ['court_award', 'award_date', 'execution_payments', 'applicable_index'],
+    requestedDocuments: ['Вступивший в силу судебный акт и документы о его исполнении'],
+  },
+  {
+    id: 'vacation_average_earnings', title: 'Отпускные и средний заработок',
+    primaryRuleId: 'normative_derivative_payments',
+    claimFamilies: ['vacation_payment_delay'],
+    additionalClaimFamilies: ['underpayment'], claimBaseKinds: ['vacation', 'vacation_payment'],
+    auditRuleIds: ['vacation_payment_timing', 'normative_derivative_payments',
+      'normative_vacation_entitlement'],
+    requiredFacts: ['vacation_interval', 'personnel_chronology', 'average_earnings_base',
+      'excluded_periods', 'actual_payment_date'],
+    requestedDocuments: ['Приказы и график отпусков', 'Кадровая хронология и документы для среднего заработка'],
+  },
+  {
+    id: 'enhanced_work', title: 'Сверхурочные, ночные, выходные и праздничные',
+    primaryRuleId: 'overtime_hours', claimFamilies: [],
+    auditRuleIds: ['overtime_hours', 'payroll_work_time', 'questionnaire_work_time',
+      'normative_enhanced_work', 'normative_enhanced_guarantees'],
+    requiredFacts: ['work_schedule', 'timesheet', 'paid_enhanced_work'],
+    requestedDocuments: ['Табель учёта рабочего времени и график работы',
+      'ЛНА о повышенной оплате особой работы'],
+  },
+  {
+    id: 'forced_absence', title: 'Средний заработок за вынужденный прогул',
+    primaryRuleId: 'forced_absence_average_earnings', claimFamilies: ['forced_absence'],
+    auditRuleIds: ['forced_absence_average_earnings'],
+    requiredFacts: ['dismissal_or_suspension_basis', 'absence_start',
+      'restoration_or_end_date', 'average_earnings_base', 'excluded_periods'],
+    requestedDocuments: ['Приказ об увольнении или отстранении',
+      'Судебный акт или приказ о восстановлении', 'Кадровые документы для среднего заработка'],
+  },
+];
+
+function getCaseEvidenceDirections_() {
+  return JSON.parse(JSON.stringify(CASE_EVIDENCE_DIRECTIONS_V1));
+}
+
+function caseEvidenceDirectionMatchesClaim_(definition, fact) {
+  const value = fact || {};
+  const family = String(value.family || '');
+  const baseKind = String(value.baseKind || '');
+  if ((definition.claimFamilies || []).indexOf(family) >= 0) {
+    return (definition.excludeClaimBaseKinds || []).indexOf(baseKind) < 0;
+  }
+  return (definition.additionalClaimFamilies || []).indexOf(family) >= 0
+    && (!(definition.claimBaseKinds || []).length
+      || definition.claimBaseKinds.indexOf(baseKind) >= 0);
+}
+
+function caseEvidenceDirectionMatchesAudit_(definition, item) {
+  const value = item || {};
+  return (definition.auditRuleIds || []).indexOf(value.ruleId) >= 0
+    || ((definition.claimFamilies || []).indexOf(value.claimFamily) >= 0);
+}
+
+function buildCaseEvidenceClaimReferences_(claim, fallbackOrdinal) {
+  const value = claim || {};
+  const explicit = Array.isArray(value.evidence) ? value.evidence : [];
+  if (explicit.length) {
+    return explicit.map((item, index) => createPayrollEvidenceReference_(item, index + 1));
+  }
+  if (!value.sourceRef && !value.source) return [];
+  const source = value.source || {};
+  return [createPayrollEvidenceReference_({
+    source: value.sourceRef || source.sourceRef || source.sheetName || '',
+    documentId: source.documentId || null,
+    documentUrl: source.documentUrl || null,
+    documentSignature: source.documentSignature || null,
+    sourceSheet: source.sheetName || '',
+    sourceRow: source.row === undefined || source.row === null ? '' : String(source.row),
+    sourceOrdinal: value.sourceOrdinal === undefined
+      ? (source.sourceOrdinal === undefined ? fallbackOrdinal : source.sourceOrdinal)
+      : value.sourceOrdinal,
+    recognitionVersion: value.recognitionVersion || source.recognitionVersion || null,
+    confidence: value.confidence === undefined ? source.confidence : value.confidence,
+  }, fallbackOrdinal)];
+}
+
+function buildCalculatedClaimEvidenceChain_(fact, definition) {
+  const value = fact || {};
+  const ruleId = value.ruleId || definition.primaryRuleId;
+  const resolution = resolvePayrollAuditRule_(ruleId, {
+    eventDate: value.eventDate,
+    asOfDate: value.asOfDate,
+    evaluateEventDate: Boolean(value.eventDate),
+  });
+  const evidence = buildCaseEvidenceClaimReferences_(value, 1);
+  return {
+    sourceFacts: evidence,
+    calculation: {
+      ruleId,
+      ruleVersion: value.ruleVersion || resolution.rule.version,
+      formulaVersion: value.formulaVersion || resolution.rule.formulaVersion,
+      inputs: (value.calculationInputs || []).slice(),
+      amount: Number(value.amount),
+      period: value.periodKey || '',
+      assumptions: (value.assumptions || []).slice(),
+      status: value.disputed === true ? 'probable_or_disputed' : 'confirmed',
+      traceabilityStatus: evidence.length && evidence.every((item) => item.traceabilityComplete)
+        ? 'complete' : 'incomplete',
+    },
+    qualification: {
+      claimFamily: value.family || null,
+      status: value.disputed === true ? 'probable_or_disputed' : 'confirmed',
+      reason: value.disputed === true ? 'Расчётная позиция содержит спорное обстоятельство или допущение.'
+        : 'Позиция рассчитана в рабочей таблице и квалифицирована для выбранного семейства требования.',
+      missingFacts: (value.missingFacts || []).slice(),
+      requestedDocument: String(value.requestedDocument || ''),
+      automaticClaimAllowed: true,
+    },
+  };
+}
+
+function summarizeCaseEvidenceDirectionStatus_(claims, auditItems) {
+  const calculated = claims || [];
+  const audits = auditItems || [];
+  if (calculated.length) {
+    return calculated.some((fact) => fact.disputed === true)
+      || audits.some((item) => item.status === 'probable_or_disputed'
+        || item.status === 'cannot_verify')
+      ? 'probable_or_disputed' : 'confirmed';
+  }
+  if (audits.some((item) => item.status === 'cannot_verify')) return 'cannot_verify';
+  if (audits.some((item) => item.status === 'probable_or_disputed')) return 'probable_or_disputed';
+  if (audits.some((item) => item.status === 'confirmed')) return 'confirmed';
+  if (audits.length) return 'informational';
+  return 'cannot_verify';
+}
+
+function buildCaseEvidenceDocumentRequests_(directions) {
+  const requests = new Map();
+  (directions || []).forEach((direction) => {
+    (direction.requestedDocuments || []).forEach((label) => {
+      const normalized = normalizeText_(label).replace(/[.;]+$/, '');
+      if (!normalized) return;
+      if (!requests.has(normalized)) {
+        requests.set(normalized, {
+          id: `document_request|${encodeURIComponent(normalized)}`,
+          label: String(label).trim().replace(/[.;]+$/, ''),
+          // `document` is the provider-neutral name consumed by the evidence
+          // map renderer; keep `label` for existing intake integrations.
+          document: String(label).trim(),
+          directionIds: [],
+          auditItemIds: [],
+          priority: direction.status === 'cannot_verify' ? 1 : 2,
+        });
+      }
+      const request = requests.get(normalized);
+      if (request.directionIds.indexOf(direction.id) < 0) request.directionIds.push(direction.id);
+      (direction.auditItemIds || []).forEach((id) => {
+        if (request.auditItemIds.indexOf(id) < 0) request.auditItemIds.push(id);
+      });
+      if (direction.status === 'cannot_verify') request.priority = 1;
+    });
+  });
+  return Array.from(requests.values()).sort((left, right) =>
+    left.priority - right.priority || left.label.localeCompare(right.label));
+}
+
+function buildCaseEvidenceCoverageLegacy_(auditCatalog, claimFacts, rows, quality, options) {
+  // Keep the public helper tolerant of the rows-first invocation used by the
+  // calculation orchestrator while retaining the canonical audit-first
+  // signature for callers that already depend on it.
+  if (!Array.isArray(claimFacts) && Array.isArray(rows) && Array.isArray(quality)) {
+    const rowsFirst = auditCatalog;
+    const qualityFirst = claimFacts;
+    auditCatalog = rows;
+    claimFacts = quality;
+    rows = rowsFirst;
+    quality = qualityFirst;
+  }
+  const auditItems = (auditCatalog || []).filter(Boolean);
+  const calculatedFacts = (claimFacts || []).filter((fact) => {
+    const amount = Number(fact && fact.amount);
+    return fact && CASE_EVIDENCE_SELECTABLE_CLAIM_FAMILIES.indexOf(fact.family) >= 0
+      && fact.excludedFromClaimTotals !== true
+      && fact.status !== 'cannot_verify'
+      && fact.verificationStatus !== 'cannot_verify'
+      && Number.isFinite(amount) && amount > 0;
+  });
+  const sourceRows = (rows || []).filter(Boolean);
+  const details = quality || {};
+  const settings = options || {};
+  const periods = new Set(sourceRows.map((row) => buildPayrollAuditPeriodKey_(row.period))
+    .filter(Boolean));
+  const documents = new Set(sourceRows.map((row) =>
+    row.documentId || row.fileId || row.documentSignature || row.file || '').filter(Boolean));
+  const statusCounts = EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.reduce((counts, status) => {
+    counts[status] = auditItems.filter((item) => item.status === status).length;
+    return counts;
+  }, {});
+  const directions = getCaseEvidenceDirections_().map((definition) => {
+    const relatedClaims = calculatedFacts.filter((fact) =>
+      caseEvidenceDirectionMatchesClaim_(definition, fact));
+    const relatedAudits = auditItems.filter((item) =>
+      caseEvidenceDirectionMatchesAudit_(definition, item));
+    const status = summarizeCaseEvidenceDirectionStatus_(relatedClaims, relatedAudits);
+    const amount = relatedClaims.length ? roundClaimAuditMoney_(relatedClaims.reduce(
+      (sum, fact) => sum + Number(fact.amount), 0
+    )) : null;
+    const missingFacts = Array.from(new Set(relatedAudits.reduce((facts, item) =>
+      facts.concat(item.missingFacts || []), [])));
+    if (!relatedClaims.length && !missingFacts.length) {
+      Array.prototype.push.apply(missingFacts, definition.requiredFacts || []);
+    }
+    let requestedDocuments = Array.from(new Set(relatedAudits
+      .map((item) => String(item.requestedDocument || '').trim()).filter(Boolean)));
+    if ((!relatedClaims.length || status !== 'confirmed') && !requestedDocuments.length) {
+      requestedDocuments = (definition.requestedDocuments || []).slice();
+    }
+    const sourceIds = new Set();
+    relatedAudits.forEach((item) => (item.evidence || []).forEach((evidence) => {
+      if (evidence && evidence.evidenceId) sourceIds.add(evidence.evidenceId);
+      else if (evidence && (evidence.source || evidence.sourceRef)) {
+        sourceIds.add(evidence.source || evidence.sourceRef);
+      }
+    }));
+    relatedClaims.forEach((fact) => {
+      if (fact.sourceRef) sourceIds.add(fact.sourceRef);
+    });
+    const reasons = Array.from(new Set(relatedAudits.map((item) => String(item.reason || '').trim())
+      .filter(Boolean))).slice(0, 3);
+    if (!reasons.length) reasons.push(relatedClaims.length
+      ? 'Сумма уже рассчитана в рабочих листах Google Sheets.'
+      : 'Направление нельзя проверить по одним расчётным листкам без дополнительных фактов.');
+    return {
+      id: definition.id,
+      title: definition.title,
+      primaryRuleId: definition.primaryRuleId,
+      status,
+      calculationState: amount !== null ? 'calculated'
+        : (status === 'confirmed' ? 'facts_confirmed'
+          : (status === 'probable_or_disputed' ? 'disputed' : 'cannot_verify')),
+      amount,
+      reason: reasons.join(' '),
+      sourceCount: sourceIds.size,
+      missingFacts,
+      requestedDocuments,
+      auditItemIds: relatedAudits.map((item) => item.id),
+      claimKeys: relatedClaims.map((fact) => buildStableClaimKey_(fact)),
+      calculationChains: relatedClaims.map((fact) =>
+        buildCalculatedClaimEvidenceChain_(Object.assign({ asOfDate: settings.asOfDate }, fact), definition)),
+    };
+  });
+  const missingDocuments = buildCaseEvidenceDocumentRequests_(directions);
+  const calculatedClaimTotal = roundClaimAuditMoney_(calculatedFacts.reduce(
+    (sum, fact) => sum + Number(fact.amount), 0
+  ));
+  return {
+    version: 'case-evidence-coverage-v1',
+    generatedAt: settings.generatedAt || new Date(),
+    findings: {
+      sourceDocuments: documents.size,
+      sourceRows: sourceRows.length,
+      periods: periods.size,
+      missingPeriods: (details.missingMonths || []).slice(),
+      statusCounts,
+      calculatedClaimCount: calculatedFacts.length,
+      calculatedClaimTotal,
+      numericAuditSignalsExcludedFromClaimTotal: auditItems.filter((item) =>
+        item.moneyImpact !== null && item.moneyImpact !== undefined && item.moneyImpact !== ''
+          && Number.isFinite(Number(item.moneyImpact))).length,
+    },
+    directions,
+    missingDocuments,
+  };
+}
+
+function formatCaseEvidenceStatus_(status) {
+  return {
+    confirmed: 'подтверждено документами',
+    probable_or_disputed: 'вероятно / спорно',
+    cannot_verify: 'невозможно проверить',
+    informational: 'справочно',
+  }[status] || 'невозможно проверить';
 }
 
 /**
@@ -125,21 +816,55 @@ function createPayrollAuditCatalogResult_(ruleId, input) {
   const rule = PAYROLL_AUDIT_RULE_CATALOG_V1[ruleId];
   if (!rule) throw new Error(`Неизвестное правило аудита: ${ruleId}`);
   const value = input || {};
-  const status = EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.indexOf(value.status) >= 0
+  const requestedStatus = EMPLOYMENT_AUDIT_VERIFICATION_STATUSES.indexOf(value.status) >= 0
     ? value.status : 'cannot_verify';
+  const inferredMissingFacts = Array.isArray(value.missingFacts)
+    ? value.missingFacts.slice()
+    : (requestedStatus === 'cannot_verify' ? rule.requiredFacts.slice() : []);
+  const availableFacts = Array.isArray(value.availableFacts)
+    ? value.availableFacts.slice()
+    : rule.requiredFacts.filter((fact) => inferredMissingFacts.indexOf(fact) < 0);
+  const evaluation = evaluatePayrollAuditRule_(ruleId, {
+    eventDate: value.eventDate,
+    asOfDate: value.asOfDate,
+    evaluateEventDate: value.enforceEventDate === true || Boolean(value.eventDate),
+    availableFacts,
+    status: requestedStatus,
+    reason: value.reason,
+  });
+  const status = evaluation.status;
+  const evidence = (value.evidence || []).map((item, index) =>
+    createPayrollEvidenceReference_(item, index + 1));
   const result = {
     id: buildEmploymentAuditPositionId_({ ruleId, layoutId: value.layoutId, baseKind: value.baseKind,
       periodKey: value.periodKey, calculationItem: value.calculationItem }),
-    ruleId, ruleVersion: rule.version, minimumSources: rule.minimumSources.slice(), status,
+    ruleId, ruleVersion: rule.version, ruleSchemaVersion: rule.schemaVersion,
+    ruleSnapshot: evaluation.rule, minimumSources: rule.minimumSources.slice(),
+    requiredFacts: rule.requiredFacts.slice(), availableFacts: evaluation.availableFacts.slice(),
+    missingFacts: evaluation.missingFacts.length ? evaluation.missingFacts.slice() : inferredMissingFacts,
+    applicability: evaluation.applicability, staleRule: evaluation.staleReview,
+    automaticCalculationAllowed: evaluation.automaticCalculationAllowed && status !== 'cannot_verify', status,
     layoutId: value.layoutId || '', baseKind: value.baseKind || '', periodKey: value.periodKey || '',
     calculationItem: value.calculationItem || '',
-    evidence: (value.evidence || []).slice(), moneyImpact: value.moneyImpact === undefined ? null : value.moneyImpact,
+    evidence, moneyImpact: status === 'cannot_verify' || value.moneyImpact === undefined
+      ? null : value.moneyImpact,
     claimFamily: value.claimFamily === undefined ? rule.claimFamily : value.claimFamily,
     question: String(value.question || ''), requestedDocument: String(value.requestedDocument || ''),
-    reason: String(value.reason || ''), disputed: status === 'probable_or_disputed' || status === 'cannot_verify',
+    reason: String(evaluation.reason || value.reason || ''),
+    disputed: status === 'probable_or_disputed' || status === 'cannot_verify',
   };
+  result.evidenceChain = buildPayrollAuditEvidenceChain_(evaluation, Object.assign({}, value, {
+    status,
+    moneyImpact: result.moneyImpact,
+    claimFamily: result.claimFamily,
+    reason: result.reason,
+    missingFacts: result.missingFacts,
+    automaticClaimAllowed: false,
+  }), evidence);
   if (status === 'cannot_verify' && !result.question && !result.requestedDocument) {
-    result.question = 'Уточните недостающий факт для проверки.';
+    result.question = evaluation.staleReview
+      ? `Проведите юридическую проверку правила ${ruleId}@${rule.version}.`
+      : 'Уточните недостающий факт для проверки.';
   }
   return result;
 }
@@ -201,13 +926,22 @@ function buildPayrollSlipAutomaticAuditCatalog_(rows, quality) {
 
 function buildPayrollAuditSourceEvidence_(row, index) {
   const value = row || {};
-  return {
+  const source = value.evidenceReference && typeof value.evidenceReference === 'object'
+    ? value.evidenceReference : {
     source: String(value.file || ''),
+    documentId: value.documentId || value.fileId || null,
+    documentUrl: value.documentUrl || value.sourceUrl || null,
+    documentSignature: value.documentSignature || value.fileSignature || value.hash || null,
     sourceSheet: String(value.sheet || ''),
     sourceRow: String(value.sourceRow || ''),
-    sourceOrdinal: value.sourceOrdinal === undefined ? index + 1 : value.sourceOrdinal,
+    sourceOrdinal: value.sourceOrdinal === undefined || value.sourceOrdinal === ''
+      ? index + 1 : value.sourceOrdinal,
+    recognitionVersion: value.recognitionVersion || value.parserVersion || null,
+    confidence: value.confidence === undefined ? null : value.confidence,
+    };
+  return Object.assign({}, source, {
     period: value.period ? buildPayrollAuditPeriodKey_(value.period) : '',
-  };
+  });
 }
 
 function buildPayrollAuditPeriodKey_(period) {
@@ -1740,6 +2474,14 @@ function getClaimIntakeLayout_() {
       columnCount: 3,
       namedRange: 'CLAIM_INTAKE_DOCS_HISTORY',
     },
+    evidenceCoverage: {
+      titleCell: 'G8',
+      firstRow: 8,
+      firstColumn: 7,
+      rowCount: 37,
+      columnCount: 6,
+      namedRange: 'CLAIM_CASE_EVIDENCE_COVERAGE',
+    },
   };
 }
 
@@ -1797,6 +2539,9 @@ function applyClaimIntakeStructure_(sheet, layout) {
   sheet.getRange(layout.partialRecoveries.headerRow, 1, 1, 4).setValues([[
     'Учитывать', 'Дата', 'Сумма', 'К какому требованию отнести',
   ]]);
+  if (!String(sheet.getRange(layout.evidenceCoverage.titleCell).getValue() || '').trim()) {
+    sheet.getRange(layout.evidenceCoverage.titleCell).setValue('Карта покрытия дела');
+  }
   sheet.getRange(layout.claimSelections.titleCell).setValue('Аудит и требования');
   sheet.getRange(layout.docsHistory.titleCell).setValue('История сформированных Docs');
   sheet.getRange(layout.docsHistory.headerRow, layout.docsHistory.firstColumn, 1, 3).setValues([[
@@ -1877,6 +2622,9 @@ function buildClaimAuditModel_(claimFacts) {
 
   (claimFacts || []).forEach((fact) => {
     if (!fact || !factsByFamily[fact.family]) return;
+    if (fact.excludedFromClaimTotals === true
+      || fact.status === 'cannot_verify'
+      || fact.verificationStatus === 'cannot_verify') return;
     const amount = Number(fact.amount);
     if (!Number.isFinite(amount) || amount <= 0) return;
     const key = buildStableClaimKey_(fact);
@@ -1929,7 +2677,9 @@ function buildClaimAuditModel_(claimFacts) {
     )),
   };
   const expectedTotal = roundClaimAuditMoney_((claimFacts || []).reduce((sum, fact) => {
-    if (!fact || !factsByFamily[fact.family] || fact.family === 'unallocated_recovery') return sum;
+    if (!fact || !factsByFamily[fact.family] || fact.family === 'unallocated_recovery'
+      || fact.excludedFromClaimTotals === true || fact.status === 'cannot_verify'
+      || fact.verificationStatus === 'cannot_verify') return sum;
     const amount = Number(fact.amount);
     return sum + (Number.isFinite(amount) && amount > 0 ? amount : 0);
   }, 0));
@@ -2032,6 +2782,134 @@ function readExistingClaimSelections_(sheet) {
   }, []);
 }
 
+function renderCaseEvidenceCoverage_(sheet, coverage) {
+  const layout = getClaimIntakeLayout_().evidenceCoverage;
+  const model = coverage || buildCaseEvidenceCoverage_([], [], [], {}, {});
+  const rows = Array.from({ length: layout.rowCount }, () =>
+    Array(layout.columnCount).fill(''));
+  const notes = Array.from({ length: layout.rowCount }, () =>
+    Array(layout.columnCount).fill(''));
+  const findings = model.findings || {};
+  const statusCounts = findings.statusCounts || {};
+  const sourceDocuments = findings.sourceDocuments === undefined
+    ? findings.sourceDocumentCount : findings.sourceDocuments;
+  const sourceRows = findings.sourceRows === undefined
+    ? findings.sourceRowCount : findings.sourceRows;
+  const periods = findings.periods && Array.isArray(findings.periods)
+    ? findings.periods.length : (findings.periods || findings.periodCount || 0);
+  const requests = model.missingDocuments || model.evidenceRequests || [];
+  rows[0] = ['Карта покрытия дела', '', '', '', '', ''];
+  rows[1] = ['Что найдено',
+    `Документов: ${sourceDocuments || 0}; исходных строк: ${sourceRows || 0}; периодов: ${periods || 0}.`,
+    '', '', '', ''];
+  rows[2] = ['Полнота периодов', (findings.missingPeriods || []).length
+    ? `Пропущены: ${(findings.missingPeriods || []).join(', ')}` : 'Явные пропуски между загруженными периодами не найдены.',
+  '', '', '', ''];
+  rows[3] = ['Рассчитано в Google Sheets',
+    `${findings.calculatedClaimCount || 0} поз.; сумма`,
+    Number(findings.calculatedClaimTotal) || 0, '', '',
+    'В сумму входят только существующие расчётные позиции, не предварительные сигналы.'];
+  rows[4] = ['Статусы проверок',
+    `подтверждено: ${statusCounts.confirmed || 0}; спорно: ${statusCounts.probable_or_disputed || 0}; `
+      + `невозможно проверить: ${statusCounts.cannot_verify || 0}; справочно: ${statusCounts.informational || 0}`,
+    '', '', '', ''];
+  rows[6] = ['Возможные направления проверки', '', '', '', '', ''];
+  rows[7] = ['Направление', 'Статус доказанности', 'Уже рассчитано', 'Возможность расчёта', 'Источников', 'Почему / чего не хватает'];
+  const directionStart = 8;
+  (model.directions || []).slice(0, 8).forEach((direction, index) => {
+    const rowIndex = directionStart + index;
+    const calculability = {
+      calculated: 'рассчитано в таблице',
+      facts_confirmed: 'факты есть; расчёт не создан',
+      calculable_with_confirmed_facts: 'факты есть; можно рассчитать',
+      disputed: 'после проверки допущений',
+      not_verifiable: 'нужны факты / документы',
+      cannot_verify: 'нужны факты / документы',
+    }[direction.calculationState || direction.calculability] || 'нужны факты / документы';
+    rows[rowIndex] = [
+      direction.title,
+      formatCaseEvidenceStatus_(direction.status),
+      direction.amount === null || direction.amount === undefined ? '' : direction.amount,
+      calculability,
+      direction.sourceCount || 0,
+      direction.reason || '',
+    ];
+    notes[rowIndex][0] = [
+      direction.missingFacts && direction.missingFacts.length
+        ? `Недостающие факты: ${direction.missingFacts.join(', ')}` : '',
+      direction.requestedDocuments && direction.requestedDocuments.length
+        ? `Нужны документы: ${direction.requestedDocuments.join('; ')}` : '',
+      direction.auditItemIds && direction.auditItemIds.length
+        ? `Позиции аудита: ${direction.auditItemIds.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+  });
+  const documentsTitleRow = directionStart + Math.min((model.directions || []).length, 8) + 1;
+  rows[documentsTitleRow] = ['Что нужно загрузить', '', '', '', '', ''];
+  rows[documentsTitleRow + 1] = ['Документ / подтверждение', 'Приоритет', '', '', 'Направлений', 'Для каких проверок'];
+  const documentCapacity = layout.rowCount - documentsTitleRow - 2;
+  const directionTitles = new Map((model.directions || []).map((item) => [item.id, item.title]));
+  requests.slice(0, documentCapacity).forEach((request, index) => {
+    rows[documentsTitleRow + 2 + index] = [
+      request.label || request.document,
+      request.priority === 1 || request.priority === 'high' ? 'нужно для проверки' : 'уточняет расчёт',
+      '', '',
+      (request.directionIds || []).length,
+      (request.directionIds || []).map((id) => directionTitles.get(id) || id).join('; '),
+    ];
+    notes[documentsTitleRow + 2 + index][0] = request.auditItemIds && request.auditItemIds.length
+      ? `Связанные позиции аудита: ${request.auditItemIds.join(', ')}` : '';
+  });
+  if (!requests.length && documentsTitleRow + 2 < layout.rowCount) {
+    rows[documentsTitleRow + 2] = ['Дополнительные запросы документов не сформированы', '', '', '', '', ''];
+  }
+
+  const range = sheet.getRange(
+    layout.firstRow, layout.firstColumn, layout.rowCount, layout.columnCount
+  );
+  range.clearContent();
+  if (typeof range.setBackgrounds === 'function') {
+    range.setBackgrounds(Array.from({ length: layout.rowCount }, () =>
+      Array(layout.columnCount).fill('#FFFFFF')));
+  }
+  if (typeof range.setNumberFormats === 'function') {
+    range.setNumberFormats(Array.from({ length: layout.rowCount }, () =>
+      Array(layout.columnCount).fill('@')));
+  }
+  if (typeof range.setFontColors === 'function') {
+    range.setFontColors(Array.from({ length: layout.rowCount }, () =>
+      Array(layout.columnCount).fill('#202124')));
+  } else if (typeof range.setFontColor === 'function') {
+    range.setFontColor('#202124');
+  }
+  if (typeof range.setFontWeights === 'function') {
+    range.setFontWeights(Array.from({ length: layout.rowCount }, () =>
+      Array(layout.columnCount).fill('normal')));
+  }
+  if (typeof range.setNotes === 'function') range.setNotes(notes);
+  if (typeof range.clearDataValidations === 'function') range.clearDataValidations();
+  range.setValues(rows).setWrap(true).setVerticalAlignment('top');
+  sheet.getRange(layout.firstRow, layout.firstColumn, 1, layout.columnCount)
+    .setBackground('#D9EAD3').setFontWeight('bold').setFontSize(14);
+  [1, 6, documentsTitleRow].forEach((offset) => {
+    sheet.getRange(layout.firstRow + offset, layout.firstColumn, 1, layout.columnCount)
+      .setBackground('#E8F0FE').setFontWeight('bold');
+  });
+  [7, documentsTitleRow + 1].forEach((offset) => {
+    sheet.getRange(layout.firstRow + offset, layout.firstColumn, 1, layout.columnCount)
+      .setBackground('#F3F6FC').setFontWeight('bold');
+  });
+  (model.directions || []).slice(0, 8).forEach((direction, index) => {
+    const color = direction.status === 'confirmed' ? '#D9EAD3'
+      : (direction.status === 'informational' ? '#D9EAF7' : '#FFF2CC');
+    sheet.getRange(layout.firstRow + directionStart + index, layout.firstColumn + 1)
+      .setBackground(color);
+  });
+  sheet.getRange(layout.firstRow, layout.firstColumn + 2, layout.rowCount, 1)
+    .setNumberFormat('#,##0.00');
+  sheet.getParent().setNamedRange(layout.namedRange, range);
+  return model;
+}
+
 function renderClaimAudit_(sheet, claimFacts, options) {
   const layout = getClaimIntakeLayout_();
   const audit = layout.claimSelections;
@@ -2117,6 +2995,8 @@ function renderClaimAudit_(sheet, claimFacts, options) {
     audit.namedRange,
     sheet.getRange(audit.firstRow, 1, rows.length, audit.columnCount)
   );
+  writeClaimCalculatedFactsSnapshot_(spreadsheet, model);
+  protectClaimAuditCalculatedColumns_(sheet, rows.length);
   if (typeof sheet.hideColumns === 'function') sheet.hideColumns(6);
   model.durableUncheckedClaimKeys = Array.from(durableUnchecked);
   return model;
@@ -2177,9 +3057,12 @@ function formatClaimIntakeSheet_(sheet, layout, created) {
   sheet.setColumnWidth(3, 120);
   sheet.setColumnWidth(4, 140);
   sheet.setColumnWidth(5, 100);
-  sheet.setColumnWidth(7, 170);
-  sheet.setColumnWidth(8, 360);
+  sheet.setColumnWidth(7, 260);
+  sheet.setColumnWidth(8, 160);
   sheet.setColumnWidth(9, 130);
+  sheet.setColumnWidth(10, 190);
+  sheet.setColumnWidth(11, 90);
+  sheet.setColumnWidth(12, 360);
   sheet.getRange(1, 1, 1, 2)
     .setBackground('#E8F0FE')
     .setFontColor('#202124')
@@ -2228,6 +3111,13 @@ function registerClaimIntakeNamedRanges_(spreadsheet, sheet, layout) {
     sheet.getRange(
       layout.partialRecoveries.firstRow, 1,
       layout.partialRecoveries.rowCount, layout.partialRecoveries.columnCount
+    )
+  );
+  spreadsheet.setNamedRange(
+    layout.evidenceCoverage.namedRange,
+    sheet.getRange(
+      layout.evidenceCoverage.firstRow, layout.evidenceCoverage.firstColumn,
+      layout.evidenceCoverage.rowCount, layout.evidenceCoverage.columnCount
     )
   );
   const historyExtent = getClaimDocsHistoryExtent_(
@@ -3397,70 +4287,7 @@ function buildSelectedClaimPayload_(spreadsheet) {
   }
   const auditRange = target.getRangeByName(layout.claimSelections.namedRange);
   const extent = getClaimAuditRenderedExtent_(sheet, layout.claimSelections, auditRange);
-  const rows = sheet.getRange(
-    layout.claimSelections.firstRow, 1, extent, layout.claimSelections.columnCount
-  ).getValues();
-  const groups = [];
-  let currentGroup = null;
-  rows.forEach((row) => {
-    const key = String(row[5] || '').trim();
-    if (!key) {
-      const heading = String(row[1] || '').trim();
-      if (!heading) return;
-      currentGroup = {
-        family: '',
-        label: heading.replace(/\s+—\s+[\d\s\u00a0]+(?:[,.]\d+)?\s*$/, ''),
-        items: [],
-        total: 0,
-      };
-      groups.push(currentGroup);
-      return;
-    }
-    if (!currentGroup) {
-      throw new Error(
-        'Нарушен порядок групп аудита: позиция находится до заголовка группы. '
-        + 'Повторите расчет в Google Sheets.'
-      );
-    }
-    if (row[0] !== true) return;
-    if (!isFivePartClaimKey_(key)) {
-      throw new Error('В выбранной позиции поврежден технический ключ. Повторите расчет в Google Sheets.');
-    }
-    const amount = Number(row[3]);
-    const keyParts = key.split('|').map(decodeClaimKeyPart_);
-    const family = keyParts[0];
-    const violation = String(row[1] || '').trim();
-    const periodKey = keyParts[3];
-    const period = formatSelectedClaimPeriod_(row[2], periodKey);
-    if (!violation || !period || !Number.isFinite(amount) || amount <= 0) {
-      throw new Error(
-        'Выбранная позиция не содержит понятное нарушение, период или положительную сумму. '
-        + 'Повторите расчет в Google Sheets.'
-      );
-    }
-    if (!currentGroup.family) currentGroup.family = family;
-    if (currentGroup.family !== family) {
-      throw new Error(
-        'Нарушен порядок групп аудита: позиция относится к другой группе. '
-        + 'Повторите расчет в Google Sheets.'
-      );
-    }
-    const item = {
-      key,
-      family,
-      layoutId: keyParts[1],
-      baseKind: keyParts[2],
-      periodKey,
-      calculationItem: keyParts[4],
-      violation,
-      period,
-      label: `${violation} — ${period}`,
-      amount: roundClaimAuditMoney_(amount),
-      disputed: String(row[4] || '').trim().toLowerCase() === 'спорное',
-    };
-    currentGroup.items.push(item);
-    currentGroup.total = roundClaimAuditMoney_(currentGroup.total + item.amount);
-  });
+  const groups = readSelectedClaimGroupsFromSnapshot_(target, sheet, extent).groups;
   const selectedGroups = groups.filter((group) => group.items.length);
   const selectedClaimKeys = new Set(selectedGroups.reduce(
     (keys, group) => keys.concat(group.items.map((item) => item.key)), []
@@ -3506,6 +4333,173 @@ function buildSelectedClaimPayload_(spreadsheet) {
     },
     warnings: collectSelectedClaimWarnings_(effects, selectedClaimKeys),
     sourceKind: 'payroll_slips',
+  };
+}
+
+function getClaimCalculatedFactsSnapshotSheet_(spreadsheet, create) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = target.getSheetByName(CLAIM_CALCULATED_FACTS_SNAPSHOT_SHEET_NAME);
+  if (!sheet && create) sheet = target.insertSheet(CLAIM_CALCULATED_FACTS_SNAPSHOT_SHEET_NAME);
+  return sheet;
+}
+
+function protectClaimRange_(range, description) {
+  if (!range || typeof range.protect !== 'function') return null;
+  const protection = range.protect().setDescription(description);
+  if (typeof protection.setWarningOnly === 'function') protection.setWarningOnly(false);
+  try {
+    const me = Session.getEffectiveUser && Session.getEffectiveUser();
+    if (me && typeof protection.addEditor === 'function') protection.addEditor(me);
+    if (typeof protection.removeEditors === 'function' && typeof protection.getEditors === 'function') {
+      protection.removeEditors(protection.getEditors());
+    }
+    if (typeof protection.canDomainEdit === 'function' && protection.canDomainEdit()
+      && typeof protection.setDomainEdit === 'function') protection.setDomainEdit(false);
+  } catch (error) {
+    Logger.log(`Не удалось сузить редакторов защищенного диапазона: ${error && error.message ? error.message : error}`);
+  }
+  return protection;
+}
+
+function removeClaimOwnedProtections_(sheet, description) {
+  if (!sheet || typeof sheet.getProtections !== 'function') return;
+  const type = typeof SpreadsheetApp.ProtectionType !== 'undefined'
+    ? SpreadsheetApp.ProtectionType.RANGE : undefined;
+  sheet.getProtections(type).slice().forEach((protection) => {
+    if (protection && typeof protection.getDescription === 'function'
+      && protection.getDescription() === description
+      && typeof protection.remove === 'function') protection.remove();
+  });
+}
+
+function protectClaimAuditCalculatedColumns_(sheet, rowCount) {
+  if (!sheet || !rowCount) return;
+  removeClaimOwnedProtections_(sheet, CLAIM_CALCULATED_FACTS_SNAPSHOT_PROTECTION);
+  protectClaimRange_(sheet.getRange(
+    getClaimIntakeLayout_().claimSelections.firstRow, 2, rowCount, 5
+  ), CLAIM_CALCULATED_FACTS_SNAPSHOT_PROTECTION);
+}
+
+function buildClaimCalculatedFactsSnapshotRows_(model) {
+  return (model && model.groups || []).reduce((rows, group) => rows.concat(
+    (group.items || []).map((item) => [
+      item.key, item.family, item.layoutId, item.baseKind, item.periodKey,
+      item.calculationItem, item.violationLabel, item.periodLabel,
+      roundClaimAuditMoney_(item.amount), item.disputed === true, group.label,
+      group.excludedFromClaimTotals === true,
+    ])
+  ), []);
+}
+
+function writeClaimCalculatedFactsSnapshot_(spreadsheet, model) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = getClaimCalculatedFactsSnapshotSheet_(target, true);
+  sheet.getRange(1, 1, 1, CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length)
+    .setValues([CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS]);
+  const rows = buildClaimCalculatedFactsSnapshotRows_(model);
+  const named = target.getRangeByName(CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE);
+  const previousRows = named ? named.getNumRows() : Math.max(sheet.getLastRow() - 1, 1);
+  const clearRows = Math.max(previousRows, rows.length, 1);
+  sheet.getRange(2, 1, clearRows, CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length).clearContent();
+  if (rows.length) {
+    sheet.getRange(2, 1, rows.length, CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length).setValues(rows);
+  }
+  target.setNamedRange(
+    CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE,
+    sheet.getRange(2, 1, Math.max(rows.length, 1), CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length)
+  );
+  removeClaimOwnedProtections_(sheet, CLAIM_CALCULATED_FACTS_SNAPSHOT_PROTECTION);
+  protectClaimRange_(sheet.getRange(
+    1, 1, Math.max(rows.length + 1, 2), CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length
+  ), CLAIM_CALCULATED_FACTS_SNAPSHOT_PROTECTION);
+  const mode = PropertiesService.getDocumentProperties()
+    .getProperty('CLAIM_CONSTRUCTOR_VISIBILITY_MODE') || 'normal';
+  if (mode !== 'technical' && typeof sheet.hideSheet === 'function') sheet.hideSheet();
+  return { sheet, rows, namedRange: target.getRangeByName(CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE) };
+}
+
+function readClaimCalculatedFactsSnapshot_(spreadsheet) {
+  const target = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
+  const named = target.getRangeByName(CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE);
+  if (!named) return null;
+  const rows = named.getValues().filter((row) => isFivePartClaimKey_(String(row[0] || '').trim()));
+  const groups = [];
+  const groupsByLabel = new Map();
+  rows.forEach((row) => {
+    const label = String(row[10] || '').trim();
+    if (!groupsByLabel.has(label)) {
+      const group = {
+        family: String(row[1] || ''), label, excludedFromClaimTotals: row[11] === true,
+        total: 0, items: [],
+      };
+      groupsByLabel.set(label, group);
+      groups.push(group);
+    }
+    const group = groupsByLabel.get(label);
+    const item = {
+      key: String(row[0] || '').trim(), family: String(row[1] || ''),
+      layoutId: String(row[2] || ''), baseKind: String(row[3] || ''),
+      periodKey: String(row[4] || ''), calculationItem: String(row[5] || ''),
+      violation: String(row[6] || ''), period: String(row[7] || ''),
+      amount: roundClaimAuditMoney_(Number(row[8])), disputed: row[9] === true,
+    };
+    item.label = `${item.violation} — ${item.period}`;
+    group.items.push(item);
+    group.total = roundClaimAuditMoney_(group.total + item.amount);
+  });
+  return { groups, items: groups.reduce((items, group) => items.concat(group.items), []) };
+}
+
+function readSelectedClaimGroupsFromSnapshot_(spreadsheet, sheet, extent) {
+  const snapshot = readClaimCalculatedFactsSnapshot_(spreadsheet);
+  if (!snapshot || !snapshot.items.length) {
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'claim_audit_snapshot_missing',
+      'Не найден актуальный снимок расчетных требований. Повторите расчет в Google Sheets.'
+    );
+  }
+  const layout = getClaimIntakeLayout_();
+  const rows = sheet.getRange(
+    layout.claimSelections.firstRow, 1, extent, layout.claimSelections.columnCount
+  ).getValues();
+  const snapshotByKey = new Map(snapshot.items.map((item) => [item.key, item]));
+  const seen = new Set();
+  const selected = new Set();
+  rows.forEach((row) => {
+    const key = String(row[5] || '').trim();
+    if (!key) return;
+    if (!isFivePartClaimKey_(key) || seen.has(key) || !snapshotByKey.has(key)) {
+      throw createSelectedClaimDocumentCorrectiveError_(
+        'claim_audit_snapshot_mismatch',
+        'Раздел «Аудит и требования» изменен вручную или устарел. Повторите расчет в Google Sheets.'
+      );
+    }
+    const item = snapshotByKey.get(key);
+    if (String(row[1] || '').trim() !== item.violation
+      || formatSelectedClaimPeriod_(row[2], item.periodKey) !== item.period
+      || roundClaimAuditMoney_(Number(row[3])) !== item.amount
+      || (String(row[4] || '').trim().toLowerCase() === 'спорное') !== item.disputed) {
+      throw createSelectedClaimDocumentCorrectiveError_(
+        'claim_audit_snapshot_mismatch',
+        'В расчетных колонках «Аудит и требования» обнаружено ручное изменение. Повторите расчет в Google Sheets.'
+      );
+    }
+    seen.add(key);
+    if (row[0] === true) selected.add(key);
+  });
+  if (seen.size !== snapshot.items.length) {
+    throw createSelectedClaimDocumentCorrectiveError_(
+      'claim_audit_snapshot_mismatch',
+      'Состав расчетных позиций в «Аудит и требования» не совпадает с последним расчетом. Повторите расчет в Google Sheets.'
+    );
+  }
+  return {
+    groups: snapshot.groups.map((group) => {
+      const items = group.items.filter((item) => selected.has(item.key)).map((item) => Object.assign({}, item));
+      return Object.assign({}, group, {
+        items, total: roundClaimAuditMoney_(items.reduce((sum, item) => sum + item.amount, 0)),
+      });
+    }),
   };
 }
 
@@ -3897,6 +4891,8 @@ function isSelectedClaimDocumentCorrectiveError_(error) {
     'average_earnings_invalid',
     'selected_claims_missing',
     'document_parent_unresolvable',
+    'claim_audit_snapshot_missing',
+    'claim_audit_snapshot_mismatch',
     'approved_layout_unmapped_basis',
     'approved_template_preservation_required',
   ].indexOf(error.code) >= 0);
@@ -3927,19 +4923,19 @@ function buildSelectedClaimDocumentTitle_(payload, now) {
 function populateSelectedClaimDocument_(document, payload, now) {
   const body = document.getBody();
   assertApprovedClaimTemplateCanBePreserved_(body);
-  clearNewSelectedClaimDocumentBody_(body);
+  const writer = createApprovedClaimBoundedWriter_(body);
   const model = buildApprovedClaimDocumentModel_(payload, now);
-  appendApprovedClaimHeading_(body, 'Расчет заявленных сумм', DocumentApp.ParagraphHeading.HEADING1);
-  appendApprovedClaimParagraph_(body, 'Дата окончания расчета:');
-  model.endDateRows.forEach((row) => appendApprovedClaimListItem_(body, row));
+  appendApprovedClaimHeading_(writer, 'Расчет заявленных сумм', DocumentApp.ParagraphHeading.HEADING1);
+  appendApprovedClaimParagraph_(writer, 'Дата окончания расчета:');
+  model.endDateRows.forEach((row) => appendApprovedClaimListItem_(writer, row));
 
-  appendApprovedClaimHeading_(body, 'Сводка', DocumentApp.ParagraphHeading.HEADING2);
-  appendApprovedClaimTable_(body, model.summaryRows, {
+  appendApprovedClaimHeading_(writer, 'Сводка', DocumentApp.ParagraphHeading.HEADING2);
+  appendApprovedClaimTable_(writer, model.summaryRows, {
     totalRow: true,
     columnWidths: [105, 70, 95, 90, 80],
   });
   const totalParagraph = appendApprovedClaimParagraph_(
-    body,
+    writer,
     `Общая сумма выбранных требований на ${model.calculationDate}: `
       + `${formatClaimAuditAmount_(model.total)} ₽`
   );
@@ -3947,29 +4943,29 @@ function populateSelectedClaimDocument_(document, payload, now) {
 
   model.sections.forEach((section, sectionIndex) => {
     if (sectionIndex > 0 && section.baseKind === 'monthly_premium'
-      && typeof body.appendPageBreak === 'function') {
-      body.appendPageBreak();
+      && typeof writer.appendPageBreak === 'function') {
+      writer.appendPageBreak();
     }
-    appendApprovedClaimHeading_(body, section.title, DocumentApp.ParagraphHeading.HEADING2);
-    appendApprovedClaimTable_(body, section.rows, {
+    appendApprovedClaimHeading_(writer, section.title, DocumentApp.ParagraphHeading.HEADING2);
+    appendApprovedClaimTable_(writer, section.rows, {
       totalRow: true,
       columnWidths: [85, 85, 75, 85, 110],
     });
     if (section.disputedItems.length) {
-      appendApprovedClaimParagraph_(body, 'Спорные позиции, включенные пользователем:');
+      appendApprovedClaimParagraph_(writer, 'Спорные позиции, включенные пользователем:');
       section.disputedItems.forEach((item) => appendApprovedClaimListItem_(
-        body,
+        writer,
         `${item.violation} (${item.period}) — ${formatClaimAuditAmount_(item.amount)} ₽`
       ));
     }
   });
 
-  appendApprovedAverageEarningsSection_(body, payload.averageEarnings);
-  appendApprovedArticle236Detail_(body, model);
-  appendSelectedClaimRecoveriesNarrative_(body, payload.recoveries);
-  appendApprovedClaimWarnings_(body, payload.warnings);
+  appendApprovedAverageEarningsSection_(writer, payload.averageEarnings);
+  appendApprovedArticle236Detail_(writer, model);
+  appendSelectedClaimRecoveriesNarrative_(writer, payload.recoveries);
+  appendApprovedClaimWarnings_(writer, payload.warnings);
   appendApprovedClaimParagraph_(
-    body,
+    writer,
     'Расчет сформирован только по выбранным пользователем требованиям на основании данных '
       + 'Google Sheets. Снятые позиции в суммы и таблицы документа не включены.'
   );
@@ -3978,10 +4974,10 @@ function populateSelectedClaimDocument_(document, payload, now) {
 
 /**
  * A generated court calculation is always a fresh copy of the approved
- * template.  The source template is never changed.  The new copy may be
- * rebuilt only after this preflight confirms the required approved headings;
- * the model below owns only the values and rows allowed by the locked
- * presentation contract.
+ * template. The source template is never changed. The new copy may be
+ * rebuilt only after this preflight confirms the required headings and the
+ * paired managed markers; the model below owns only the values and rows
+ * allowed by the locked presentation contract.
  */
 function assertApprovedClaimTemplateCanBePreserved_(body) {
   const requiredHeadings = [
@@ -3995,11 +4991,18 @@ function assertApprovedClaimTemplateCanBePreserved_(body) {
   const hasAllHeadings = hasFindText && requiredHeadings.every((heading) =>
     Boolean(body.findText(escapeApprovedClaimTemplateRegex_(heading)))
   );
-  if (hasFindText && !hasAllHeadings) {
+  let markerBoundary = null;
+  try {
+    markerBoundary = findApprovedClaimManagedBoundary_(body);
+  } catch (error) {
+    markerBoundary = null;
+  }
+  if (!hasAllHeadings || !markerBoundary) {
     throw createSelectedClaimDocumentCorrectiveError_(
       'approved_template_preservation_required',
       'Копия судебного расчета не соответствует утвержденному макету: '
-        + 'не найдены обязательные разделы. Исходный шаблон не изменен; проверьте его редакцию.'
+        + 'не найдены обязательные разделы или парные границы автоматического блока. '
+        + 'Исходный шаблон не изменен; проверьте его редакцию.'
     );
   }
   return true;
@@ -4009,13 +5012,62 @@ function escapeApprovedClaimTemplateRegex_(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function clearNewSelectedClaimDocumentBody_(body) {
-  if (body && typeof body.clear === 'function') {
-    body.clear();
-    return body;
+function findApprovedClaimManagedBoundary_(body) {
+  if (!body || typeof body.getNumChildren !== 'function'
+    || typeof body.getChild !== 'function') {
+    throw new Error('Google Docs body не поддерживает структурный поиск маркеров.');
   }
-  if (body && Array.isArray(body.content)) body.content.length = 0;
-  return body;
+  const markers = {};
+  markers[APPROVED_CLAIM_DOCUMENT_START_MARKER] = [];
+  markers[APPROVED_CLAIM_DOCUMENT_END_MARKER] = [];
+  for (let index = 0; index < body.getNumChildren(); index++) {
+    const child = body.getChild(index);
+    if (!child || !child.getType
+      || child.getType() !== DocumentApp.ElementType.PARAGRAPH) continue;
+    const paragraph = child.asParagraph ? child.asParagraph() : child;
+    const text = paragraph && paragraph.getText ? paragraph.getText() : '';
+    if (Object.prototype.hasOwnProperty.call(markers, text)) markers[text].push(index);
+  }
+  const starts = markers[APPROVED_CLAIM_DOCUMENT_START_MARKER];
+  const ends = markers[APPROVED_CLAIM_DOCUMENT_END_MARKER];
+  if (starts.length !== 1 || ends.length !== 1 || starts[0] >= ends[0]) {
+    throw new Error('Парные маркеры автоматического блока отсутствуют, дублируются или переставлены.');
+  }
+  return { startIndex: starts[0], endIndex: ends[0] };
+}
+
+function createApprovedClaimBoundedWriter_(body) {
+  const boundary = findApprovedClaimManagedBoundary_(body);
+  for (let index = boundary.endIndex - 1; index > boundary.startIndex; index--) {
+    removeBodyChildSafely_(body, index);
+  }
+  let insertionIndex = boundary.startIndex + 1;
+  const insert = (method, fallback, value) => {
+    let element;
+    if (typeof body[method] === 'function') {
+      element = body[method](insertionIndex, value);
+    } else if (fallback && typeof body[fallback] === 'function') {
+      element = body[fallback](insertionIndex, value);
+    } else {
+      throw new Error(`Google Docs body не поддерживает ${method}.`);
+    }
+    insertionIndex++;
+    return element;
+  };
+  return {
+    appendParagraph(value) {
+      return insert('insertParagraph', '', value);
+    },
+    appendListItem(value) {
+      return insert('insertListItem', 'insertParagraph', value);
+    },
+    appendTable(rows) {
+      return insert('insertTable', '', rows);
+    },
+    appendPageBreak() {
+      return insert('insertPageBreak', '', undefined);
+    },
+  };
 }
 
 function buildApprovedClaimDocumentModel_(payload, now) {

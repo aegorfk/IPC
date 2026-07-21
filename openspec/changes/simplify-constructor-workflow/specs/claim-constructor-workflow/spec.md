@@ -51,15 +51,22 @@ The system SHALL execute import, reconstruction, Sheets calculation, and Docs ha
 ### Requirement: Automatic resumable continuation
 The system MUST persist constructor run state and automatically continue the workflow after an existing resumable import batch completes, without requiring the normal user to invoke a manual resume command. State transitions MUST enforce a single active run through document locking, active run-id comparison, and expected-phase comparison.
 
+#### Scenario: Workflow state is isolated by spreadsheet
+- **WHEN** two spreadsheets execute through the same Apps Script project
+- **THEN** each spreadsheet stores `CLAIM_CONSTRUCTOR_RUN_STATE`, its chunks, and `ZUP_IMPORT_BATCH_STATE` in its own Document Properties
+- **AND** starting, resuming, retrying, or clearing a run in one spreadsheet does not read, join, overwrite, or delete the other spreadsheet's workflow state
+- **AND** continuation, watchdog, and batch-trigger cleanup uses the owning document's persisted trigger id and does not delete a same-handler trigger owned by the other spreadsheet
+- **AND** Script Properties contain only project-wide configuration such as API keys or rollout settings
+
 #### Scenario: Detailed state exceeds one property value
-- **WHEN** serialized run state with issues, results, or checkpoints exceeds the safe size of one Script Property value
+- **WHEN** serialized run state with issues, results, or checkpoints exceeds the safe size of one Document Property value
 - **THEN** the system writes bounded generation-specific UTF-8 chunks before atomically publishing a versioned manifest
 - **AND** every stored property value remains below the configured per-value safety limit
 - **AND** loading reconstructs the complete persisted run without dropping issues, durable result summaries, or phase checkpoints required for continuation
 - **AND** an interrupted chunk write leaves the previously committed manifest readable
 
 #### Scenario: Completed row-level results exceed the aggregate property quota
-- **WHEN** a completed calculation produces row-level claim facts, derivative dependencies, or other detail whose duplication would exceed the aggregate Script Properties quota
+- **WHEN** a completed calculation produces row-level claim facts, derivative dependencies, or other detail whose duplication would exceed the aggregate Document Properties quota
 - **THEN** the detailed facts remain durable in the existing authoritative calculation and technical Sheets ranges
 - **AND** the constructor state persists compact totals, row counts, warnings needed by the Docs handoff, and result references instead of duplicating those rows
 - **AND** retry and Docs continuation do not repeat completed Sheets calculation phases
@@ -245,7 +252,43 @@ The system SHALL update Google Docs only after corresponding Sheets calculations
 
 #### Scenario: Existing document content is preserved
 - **WHEN** the system refreshes a previously populated output Doc
-- **THEN** content outside the constructor-managed marker range remains unchanged
+- **THEN** it replaces only children between `[[AUTO_SELECTED_CLAIM_START]]` and `[[AUTO_SELECTED_CLAIM_END]]`
+- **AND** it does not call `Body.clear()`
+- **AND** content, tables, formatting, page layout, headers, and footers outside the constructor-managed marker range remain structurally unchanged
+
+#### Scenario: Approved marker boundary is invalid
+- **WHEN** the copied canonical template is missing either marker, contains a duplicate marker, or places the end marker before the start marker
+- **THEN** document generation stops with a corrective template-preservation error
+- **AND** the canonical source template and the copy's content remain unchanged
+
+### Requirement: Authoritative calculated claim selection
+The system SHALL treat `Аудит и требования` as a selection interface, not as the authority for calculated claim descriptions, periods, statuses, keys, or amounts.
+
+#### Scenario: Only checkbox state controls the selected composition
+- **WHEN** the audit projection is rendered from a completed Sheets calculation
+- **THEN** column A remains editable for the claim checkboxes
+- **AND** calculated columns B:F are protected from manual editing
+- **AND** the normalized calculated items are persisted in a separate technical snapshot keyed by the five-part stable claim key
+
+#### Scenario: Checked keys resolve against the current calculation
+- **WHEN** the user generates a court-calculation Doc after changing checkboxes
+- **THEN** the system reads the selected key set from the UI
+- **AND** obtains every description, period, dispute status, and amount from the current calculated snapshot
+- **AND** includes checked items, excludes unchecked items, and reconciles the final total to the included snapshot items
+
+#### Scenario: Calculated audit cells were changed manually
+- **WHEN** a key, description, period, status, or amount in B:F differs from the current calculated snapshot, or a UI key is missing from that snapshot
+- **THEN** Docs generation is blocked before creating a new document
+- **AND** the user receives a corrective message to rerun the Sheets calculation
+
+### Requirement: Complete installation prerequisites
+The installation guide SHALL enumerate every required Advanced Google service, OAuth scope, and project property used by the workflow.
+
+#### Scenario: User follows the installation checklist
+- **WHEN** a user installs the bound Apps Script project from the README
+- **THEN** the checklist requires Advanced Drive service (`Drive API v2`)
+- **AND** requires Advanced Google Sheets API (`Sheets`, v4) for transactional rollback
+- **AND** lists the required OAuth scopes and `POLZA_API_KEY`
 
 ### Requirement: Source-independent orchestration boundary
 The system SHALL orchestrate normalized facts and calculation capabilities through an adapter result containing source kind, normalized result references, quality issues, and completion/continuation status, without requiring the constructor UI to know 1C-specific section names or service-sheet layouts.

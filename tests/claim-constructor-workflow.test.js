@@ -216,6 +216,34 @@ class FakeRange {
   setHorizontalAlignment() { return this; }
   setVerticalAlignment() { return this; }
   setWrap() { return this; }
+  protect() {
+    const protection = new FakeProtection(this);
+    this.sheet.protections.push(protection);
+    return protection;
+  }
+}
+
+class FakeProtection {
+  constructor(range) {
+    this.range = range;
+    this.description = '';
+    this.warningOnly = false;
+    this.editors = [];
+    this.domainEdit = false;
+    this.sheet = range.sheet;
+  }
+  setDescription(value) { this.description = String(value || ''); return this; }
+  getDescription() { return this.description; }
+  setWarningOnly(value) { this.warningOnly = Boolean(value); return this; }
+  addEditor(editor) { this.editors.push(editor); return this; }
+  getEditors() { return this.editors.slice(); }
+  removeEditors() { this.editors = []; return this; }
+  canDomainEdit() { return this.domainEdit; }
+  setDomainEdit(value) { this.domainEdit = Boolean(value); return this; }
+  remove() {
+    const index = this.sheet.protections.indexOf(this);
+    if (index >= 0) this.sheet.protections.splice(index, 1);
+  }
 }
 
 class FakeSheet {
@@ -234,6 +262,7 @@ class FakeSheet {
     this.frozenRows = 0;
     this.columnWidths = new Map();
     this.hiddenColumns = new Set();
+    this.protections = [];
     this.maxRows = 100;
   }
 
@@ -413,6 +442,7 @@ class FakeSheet {
     return this;
   }
   isColumnHiddenByUser(column) { return this.hiddenColumns.has(column); }
+  getProtections() { return this.protections.slice(); }
   setRowHeight() { return this; }
   autoResizeRows() { return this; }
 }
@@ -508,7 +538,7 @@ class FakeProperties {
 
 function createHarness(sheetNames = ['Оклад']) {
   const spreadsheet = new FakeSpreadsheet(sheetNames);
-  const scriptProperties = new FakeProperties();
+  const globalScriptProperties = new FakeProperties();
   const documentProperties = new FakeProperties();
   const driveFolders = new Map();
   const driveFiles = new Map();
@@ -561,7 +591,7 @@ function createHarness(sheetNames = ['Оклад']) {
     Number,
     Object,
     PropertiesService: {
-      getScriptProperties: () => scriptProperties,
+      getScriptProperties: () => globalScriptProperties,
       getDocumentProperties: () => documentProperties,
     },
     RegExp,
@@ -572,7 +602,13 @@ function createHarness(sheetNames = ['Оклад']) {
         if (index >= 0) triggers.splice(index, 1);
       },
       newTrigger(handler) {
-        const trigger = { getHandlerFunction: () => handler, schedule: null };
+        const uniqueId = `trigger-${++uuidCounter}`;
+        const trigger = {
+          uniqueId,
+          getUniqueId: () => uniqueId,
+          getHandlerFunction: () => handler,
+          schedule: null,
+        };
         return {
           timeBased() { return this; },
           after() { return this; },
@@ -584,7 +620,10 @@ function createHarness(sheetNames = ['Оклад']) {
         };
       },
     },
-    Session: { getScriptTimeZone: () => 'Europe/Moscow' },
+    Session: {
+      getScriptTimeZone: () => 'Europe/Moscow',
+      getEffectiveUser: () => ({ email: 'test@example.com' }),
+    },
     Sheets: {
       Spreadsheets: {
         get(spreadsheetId, options) {
@@ -658,6 +697,7 @@ function createHarness(sheetNames = ['Оклад']) {
       },
     },
     SpreadsheetApp: {
+      ProtectionType: { RANGE: 'RANGE' },
       getActiveSpreadsheet: () => spreadsheet,
       getUi: () => ({
         createMenu(name) {
@@ -724,7 +764,9 @@ function createHarness(sheetNames = ['Оклад']) {
   return {
     context,
     spreadsheet,
-    scriptProperties,
+    // Backward-compatible test alias: constructor state was formerly script-scoped.
+    scriptProperties: documentProperties,
+    globalScriptProperties,
     documentProperties,
     driveFolders,
     driveFiles,
@@ -757,6 +799,58 @@ function createHarness(sheetNames = ['Оклад']) {
   assert.strictEqual(result.joined, true);
   assert.ok(harness.spreadsheet.getSheetByName('Конструктор'));
   assert.ok(harness.spreadsheet.getSheetByName('Анкета и требования'));
+}
+
+// Mutable constructor/import state is document-scoped even when two spreadsheet
+// executions share the same project-wide Script Properties store.
+{
+  const first = createHarness(['Оклад']);
+  const second = createHarness(['Оклад']);
+  const sharedScriptProperties = new FakeProperties();
+  first.context.PropertiesService.getScriptProperties = () => sharedScriptProperties;
+  second.context.PropertiesService.getScriptProperties = () => sharedScriptProperties;
+  first.spreadsheet.getId = () => 'spreadsheet-a';
+  second.spreadsheet.getId = () => 'spreadsheet-b';
+
+  const firstRun = first.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-21T08:00:00.000Z'),
+  });
+  const secondRun = second.context.createClaimConstructorRun_({}, {
+    now: new Date('2026-07-21T08:01:00.000Z'),
+  });
+  first.context.saveClaimConstructorRun_(firstRun);
+  second.context.saveClaimConstructorRun_(secondRun);
+  first.context.saveZupBatchImportSession_({ constructorRunId: firstRun.id, nextIndex: 2 });
+  second.context.saveZupBatchImportSession_({ constructorRunId: secondRun.id, nextIndex: 7 });
+
+  assert.strictEqual(first.context.loadClaimConstructorRun_().spreadsheetId, 'spreadsheet-a');
+  assert.strictEqual(second.context.loadClaimConstructorRun_().spreadsheetId, 'spreadsheet-b');
+  assert.strictEqual(first.context.loadZupBatchImportSession_().nextIndex, 2);
+  assert.strictEqual(second.context.loadZupBatchImportSession_().nextIndex, 7);
+  assert.strictEqual(sharedScriptProperties.getProperty('CLAIM_CONSTRUCTOR_RUN_STATE'), null);
+  assert.strictEqual(sharedScriptProperties.getProperty('ZUP_IMPORT_BATCH_STATE'), null);
+
+  second.context.clearZupBatchImportState_();
+  assert.strictEqual(second.context.loadZupBatchImportSession_(), null);
+  assert.strictEqual(first.context.loadZupBatchImportSession_().nextIndex, 2);
+
+  const sharedTriggers = [
+    { getUniqueId: () => 'trigger-a', getHandlerFunction: () => 'resumeClaimConstructorPipeline_' },
+    { getUniqueId: () => 'trigger-b', getHandlerFunction: () => 'resumeClaimConstructorPipeline_' },
+  ];
+  first.context.ScriptApp.getProjectTriggers = () => sharedTriggers.slice();
+  second.context.ScriptApp.getProjectTriggers = () => sharedTriggers.slice();
+  first.context.ScriptApp.deleteTrigger = (trigger) => {
+    const index = sharedTriggers.indexOf(trigger);
+    if (index >= 0) sharedTriggers.splice(index, 1);
+  };
+  second.context.ScriptApp.deleteTrigger = first.context.ScriptApp.deleteTrigger;
+  first.documentProperties.setProperty('CLAIM_CONSTRUCTOR_CONTINUATION_TRIGGER_ID', 'trigger-a');
+  second.documentProperties.setProperty('CLAIM_CONSTRUCTOR_CONTINUATION_TRIGGER_ID', 'trigger-b');
+  first.context.deleteClaimConstructorContinuationTriggers_();
+  assert.deepStrictEqual(sharedTriggers.map((trigger) => trigger.getUniqueId()), ['trigger-b']);
+  second.context.deleteClaimConstructorContinuationTriggers_();
+  assert.strictEqual(sharedTriggers.length, 0);
 }
 
 {
@@ -3778,7 +3872,7 @@ function stubBatchSessionStartup(harness) {
     trigger.getHandlerFunction() === 'watchClaimConstructorPipeline_'
   );
   assert.strictEqual(watchdogs.length, 1);
-  assert.deepStrictEqual(watchdogs[0].schedule, { type: 'minutes', minutes: 5 });
+  assert.deepStrictEqual(watchdogs[0].schedule, { type: 'minutes', minutes: 1 });
   assert.strictEqual(resumed, 1);
   assert.strictEqual(result.processed, 30);
   assert.strictEqual(harness.context.loadClaimConstructorRun_().id, run.id);
@@ -4214,7 +4308,7 @@ function stubBatchSessionStartup(harness) {
     3200,
     'Неизвестный сектор не должен блокировать разрешение среднего заработка'
   );
-  assert.strictEqual(harness.scriptProperties.values.size, 0);
+  assert.strictEqual(harness.globalScriptProperties.values.size, 0);
 }
 
 {
@@ -5301,6 +5395,11 @@ function stubBatchSessionStartup(harness) {
   assert.ok(!rendered.flat().join(' ').includes('6 оснований'));
   assert.ok(!rendered.flat().join(' ').includes('по базам'));
   assert.strictEqual(sheet.isColumnHiddenByUser(6), true);
+  assert.strictEqual(sheet.getProtections('RANGE').length, 1);
+  assert.strictEqual(
+    sheet.getProtections('RANGE')[0].getDescription(),
+    'Автоматический снимок расчетных требований'
+  );
 
   sheet.getRange(layout.claimSelections.firstRow + 1, 1).setValue(false);
   harness.context.renderClaimAudit_(sheet, facts.concat({
@@ -7351,6 +7450,29 @@ assertRollbackPreflightFailurePreservesRunState(
   ];
   intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 6)
     .setValues(auditRows);
+  harness.context.writeClaimCalculatedFactsSnapshot_(harness.spreadsheet, {
+    groups: [{
+      family: 'underpayment', label: 'Взыскать недоплату', items: [{
+        key: selectedKey, family: 'underpayment', layoutId: 'salary', baseKind: 'salary',
+        periodKey: '2026-01', calculationItem: 'principal', violationLabel: 'Недоплата по окладу',
+        periodLabel: '01.2026', amount: 1000, disputed: false,
+      }],
+    }, {
+      family: 'salary_indexation', label: 'Индексация заработной платы', items: [{
+        key: uncheckedKey, family: 'salary_indexation', layoutId: 'salary', baseKind: 'salary',
+        periodKey: '2026-02', calculationItem: 'indexation',
+        violationLabel: 'Индексация заработной платы по окладу', periodLabel: '02.2026',
+        amount: 250, disputed: false,
+      }],
+    }, {
+      family: 'material_liability', label: 'Материальная ответственность', items: [{
+        key: disputedKey, family: 'material_liability', layoutId: 'salary', baseKind: 'salary',
+        periodKey: '2026-01', calculationItem: 'article_236',
+        violationLabel: 'Материальная ответственность за задержку выплаты по окладу',
+        periodLabel: '01.2026', amount: 75, disputed: true,
+      }],
+    }],
+  });
   harness.spreadsheet.setNamedRange(
     intakeLayout.claimSelections.namedRange,
     intake.getRange(intakeLayout.claimSelections.firstRow, 1, auditRows.length, 6)
@@ -7534,7 +7656,24 @@ assertRollbackPreflightFailurePreservesRunState(
 {
   const harness = createHarness();
   const approvedTemplateBody = {
-    findText() { return {}; },
+    content: [
+      'Расчет заявленных сумм', 'Сводка',
+      '1. Оклад: индексация, индексация недоплаты, матответственность',
+      '5. Расчет среднего заработка',
+      '7. Подробный расчет матответственности по ст. 236 ТК РФ',
+      '[[AUTO_SELECTED_CLAIM_START]]',
+      '[[AUTO_SELECTED_CLAIM_END]]',
+    ],
+    getNumChildren() { return this.content.length; },
+    getChild(index) {
+      const value = this.content[index];
+      return {
+        getType() { return 'PARAGRAPH'; },
+        asParagraph() { return this; },
+        getText() { return value; },
+      };
+    },
+    findText(pattern) { return this.content.some((value) => new RegExp(pattern).test(value)) ? {} : null; },
   };
   assert.strictEqual(
     harness.context.assertApprovedClaimTemplateCanBePreserved_(approvedTemplateBody), true
@@ -7685,6 +7824,8 @@ assertRollbackPreflightFailurePreservesRunState(
   assert.ok(results.calculationEffects.warnings.some((warning) =>
     warning.code === 'employment_start_scope_applied'
   ));
+  assert.ok(results.calculationEffects.caseEvidenceCoverage);
+  assert.strictEqual(results.calculationEffects.caseEvidenceCoverage.findings.calculatedClaimTotal, 200);
 }
 
 // Premium identifiers stay source-provider-neutral while source ordinals keep
@@ -8193,28 +8334,78 @@ assertRollbackPreflightFailurePreservesRunState(
 function installVersionedDocsFakes(harness) {
   let nextId = 0;
   const created = [];
-  const makeBody = () => ({
-    content: [],
-    clear() {
-      this.content.length = 0;
-      return this;
-    },
-    appendParagraph(value) {
-      this.content.push(String(value));
-      return {
-        setHeading() { return this; },
-        editAsText() { return { setBold() { return this; } }; },
-      };
-    },
-    appendListItem(value) {
-      this.content.push(`• ${String(value)}`);
-      return this;
-    },
-    appendTable(rows) {
-      this.content.push(rows.map((row) => row.join(' | ')).join('\n'));
-      return {};
-    },
-  });
+  const makeBody = () => {
+    const body = {
+      content: [
+        'ПОЛЬЗОВАТЕЛЬСКИЙ БЛОК ДО АВТОМАТИЗАЦИИ',
+        '[[AUTO_SELECTED_CLAIM_START]]',
+        'Расчет заявленных сумм',
+        'Сводка',
+        '1. Оклад: индексация, индексация недоплаты, матответственность',
+        '5. Расчет среднего заработка',
+        '7. Подробный расчет матответственности по ст. 236 ТК РФ',
+        '[[AUTO_SELECTED_CLAIM_END]]',
+        'ПОЛЬЗОВАТЕЛЬСКИЙ БЛОК ПОСЛЕ АВТОМАТИЗАЦИИ',
+      ],
+      getNumChildren() { return this.content.length; },
+      getChild(index) {
+        const bodyRef = this;
+        const value = this.content[index];
+        const paragraph = {
+          _index: index,
+          getType() { return 'PARAGRAPH'; },
+          asParagraph() { return this; },
+          getText() { return String(bodyRef.content[this._index] || ''); },
+          getHeading() { return 'NORMAL'; },
+          setHeading() { return this; },
+          setSpacingBefore() { return this; },
+          setSpacingAfter() { return this; },
+          setLineSpacing() { return this; },
+          editAsText() {
+            return {
+              setBold() { return this; },
+              setFontFamily() { return this; },
+              setForegroundColor() { return this; },
+              setFontSize() { return this; },
+            };
+          },
+        };
+        return paragraph;
+      },
+      findText(pattern) {
+        const regex = new RegExp(pattern);
+        for (let index = 0; index < this.content.length; index++) {
+          if (regex.test(String(this.content[index]))) return this.getChild(index);
+        }
+        return null;
+      },
+      removeChild(child) {
+        this.content.splice(child._index, 1);
+        return child;
+      },
+      insertParagraph(index, value) {
+        this.content.splice(index, 0, String(value === undefined ? '' : value));
+        return this.getChild(index);
+      },
+      insertListItem(index, value) {
+        this.content.splice(index, 0, `• ${String(value === undefined ? '' : value)}`);
+        return this.getChild(index);
+      },
+      insertTable(index, rows) {
+        this.content.splice(index, 0, rows.map((row) => row.join(' | ')).join('\n'));
+        return {};
+      },
+      insertPageBreak(index) {
+        this.content.splice(index, 0, '[PAGE BREAK]');
+        return {};
+      },
+      appendParagraph(value) { return this.insertParagraph(this.content.length, value); },
+      appendListItem(value) { return this.insertListItem(this.content.length, value); },
+      appendTable(rows) { return this.insertTable(this.content.length, rows); },
+      clear() { throw new Error('Body.clear() must not be called'); },
+    };
+    return body;
+  };
   harness.context.DocumentApp.ParagraphHeading.HEADING1 = 'HEADING1';
   harness.context.DocumentApp.ParagraphHeading.HEADING2 = 'HEADING2';
   harness.context.DocumentApp.ParagraphHeading.HEADING3 = 'HEADING3';
@@ -8294,6 +8485,15 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
     intakeLayout.claimSelections.namedRange,
     intake.getRange(intakeLayout.claimSelections.firstRow, 1, 2, 6)
   );
+  harness.context.writeClaimCalculatedFactsSnapshot_(harness.spreadsheet, {
+    groups: [{
+      family: 'underpayment', label: 'Взыскать недоплату', items: [{
+        key, family: 'underpayment', layoutId: 'salary', baseKind: 'salary',
+        periodKey: '2026-01', calculationItem: 'principal', violationLabel: 'Недоплата по окладу',
+        periodLabel: '01.2026', amount: 1000, disputed: true,
+      }],
+    }],
+  });
   intake.getRange(intakeLayout.employerSector.valueCell).setValue('Частная организация');
   intake.getRange(intakeLayout.calculatedAverage.valueCell).setValue(3000);
   intake.getRange(intakeLayout.calculatedAverageContext.valueCell).setValue('Расчетный листок 01.2026');
@@ -8337,6 +8537,21 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
     intakeLayout.claimSelections.namedRange,
     workspace.questionnaire.getRange(firstRow, 1, 3, 6)
   );
+  harness.context.writeClaimCalculatedFactsSnapshot_(harness.spreadsheet, {
+    groups: [{
+      family: 'underpayment', label: 'Взыскать недоплату', items: [{
+        key: 'underpayment|salary|salary|2026-01|principal', family: 'underpayment',
+        layoutId: 'salary', baseKind: 'salary', periodKey: '2026-01',
+        calculationItem: 'principal', violationLabel: 'Недоплата по окладу',
+        periodLabel: '01.2026', amount: 1000, disputed: false,
+      }, {
+        key: 'underpayment|monthly_bonus|bonus|2026-01|principal', family: 'underpayment',
+        layoutId: 'monthly_bonus', baseKind: 'bonus', periodKey: '2026-01',
+        calculationItem: 'principal', violationLabel: 'Недоплата по премии',
+        periodLabel: '01.2026', amount: 500, disputed: false,
+      }],
+    }],
+  });
   const oldBody = harness.documents.get('pipeline-old-doc').body.content.slice();
   const run = harness.context.createClaimConstructorRun_({
     docUrl: 'https://docs.google.com/document/d/pipeline-old-doc/edit',
@@ -8559,7 +8774,7 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
       workspace.questionnaire.getRange(layout.claimSelections.firstRow + 1, 4)
         .setValue('не сумма');
     },
-    error: /не содержит понятное нарушение, период или положительную сумму/i,
+    error: /не содержит понятное нарушение, период или положительную сумму|ручное изменение/i,
   },
   {
     label: 'malformed audit ordering',
@@ -8573,7 +8788,7 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
         workspace.questionnaire.getRange(layout.claimSelections.firstRow, 1, 1, 6)
       );
     },
-    error: /нарушен порядок групп аудита/i,
+    error: /нарушен порядок групп аудита|ручное изменение/i,
   },
 ].forEach((scenario) => {
   const harness = createHarness(['Конструктор', 'Анкета и требования']);
@@ -8589,6 +8804,19 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   );
   assert.strictEqual(docs.created.length, 0, scenario.label);
 });
+
+// A calculated audit cell is not a second input channel for the court document.
+{
+  const harness = createHarness(['Конструктор', 'Анкета и требования']);
+  const workspace = seedSelectedDocsWorkspace(harness, 'current-doc', { id: 'claims-folder' });
+  installVersionedDocsFakes(harness);
+  const audit = harness.context.getClaimIntakeLayout_().claimSelections;
+  workspace.questionnaire.getRange(audit.firstRow + 1, 4).setValue(9999);
+  assert.throws(
+    () => harness.context.writeSelectedClaimDocument({ spreadsheet: harness.spreadsheet }),
+    /ручное изменение|повторите расчет/i
+  );
+}
 
 // Missing history authority starts only at configured row and ignores unrelated far-below G:I.
 {
@@ -8685,6 +8913,31 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   assert.match(narrative, /только по выбранным пользователем требованиям/i);
   assert.match(narrative, /236 ТК РФ/);
   assert.doesNotMatch(narrative, /исковое заявление|правовая позиция/i);
+  assert.strictEqual(docs.created[1].doc.body.content[0], 'ПОЛЬЗОВАТЕЛЬСКИЙ БЛОК ДО АВТОМАТИЗАЦИИ');
+  assert.strictEqual(
+    docs.created[1].doc.body.content[docs.created[1].doc.body.content.length - 1],
+    'ПОЛЬЗОВАТЕЛЬСКИЙ БЛОК ПОСЛЕ АВТОМАТИЗАЦИИ'
+  );
+  assert.strictEqual(
+    docs.created[1].doc.body.content.filter((value) => value === '[[AUTO_SELECTED_CLAIM_START]]').length,
+    1
+  );
+  assert.strictEqual(
+    docs.created[1].doc.body.content.filter((value) => value === '[[AUTO_SELECTED_CLAIM_END]]').length,
+    1
+  );
+}
+
+// A malformed marker pair is rejected before any managed content is removed.
+{
+  const harness = createHarness();
+  const docs = installVersionedDocsFakes(harness);
+  const body = harness.context.DocumentApp.create('marker-test').getBody();
+  body.content.splice(body.content.indexOf('[[AUTO_SELECTED_CLAIM_END]]'), 1);
+  assert.throws(
+    () => harness.context.assertApprovedClaimTemplateCanBePreserved_(body),
+    /парные границы|маркеры автоматического блока/i
+  );
 }
 
 // Invalid current URL falls back to newest valid history; unusable parents fail before create.
@@ -8745,9 +8998,13 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   const originalCreate = harness.context.DocumentApp.create;
   harness.context.DocumentApp.create = (title) => {
     const doc = originalCreate(title);
-    if (failure === 'write') doc.body.appendParagraph = () => {
-      throw new Error('injected body write failure');
-    };
+    if (failure === 'write') {
+      const failWrite = () => { throw new Error('injected body write failure'); };
+      doc.body.appendParagraph = failWrite;
+      doc.body.insertParagraph = failWrite;
+      doc.body.insertListItem = failWrite;
+      doc.body.insertTable = failWrite;
+    }
     if (failure === 'save') doc.failSave = true;
     if (failure === 'named_range') {
       harness.spreadsheet.failNamedRangePredicate = ({ name }) =>
@@ -8796,9 +9053,11 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   const originalCreate = harness.context.DocumentApp.create;
   harness.context.DocumentApp.create = (title) => {
     const doc = originalCreate(title);
-    doc.body.appendParagraph = () => {
-      throw new Error('injected document write failure');
-    };
+    const failWrite = () => { throw new Error('injected document write failure'); };
+    doc.body.appendParagraph = failWrite;
+    doc.body.insertParagraph = failWrite;
+    doc.body.insertListItem = failWrite;
+    doc.body.insertTable = failWrite;
     docs.created[0].file.failTrash = true;
     docs.created[0].file.failAdvancedTrash = true;
     return doc;
@@ -8954,6 +9213,179 @@ function seedSelectedDocsWorkspace(harness, currentDocId, parentFolder) {
   );
   assert.strictEqual(salaryModel.groups[0].items[0].selected, true);
   assert.strictEqual(salaryModel.groups[0].items[0].badge, 'спорное');
+}
+
+// Evidence-first registry metadata is defensive, temporally applicable and
+// fail-closed when a required fact or legal review is missing.
+{
+  const harness = createHarness();
+  const catalog = harness.context.getPayrollAuditRuleCatalog_();
+  assert.ok(catalog.article_236_delay_compensation.legalBasis[0].officialUrl.includes('pravo.gov.ru'));
+  catalog.article_236_delay_compensation.title = 'mutated';
+  assert.notStrictEqual(
+    harness.context.getPayrollAuditRuleCatalog_().article_236_delay_compensation.title,
+    'mutated'
+  );
+  const invalid = harness.context.getPayrollAuditRuleCatalog_();
+  delete invalid.payroll_arithmetic.owner;
+  assert.throws(
+    () => harness.context.validatePayrollAuditRuleRegistry_(invalid),
+    /payroll_arithmetic.*owner/i
+  );
+  const before = harness.context.resolvePayrollAuditRule_('article_236_delay_compensation', {
+    eventDate: new Date(2024, 0, 29), asOfDate: new Date(2026, 6, 21),
+  });
+  assert.strictEqual(before.applicability, 'not_yet_effective');
+  assert.strictEqual(before.automaticCalculationAllowed, false);
+  const stale = harness.context.resolvePayrollAuditRule_('article_236_delay_compensation', {
+    eventDate: new Date(2024, 1, 1), asOfDate: new Date(2027, 1, 1),
+  });
+  assert.strictEqual(stale.staleReview, true);
+  assert.strictEqual(stale.automaticCalculationAllowed, false);
+  const missing = harness.context.evaluatePayrollAuditRule_('article_236_delay_compensation', {
+    eventDate: new Date(2024, 1, 1), asOfDate: new Date(2026, 6, 21),
+    availableFacts: ['payable_amount', 'actual_payment_date_or_calculation_end_date', 'key_rate_periods'],
+    status: 'confirmed',
+  });
+  assert.strictEqual(missing.status, 'cannot_verify');
+  assert.deepStrictEqual(Array.from(missing.missingFacts), ['legal_due_date']);
+  assert.strictEqual(missing.automaticCalculationAllowed, false);
+}
+
+// Equal-looking source rows remain independent evidence facts by ordinal;
+// partial legacy coordinates are retained without being presented as complete.
+{
+  const harness = createHarness();
+  const base = {
+    documentId: 'doc-1', file: 'листок.pdf', sheet: 'Май', sourceRow: 'Оклад 45 000',
+    period: { year: 2025, month: 5 }, recognitionVersion: 'parser-7', confidence: 0.91,
+  };
+  const first = harness.context.createPayrollEvidenceReference_(Object.assign({ sourceOrdinal: 11 }, base));
+  const second = harness.context.createPayrollEvidenceReference_(Object.assign({ sourceOrdinal: 12 }, base));
+  assert.notStrictEqual(first.evidenceId, second.evidenceId);
+  assert.strictEqual(first.traceabilityComplete, true);
+  const partial = harness.context.createPayrollEvidenceReference_({
+    file: 'legacy.pdf', sourceRow: 'Оклад 45 000',
+  });
+  assert.strictEqual(partial.source, 'legacy.pdf');
+  assert.strictEqual(partial.sourceRow, 'Оклад 45 000');
+  assert.strictEqual(partial.traceabilityStatus, 'incomplete');
+  assert.strictEqual(partial.documentId, null);
+  const unresolved = harness.context.createPayrollAuditCatalogResult_('questionnaire_payment_facts', {
+    layoutId: 'raw_payroll', baseKind: 'payment', periodKey: '2025-05',
+    calculationItem: 'payment_date', status: 'cannot_verify', moneyImpact: 15000,
+    evidence: [first], requestedDocument: 'Банковская выписка.',
+  });
+  assert.strictEqual(unresolved.moneyImpact, null);
+  assert.strictEqual(unresolved.evidenceChain.calculation.amount, null);
+  assert.strictEqual(unresolved.evidenceChain.qualification.automaticClaimAllowed, false);
+}
+
+// Coverage derives amounts only from qualified calculation facts, keeps legal
+// directions separate and deduplicates document requests without losing links.
+{
+  const harness = createHarness();
+  const paymentMissingA = harness.context.createPayrollAuditCatalogResult_('questionnaire_payment_facts', {
+    layoutId: 'raw_payroll', baseKind: 'payment', periodKey: '2025-01',
+    calculationItem: 'date-a', status: 'cannot_verify',
+    requestedDocument: 'Банковская выписка или платёжный реестр.',
+  });
+  const paymentMissingB = harness.context.createPayrollAuditCatalogResult_('questionnaire_payment_facts', {
+    layoutId: 'raw_payroll', baseKind: 'payment', periodKey: '2025-02',
+    calculationItem: 'date-b', status: 'cannot_verify',
+    requestedDocument: 'Банковская выписка или платёжный реестр.',
+  });
+  const arithmeticSignal = harness.context.createPayrollAuditCatalogResult_('payroll_arithmetic', {
+    layoutId: 'raw_payroll', baseKind: 'balance', periodKey: '2025-01',
+    calculationItem: 'difference', status: 'probable_or_disputed', moneyImpact: 999,
+    evidence: [{ documentId: 'doc-1', sourceOrdinal: 1, source: 'jan.pdf' }],
+    reason: 'Суммы разделов не сходятся.',
+  });
+  const claimFacts = [{
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', periodKey: '2025-01',
+    calculationItem: 'principal', amount: 100, sourceRef: 'Оклад!20',
+  }, {
+    family: 'material_liability', layoutId: 'salary', baseKind: 'salary_payment',
+    periodKey: '2025-01', calculationItem: 'article_236', amount: 5, disputed: true,
+    sourceRef: 'Оклад!20',
+  }, {
+    family: 'underpayment_indexation', layoutId: 'salary', baseKind: 'salary',
+    periodKey: '2025-01', calculationItem: 'indexation', amount: 3, sourceRef: 'Оклад!20',
+  }, {
+    family: 'underpayment', layoutId: 'salary', baseKind: 'salary', periodKey: '2025-01',
+    calculationItem: 'unverified', amount: 1000, status: 'cannot_verify', sourceRef: 'Оклад!21',
+  }, {
+    family: 'unallocated_recovery', layoutId: 'questionnaire', baseKind: 'recovery',
+    periodKey: '2025-01', calculationItem: 'recovery', amount: 500, sourceRef: 'Анкета и требования!14',
+  }];
+  const coverage = harness.context.buildCaseEvidenceCoverage_(
+    [{ documentId: 'doc-1', file: 'jan.pdf', sourceOrdinal: 1, period: { year: 2025, month: 1 } },
+      { documentId: 'doc-2', file: 'feb.pdf', sourceOrdinal: 2, period: { year: 2025, month: 2 } }],
+    { missingMonths: ['03.2025'] },
+    [paymentMissingA, paymentMissingB, arithmeticSignal], claimFacts,
+    { generatedAt: new Date(2026, 6, 21) }
+  );
+  assert.strictEqual(coverage.findings.calculatedClaimTotal, 108);
+  assert.strictEqual(coverage.findings.numericAuditSignalsExcludedFromClaimTotal, 1);
+  assert.strictEqual(coverage.directions.length, 7);
+  const wage = coverage.directions.find((item) => item.id === 'wage_underpayment');
+  const delay = coverage.directions.find((item) => item.id === 'payment_delay');
+  const forced = coverage.directions.find((item) => item.id === 'forced_absence');
+  assert.strictEqual(wage.amount, 100);
+  assert.strictEqual(delay.amount, 5);
+  assert.strictEqual(delay.status, 'probable_or_disputed');
+  assert.strictEqual(delay.calculationChains[0].calculation.status, 'probable_or_disputed');
+  assert.strictEqual(forced.amount, null);
+  assert.strictEqual(forced.status, 'cannot_verify');
+  assert.strictEqual(
+    harness.context.buildClaimAuditModel_(claimFacts).total,
+    108,
+    'unverified and unallocated positions do not enter selected claim totals'
+  );
+  const bankRequests = coverage.missingDocuments.filter((item) =>
+    item.document === 'Банковская выписка или платёжный реестр.');
+  assert.strictEqual(bankRequests.length, 1);
+  assert.ok(bankRequests[0].auditItemIds.includes(paymentMissingA.id));
+  assert.ok(bankRequests[0].auditItemIds.includes(paymentMissingB.id));
+  assert.notStrictEqual(
+    coverage.directions.find((item) => item.id === 'wage_indexation').id,
+    coverage.directions.find((item) => item.id === 'recoverable_sum_indexation').id
+  );
+}
+
+// The evidence map owns only G8:L44 and calculation rollback restores both
+// that bounded block and its named-range authority.
+{
+  const harness = createHarness(['Анкета и требования']);
+  const sheet = harness.context.ensureClaimIntakeSheet_(harness.spreadsheet);
+  const layout = harness.context.getClaimIntakeLayout_();
+  sheet.getRange('G8').setValue('предыдущая карта').setNote('старая заметка')
+    .setBackground('#123456').setNumberFormat('0.00');
+  sheet.getRange('A63').setValue('выбор пользователя');
+  sheet.getRange('G50').setValue('история Docs');
+  sheet.getRange('M8').setValue('вне диапазона');
+  const snapshot = harness.context.snapshotCalculationTransaction_(harness.spreadsheet, []);
+  const coverage = harness.context.buildCaseEvidenceCoverage_([], {}, [], [], {
+    generatedAt: new Date(2026, 6, 21),
+  });
+  harness.context.renderCaseEvidenceCoverage_(sheet, coverage);
+  assert.strictEqual(sheet.getRange('G8').getValue(), 'Карта покрытия дела');
+  assert.strictEqual(sheet.getRange('A63').getValue(), 'выбор пользователя');
+  assert.strictEqual(sheet.getRange('G50').getValue(), 'история Docs');
+  assert.strictEqual(sheet.getRange('M8').getValue(), 'вне диапазона');
+  const named = harness.spreadsheet.getRangeByName(layout.evidenceCoverage.namedRange);
+  assert.strictEqual(named.getRow(), 8);
+  assert.strictEqual(named.getColumn(), 7);
+  assert.strictEqual(named.getNumRows(), 37);
+  assert.strictEqual(named.getNumColumns(), 6);
+  harness.context.rollbackCalculationTransaction_(harness.spreadsheet, snapshot);
+  assert.strictEqual(sheet.getRange('G8').getValue(), 'предыдущая карта');
+  assert.strictEqual(sheet.getRange('G8').getNote(), 'старая заметка');
+  assert.strictEqual(sheet.getRange('G8').getBackground(), '#123456');
+  assert.strictEqual(sheet.getRange('G8').getNumberFormat(), '0.00');
+  assert.strictEqual(sheet.getRange('A63').getValue(), 'выбор пользователя');
+  assert.strictEqual(sheet.getRange('G50').getValue(), 'история Docs');
+  assert.strictEqual(sheet.getRange('M8').getValue(), 'вне диапазона');
 }
 
 console.log('claim constructor characterization ok');

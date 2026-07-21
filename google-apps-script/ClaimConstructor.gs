@@ -14,9 +14,15 @@ const CLAIM_CONSTRUCTOR_SETTINGS = {
   RUN_STATE_TOTAL_MAX_BYTES: 384000,
   VISIBILITY_MODE_PROPERTY: 'CLAIM_CONSTRUCTOR_VISIBILITY_MODE',
   CONTINUATION_TRIGGER_FUNCTION: 'resumeClaimConstructorPipeline_',
+  CONTINUATION_TRIGGER_ID_PROPERTY: 'CLAIM_CONSTRUCTOR_CONTINUATION_TRIGGER_ID',
   CONTINUATION_TRIGGER_DELAY_MS: 60 * 1000,
   WATCHDOG_TRIGGER_FUNCTION: 'watchClaimConstructorPipeline_',
-  WATCHDOG_INTERVAL_MINUTES: 5,
+  WATCHDOG_TRIGGER_ID_PROPERTY: 'CLAIM_CONSTRUCTOR_WATCHDOG_TRIGGER_ID',
+  // A one-minute watchdog closes the gap when a one-shot import continuation
+  // trigger is delayed by Apps Script scheduling or a slow VLM request.
+  WATCHDOG_INTERVAL_MINUTES: 1,
+  WATCHDOG_TRIGGER_VERSION_PROPERTY: 'CLAIM_CONSTRUCTOR_WATCHDOG_TRIGGER_VERSION',
+  WATCHDOG_TRIGGER_VERSION: '2',
   PHASE_EXECUTION_LEASE_MS: 7 * 60 * 1000,
   TRANSIENT_RETRY_LIMIT: 3,
   RUN_STALE_MS: 6 * 60 * 60 * 1000,
@@ -298,6 +304,44 @@ function openClaimConstructor() {
   return sheet;
 }
 
+/**
+ * Small read-only smoke diagnostics used by the live workbook check.  Keep
+ * the response bounded so it can be called through the Apps Script API.
+ */
+function getClaimConstructorLiveDiagnostics() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const run = loadClaimConstructorRun_();
+  const batch = typeof loadZupBatchImportSession_ === 'function'
+    ? loadZupBatchImportSession_()
+    : null;
+  const triggers = typeof ScriptApp === 'undefined'
+    ? []
+    : ScriptApp.getProjectTriggers().map((trigger) => trigger.getHandlerFunction());
+  return {
+    spreadsheetId: spreadsheet.getId(),
+    run: run ? {
+      id: run.id,
+      status: run.status,
+      phase: run.phase,
+      progressText: run.progressText,
+      updatedAt: run.updatedAt,
+      issueCount: Array.isArray(run.issues) ? run.issues.length : 0,
+    } : null,
+    batch: batch ? {
+      stage: batch.stage,
+      processed: batch.processed,
+      total: batch.total,
+      updatedAt: batch.updatedAt,
+      runId: batch.runId,
+      constructorRunId: batch.constructorRunId,
+    } : null,
+    triggers,
+    recognition: typeof getZupRecognitionDiagnostics_ === 'function'
+      ? getZupRecognitionDiagnostics_(spreadsheet)
+      : null,
+  };
+}
+
 function readClaimConstructorInputs_(spreadsheet) {
   const layout = getClaimConstructorLayout_();
   const folderRange = spreadsheet.getRangeByName(layout.sourceFolder.namedRange);
@@ -541,7 +585,7 @@ function parseClaimConstructorRun_(value) {
 }
 
 function saveClaimConstructorRun_(run, properties) {
-  const store = properties || PropertiesService.getScriptProperties();
+  const store = properties || PropertiesService.getDocumentProperties();
   const serialized = serializeClaimConstructorRun_(run);
   const byteLength = getClaimConstructorUtf8ByteLength_(serialized);
   if (byteLength > CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_TOTAL_MAX_BYTES) {
@@ -585,7 +629,7 @@ function saveClaimConstructorRun_(run, properties) {
 }
 
 function loadClaimConstructorRun_(properties) {
-  const store = properties || PropertiesService.getScriptProperties();
+  const store = properties || PropertiesService.getDocumentProperties();
   const raw = store.getProperty(CLAIM_CONSTRUCTOR_SETTINGS.RUN_STATE_PROPERTY);
   if (!raw) {
     return null;
@@ -651,7 +695,7 @@ function completeClaimConstructorPhase_(run, expectedPhase, nextPhase, now) {
 
 function startOrJoinClaimConstructorRun_(inputs, options) {
   const settings = options || {};
-  const properties = settings.properties || PropertiesService.getScriptProperties();
+  const properties = settings.properties || PropertiesService.getDocumentProperties();
   const now = settings.now || new Date();
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
@@ -714,7 +758,7 @@ function isOlderThanClaimConstructorStaleLimit_(timestamp, now) {
 }
 
 function loadClaimConstructorBatchSession_(properties) {
-  const store = properties || PropertiesService.getScriptProperties();
+  const store = properties || PropertiesService.getDocumentProperties();
   const propertyName = typeof ZUP_IMPORT_SETTINGS !== 'undefined'
     ? ZUP_IMPORT_SETTINGS.BATCH_STATE_PROPERTY
     : 'ZUP_IMPORT_BATCH_STATE';
@@ -733,21 +777,25 @@ function hasClaimConstructorImportTrigger_() {
   const handler = typeof ZUP_IMPORT_SETTINGS !== 'undefined'
     ? ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_FUNCTION
     : 'resumeZupFolderImport_';
+  const propertyName = typeof ZUP_IMPORT_SETTINGS !== 'undefined'
+    ? ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_ID_PROPERTY
+    : 'ZUP_IMPORT_BATCH_TRIGGER_ID';
   return ScriptApp.getProjectTriggers().some((trigger) =>
-    trigger.getHandlerFunction && trigger.getHandlerFunction() === handler
+    isClaimConstructorOwnedTrigger_(trigger, propertyName, handler)
   );
 }
 
 function hasClaimConstructorContinuationTrigger_() {
   return ScriptApp.getProjectTriggers().some((trigger) =>
-    trigger.getHandlerFunction
-      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION
+    isClaimConstructorOwnedTrigger_(trigger,
+      CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_ID_PROPERTY,
+      CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION)
   );
 }
 
 function advanceActiveClaimConstructorRun_(runId, expectedPhase, nextPhase, options) {
   const settings = options || {};
-  const properties = settings.properties || PropertiesService.getScriptProperties();
+  const properties = settings.properties || PropertiesService.getDocumentProperties();
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(10000)) {
     return null;
@@ -1462,7 +1510,7 @@ function joinFreshClaimConstructorRun_() {
       return run;
     }
     return isClaimConstructorRunActive_(run)
-      && !isClaimConstructorRunStale_(run, PropertiesService.getScriptProperties(), new Date())
+      && !isClaimConstructorRunStale_(run, PropertiesService.getDocumentProperties(), new Date())
       ? run
       : null;
   } finally {
@@ -1564,43 +1612,100 @@ function watchClaimConstructorPipeline_() {
   return continueClaimConstructorPipeline_(run.id, { spreadsheet });
 }
 
+function getClaimConstructorTriggerUniqueId_(trigger) {
+  if (!trigger) return '';
+  if (typeof trigger.getUniqueId === 'function') return String(trigger.getUniqueId() || '');
+  return String(trigger.uniqueId || '');
+}
+
+function isClaimConstructorOwnedTrigger_(trigger, propertyName, handlerName) {
+  if (!trigger || !trigger.getHandlerFunction
+    || trigger.getHandlerFunction() !== handlerName) return false;
+  const id = getClaimConstructorTriggerUniqueId_(trigger);
+  const ownedId = PropertiesService.getDocumentProperties().getProperty(propertyName) || '';
+  if (ownedId) return id === ownedId;
+  // Test doubles and legacy runtimes may not expose Trigger.getUniqueId().
+  return !id;
+}
+
+function rememberClaimConstructorTrigger_(trigger, propertyName) {
+  const id = getClaimConstructorTriggerUniqueId_(trigger);
+  if (id) PropertiesService.getDocumentProperties().setProperty(propertyName, id);
+  return trigger;
+}
+
+function forgetClaimConstructorTrigger_(propertyName, trigger) {
+  const properties = PropertiesService.getDocumentProperties();
+  const ownedId = properties.getProperty(propertyName) || '';
+  if (!ownedId || !trigger || !getClaimConstructorTriggerUniqueId_(trigger)
+    || ownedId === getClaimConstructorTriggerUniqueId_(trigger)) {
+    properties.deleteProperty(propertyName);
+  }
+}
+
 function ensureClaimConstructorWatchdogTrigger_() {
   const matches = ScriptApp.getProjectTriggers().filter((trigger) =>
-    trigger.getHandlerFunction
-      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION
+    isClaimConstructorOwnedTrigger_(trigger,
+      CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_ID_PROPERTY,
+      CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION)
   );
-  matches.slice(1).forEach((trigger) => ScriptApp.deleteTrigger(trigger));
-  if (matches.length) return matches[0];
-  return ScriptApp
+  const props = PropertiesService.getDocumentProperties();
+  const currentVersion = props.getProperty(
+    CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_VERSION_PROPERTY
+  );
+  if (matches.length && currentVersion === CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_VERSION) {
+    matches.slice(1).forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+    return matches[0];
+  }
+  matches.forEach((trigger) => {
+    ScriptApp.deleteTrigger(trigger);
+    forgetClaimConstructorTrigger_(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_ID_PROPERTY, trigger);
+  });
+  const trigger = ScriptApp
     .newTrigger(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION)
     .timeBased()
     .everyMinutes(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_INTERVAL_MINUTES)
     .create();
+  rememberClaimConstructorTrigger_(
+    trigger, CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_ID_PROPERTY
+  );
+  props.setProperty(
+    CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_VERSION_PROPERTY,
+    CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_VERSION
+  );
+  return trigger;
 }
 
 function deleteClaimConstructorWatchdogTriggers_() {
   ScriptApp.getProjectTriggers().forEach((trigger) => {
-    if (trigger.getHandlerFunction
-      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION) {
+    if (isClaimConstructorOwnedTrigger_(trigger,
+      CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_ID_PROPERTY,
+      CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_FUNCTION)) {
       ScriptApp.deleteTrigger(trigger);
+      forgetClaimConstructorTrigger_(CLAIM_CONSTRUCTOR_SETTINGS.WATCHDOG_TRIGGER_ID_PROPERTY, trigger);
     }
   });
 }
 
 function scheduleClaimConstructorContinuation_() {
   deleteClaimConstructorContinuationTriggers_();
-  ScriptApp
+  const trigger = ScriptApp
     .newTrigger(CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION)
     .timeBased()
     .after(CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_DELAY_MS)
     .create();
+  rememberClaimConstructorTrigger_(
+    trigger, CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_ID_PROPERTY
+  );
 }
 
 function deleteClaimConstructorContinuationTriggers_() {
   ScriptApp.getProjectTriggers().forEach((trigger) => {
-    if (trigger.getHandlerFunction
-      && trigger.getHandlerFunction() === CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION) {
+    if (isClaimConstructorOwnedTrigger_(trigger,
+      CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_ID_PROPERTY,
+      CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_FUNCTION)) {
       ScriptApp.deleteTrigger(trigger);
+      forgetClaimConstructorTrigger_(CLAIM_CONSTRUCTOR_SETTINGS.CONTINUATION_TRIGGER_ID_PROPERTY, trigger);
     }
   });
 }
@@ -2375,7 +2480,7 @@ function retryClaimCalculation() {
       return previous;
     }
     if (previous.status === 'running') {
-      if (!isClaimConstructorRunStale_(previous, PropertiesService.getScriptProperties(), new Date())) {
+      if (!isClaimConstructorRunStale_(previous, PropertiesService.getDocumentProperties(), new Date())) {
         return previous;
       }
       previous.status = 'failed';

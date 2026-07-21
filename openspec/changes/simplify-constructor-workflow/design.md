@@ -57,7 +57,7 @@ The constructor will use explicit phases:
 6. `complete` or `complete_with_warnings`
 7. `failed` only for fatal infrastructure/input failures
 
-Run state contains a run id, timestamps, current phase, progress text, structured batch progress (`processed`, `total`, and percentage), source references, accumulated issues, durable result summaries, and resumable checkpoints. State is persisted in Script Properties so scheduled batch continuations can resume without user action. A small value is stored directly. A larger value is split on UTF-8 boundaries into bounded generation-specific chunks; the canonical property stores only a versioned manifest written after all chunks. Loading verifies the manifest and reconstructs the exact persisted JSON. Old generations are removed only after the manifest commit. This avoids the 9 KB per-value quota without discarding issues or checkpoints required for continuation. Row-level calculation facts, derivative dependencies, and other already materialized result detail remain authoritative in Sheets; after a phase commits them there, Script Properties retain only totals, counts, warnings needed by the Docs handoff, and sheet/result references. This also respects the aggregate Script Properties quota. The dashboard renders structured progress as a compact text-and-block bar and is a presentation of that state, not the only state store.
+Run state contains a run id, timestamps, current phase, progress text, structured batch progress (`processed`, `total`, and percentage), source references, accumulated issues, durable result summaries, and resumable checkpoints. State is persisted in `PropertiesService.getDocumentProperties()` so scheduled batch continuations can resume without user action and one spreadsheet cannot observe or overwrite another spreadsheet's run. The ZUP import batch session uses the same document-scoped store. Script Properties remain reserved for project-wide configuration such as API keys and rollout settings. A small run value is stored directly. A larger value is split on UTF-8 boundaries into bounded generation-specific chunks; the canonical property stores only a versioned manifest written after all chunks. Loading verifies the manifest and reconstructs the exact persisted JSON. Old generations are removed only after the manifest commit. This avoids the 9 KB per-value quota without discarding issues or checkpoints required for continuation. Row-level calculation facts, derivative dependencies, and other already materialized result detail remain authoritative in Sheets; after a phase commits them there, document properties retain only totals, counts, warnings needed by the Docs handoff, and sheet/result references. This also respects the aggregate document-properties quota. The dashboard renders structured progress as a compact text-and-block bar and is a presentation of that state, not the only state store.
 
 Only one constructor run may be active for a spreadsheet. Start, retry, manual continuation, and scheduled continuation acquire `LockService.getDocumentLock()` and perform compare-and-advance updates against the active run id and expected phase. A second `Собрать расчет` invocation while the active run is fresh returns that run and displays its current status; it MUST NOT create another run or repeat a phase. A continuation carrying an old run id is a no-op.
 
@@ -157,6 +157,24 @@ The constructor reconstruction phase uses a persisted step checkpoint. Each cont
 
 Service-sheet formatting uses batched range operations and avoids repeated per-column resizing during intermediate recognition batches. Expensive presentation work is confined to the corresponding finalization step. The constructor displays the current substep and a monotonic percentage so a long calculation never appears frozen.
 
+### 12. Isolate mutable workflow state by spreadsheet
+
+`CLAIM_CONSTRUCTOR_RUN_STATE`, its chunk generations, and `ZUP_IMPORT_BATCH_STATE` are document-scoped. Every default run/batch-state read, write, stale check, retry, and continuation uses the same document store. Explicit property-store injection remains available only for deterministic tests. Global configuration such as `POLZA_API_KEY`, model selection, and rollout flags stays in Script Properties.
+
+This prevents a run opened from spreadsheet B from joining, replacing, or clearing spreadsheet A's state even when both executions share a script project. Trigger handlers still validate the persisted constructor run id and spreadsheet id before mutation.
+
+### 13. Separate claim selection from calculated claim facts
+
+`Аудит и требования` is a user-facing projection. Column A is the only editable selection input for rendered claim rows; calculated columns B:F are protected with an automation-owned range protection. After every successful audit render, the same normalized model is written to a separately named technical snapshot range keyed by the five-part stable claim key.
+
+Docs generation reads only checked keys from the UI, validates the complete rendered projection against the current snapshot, and takes family, basis, period, description, dispute status, and amount from the snapshot. Unknown, missing, duplicate, or changed keys and any manual mutation of calculated UI values block generation with a corrective error. The snapshot is a post-calculation materialization, not an alternative calculation engine, and is hidden outside technical mode.
+
+### 14. Replace only the approved template's managed marker block
+
+The canonical template contains the paired markers `[[AUTO_SELECTED_CLAIM_START]]` and `[[AUTO_SELECTED_CLAIM_END]]`. Each generated document is a fresh copy of the canonical template. Generation removes and recreates only children strictly between those markers, keeps the markers themselves, and never calls `Body.clear()`.
+
+Missing, duplicated, or reversed markers are a fatal template-preservation error. Text, tables, paragraph styles, page layout, headers, footers, and user content outside the marker pair remain structurally unchanged.
+
 ## Risks / Trade-offs
 
 - **Apps Script execution limits interrupt a one-click run** → Persist phase/run state and automatically continue after the existing batch trigger completes.
@@ -167,8 +185,8 @@ Service-sheet formatting uses batched range operations and avoids repeated per-c
 - **Docs generation lacks optional case facts** → Generate available sections, record missing facts as issues, and keep the Sheets result complete.
 - **Re-running after a partial failure duplicates data** → Use run ids and idempotent phase guards; reuse existing incremental import state.
 - **Two executions race on shared state** → Enforce a single active run with document locking, expected-phase compare-and-advance, and stale run-id rejection.
-- **Detailed issues exceed one Script Property value** → Store large resumable state behind an atomic manifest in bounded UTF-8 chunks and verify round-trip integrity before advancing the pipeline.
-- **Completed calculation detail exceeds the total Script Properties quota** → Keep row-level facts and derivative data in their authoritative Sheets ranges and persist only compact phase summaries, counts, actionable warnings, and references.
+- **Detailed issues exceed one Document Property value** → Store large resumable state behind an atomic manifest in bounded UTF-8 chunks and verify round-trip integrity before advancing the pipeline.
+- **Completed calculation detail exceeds the total Document Properties quota** → Keep row-level facts and derivative data in their authoritative Sheets ranges and persist only compact phase summaries, counts, actionable warnings, and references.
 - **The last recognized file is repeated after a timeout** → Commit recognition progress before derived-view finalization and resume from the persisted import stage.
 - **Five reconstruction sheets exceed one Apps Script execution** → Persist a per-target reconstruction checkpoint and execute one bounded target per continuation.
 - **Future LNA/contract scope leaks into phase one** → Limit phase one to source-kind metadata and vendor-neutral orchestration; no new legal parser.

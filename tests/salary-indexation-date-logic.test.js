@@ -2300,6 +2300,22 @@ const calendar = {
     },
   ], calendar);
   assert.strictEqual(partialIssues.length, 0);
+  const explicitIntervalIssues = context.buildZupWorkdayCalendarIssues_([
+    {
+      file: '2023_Октябрь.png', period: { year: 2023, month: 10 }, section: 'Начислено',
+      category: 'Оклад', kind: 'Оплата по окладу', workDays: 18, paidDays: 18,
+      accrualInterval: '06.10.2023–31.10.2023',
+    },
+  ], calendar);
+  assert.strictEqual(explicitIntervalIssues.length, 0);
+  assert.strictEqual(
+    context.isZupPartialMonthAccrualInterval_('01.10.2023–31.10.2023', { year: 2023, month: 10 }),
+    false
+  );
+  assert.strictEqual(
+    context.isZupPartialMonthAccrualInterval_('06.10.2023–31.10.2023', { year: 2023, month: 10 }),
+    true
+  );
   const parts = context.buildZupSalaryDiscreteRowsForPeriod_(
     { year: 2023, month: 10 },
     {

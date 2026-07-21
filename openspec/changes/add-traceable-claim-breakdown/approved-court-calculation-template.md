@@ -51,6 +51,7 @@
 ## Stable edit slots and preservation rules
 
 - Values, period rows, selected section presence, warning notes, and explanatory formulas are dynamic.
+- The canonical template contains exactly one `[[AUTO_SELECTED_CLAIM_START]]` paragraph and one `[[AUTO_SELECTED_CLAIM_END]]` paragraph. Generated copies replace only the children strictly between these markers; the markers remain as the stable edit boundary.
 - Section names/order, heading levels, table column order, visual styling, footer/page numbering, borders, and number formats are preserve-only unless the user explicitly approves a revised mockup/specification.
 - The canonical source Google Doc and retained DOCX are never cleared or modified. A new copy of the canonical source is created for every run; only that new copy may be rebuilt, and a previous generated report must never become the next template implicitly.
 - Unselected facts remain available in Sheets but must not appear in the selected judicial calculation or contribute to its totals.

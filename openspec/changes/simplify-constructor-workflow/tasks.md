@@ -76,11 +76,11 @@
 
 ## 8. Property-safe constructor state
 
-- [x] 8.1 Add RED tests that reproduce a run with dozens of Russian-language recognition issues and results whose JSON exceeds one Script Property value.
+- [x] 8.1 Add RED tests that reproduce a run with dozens of Russian-language recognition issues and results whose JSON exceeds one Document Property value.
 - [x] 8.2 Implement UTF-8-aware bounded chunks, a versioned atomic manifest, exact load/round-trip verification, and cleanup of obsolete generations while retaining direct storage for small states.
 - [x] 8.3 Add regression coverage proving an interrupted large-state write does not replace the previously committed state and every stored value remains below the safety limit.
 - [x] 8.4 Reconcile quality/VLM/skipped-file observations by stable source identity so a technical `OK` row cannot duplicate a source warning.
-- [x] 8.5 Keep completed row-level calculation facts and derivative dependencies in authoritative Sheets, persist only compact durable summaries/references, and cover the aggregate Script Properties quota with a regression test.
+- [x] 8.5 Keep completed row-level calculation facts and derivative dependencies in authoritative Sheets, persist only compact durable summaries/references, and cover the aggregate Document Properties quota with a regression test.
 - [x] 8.6 Run the full Apps Script test suite, strict OpenSpec validation, deploy to the bound project, and verify retry/continuation in the working spreadsheet.
 
 ## Deployment handoff — 2026-07-18
@@ -94,3 +94,10 @@
 - Review issues: 138 after replacing legacy provisional source observations with final audit observations. Distinct substantive checks for the same payroll slip remain separate by design.
 - Docs preservation: the prior input Doc `1Uy_r1TuOS-l8SPlvCtRSeMYEYK0ydYPugwKJJJwnAjE` retained its pre-run modified time (2026-07-16); the repeated calculation created a new Doc in the same Drive parent `1YpnqMHnY0K0ZwJIttm8aggzUGv3TBkpm`.
 - Rollback: restore the Drive backup for workbook state; for script code, switch to commit `067164a` and run `clasp push --force`. OAuth credentials and `.clasp.json` remain local and are not committed.
+
+## 9. Pre-production review corrections
+
+- [x] 9.1 Move constructor run/chunk state and ZUP batch sessions to Document Properties while keeping global configuration in Script Properties; add two-spreadsheet state and trigger isolation coverage.
+- [x] 9.2 Replace whole-body rebuilding of approved Docs with strict paired-marker replacement and add structural preservation/malformed-marker tests.
+- [x] 9.3 Protect audit columns B:F, persist the authoritative calculated claim snapshot separately, and build selected Docs from snapshot values keyed only by checkbox selections; test manual D/F mutations.
+- [x] 9.4 Add Advanced Sheets v4 and a concise Drive/Sheets/scopes/API-key checklist to the installation documentation, then run the complete Apps Script test suite and diff validation.

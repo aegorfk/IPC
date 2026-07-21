@@ -35,6 +35,7 @@ const ZUP_IMPORT_SETTINGS = {
   VLM_MAX_TEXT_CHARS: 160000,
   BATCH_STATE_PROPERTY: 'ZUP_IMPORT_BATCH_STATE',
   BATCH_TRIGGER_FUNCTION: 'resumeZupFolderImport_',
+  BATCH_TRIGGER_ID_PROPERTY: 'ZUP_IMPORT_BATCH_TRIGGER_ID',
   BATCH_TRIGGER_DELAY_MS: 60 * 1000,
   BATCH_TIME_BUDGET_MS: 210 * 1000,
   BATCH_TIME_MARGIN_MS: 30 * 1000,
@@ -1702,12 +1703,14 @@ function buildZupBatchImportLockedResult_() {
 
 function saveZupBatchImportSession_(session) {
   PropertiesService
-    .getScriptProperties()
+    .getDocumentProperties()
     .setProperty(ZUP_IMPORT_SETTINGS.BATCH_STATE_PROPERTY, JSON.stringify(session));
 }
 
 function loadZupBatchImportSession_() {
-  const raw = getZupScriptProperty_(ZUP_IMPORT_SETTINGS.BATCH_STATE_PROPERTY);
+  const raw = PropertiesService
+    .getDocumentProperties()
+    .getProperty(ZUP_IMPORT_SETTINGS.BATCH_STATE_PROPERTY);
   if (!raw) {
     return null;
   }
@@ -1721,23 +1724,33 @@ function loadZupBatchImportSession_() {
 
 function clearZupBatchImportState_() {
   PropertiesService
-    .getScriptProperties()
+    .getDocumentProperties()
     .deleteProperty(ZUP_IMPORT_SETTINGS.BATCH_STATE_PROPERTY);
 }
 
 function scheduleZupBatchImportTrigger_() {
   deleteZupBatchImportTriggers_();
-  ScriptApp
+  const trigger = ScriptApp
     .newTrigger(ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_FUNCTION)
     .timeBased()
     .after(ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_DELAY_MS)
     .create();
+  if (typeof rememberClaimConstructorTrigger_ === 'function') {
+    rememberClaimConstructorTrigger_(trigger, ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_ID_PROPERTY);
+  }
 }
 
 function deleteZupBatchImportTriggers_() {
   ScriptApp.getProjectTriggers().forEach((trigger) => {
-    if (trigger.getHandlerFunction && trigger.getHandlerFunction() === ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_FUNCTION) {
+    const owned = typeof isClaimConstructorOwnedTrigger_ === 'function'
+      ? isClaimConstructorOwnedTrigger_(trigger, ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_ID_PROPERTY,
+        ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_FUNCTION)
+      : trigger.getHandlerFunction && trigger.getHandlerFunction() === ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_FUNCTION;
+    if (owned) {
       ScriptApp.deleteTrigger(trigger);
+      if (typeof forgetClaimConstructorTrigger_ === 'function') {
+        forgetClaimConstructorTrigger_(ZUP_IMPORT_SETTINGS.BATCH_TRIGGER_ID_PROPERTY, trigger);
+      }
     }
   });
 }
@@ -1990,8 +2003,18 @@ function readZupImportObjects_(spreadsheet) {
       paid: parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]),
       withheld: parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]),
       sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
+      sourceOrdinal: row[ZUP_IMPORT_COLUMNS.sourceOrdinal],
+      recognitionVersion: ZUP_IMPORT_SETTINGS.PARSER_VERSION,
       accrualInterval: row[ZUP_IMPORT_COLUMNS.accrualInterval],
       isVlm: row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM',
+      evidenceReference: typeof createPayrollEvidenceReference_ === 'function'
+        ? createPayrollEvidenceReference_({
+          source: row[ZUP_IMPORT_COLUMNS.file],
+          sourceSheet: row[ZUP_IMPORT_COLUMNS.sheet],
+          sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
+          sourceOrdinal: row[ZUP_IMPORT_COLUMNS.sourceOrdinal],
+          parserVersion: ZUP_IMPORT_SETTINGS.PARSER_VERSION,
+        }) : null,
     }))
     .filter((row) => row.period);
 }
@@ -2195,7 +2218,8 @@ function buildZupWorkdayCalendarIssues_(rows, productionCalendar, calendarStatus
     const key = `${buildZupPeriodKey_(row.period)}|${imported}`;
     if (!reference || !imported || imported === reference || seen[key]) return;
     const text = normalizeText_(`${row.kind || ''} ${row.sourceRow || ''}`);
-    if (/неполн|прием|увольн|отпуск|больнич|командиров/.test(text)) return;
+    if (/неполн|прием|увольн|отпуск|больнич|командиров/.test(text)
+      || isZupPartialMonthAccrualInterval_(row.accrualInterval, row.period)) return;
     seen[key] = true;
     issues.push(buildZupQGRow_(
       'Производственный календарь',
@@ -2209,6 +2233,27 @@ function buildZupWorkdayCalendarIssues_(rows, productionCalendar, calendarStatus
     ));
   });
   return issues;
+}
+
+function isZupPartialMonthAccrualInterval_(value, period) {
+  if (!value || !period || !period.year || !period.month) return false;
+  const match = String(value).match(
+    /(\d{1,2})[.]?(\d{1,2})?[.]?(\d{2,4})?\s*[-–—]\s*(\d{1,2})[.]?(\d{1,2})?[.]?(\d{2,4})?/
+  );
+  if (!match) return false;
+  const startDay = Number(match[1]);
+  const startMonth = Number(match[2] || period.month);
+  const startYear = normalizeZupSourceYear_(match[3]) || period.year;
+  const endDay = Number(match[4]);
+  const endMonth = Number(match[5] || period.month);
+  const endYear = normalizeZupSourceYear_(match[6]) || period.year;
+  const lastDay = getDaysInMonth_(period.year, period.month);
+  return startYear !== period.year
+    || startMonth !== period.month
+    || startDay !== 1
+    || endYear !== period.year
+    || endMonth !== period.month
+    || endDay !== lastDay;
 }
 
 function buildZupVacationTimingIssues_(rows) {
@@ -3052,6 +3097,7 @@ function buildZupCompanyQualityNote_(quality) {
   }
   if (quality.blankCompanyPeriods.length) {
     lines.push(`Не распознана организация за периоды: ${quality.blankCompanyPeriods.join(', ')}.`);
+    lines.push('Эти строки не исключены: расчет временно продолжен как для одной организации; проверьте, нужно ли разделить требования по работодателям-должникам.');
   }
   return lines.join('\n') || 'Организация не распознана в расчетных листках.';
 }
@@ -6126,6 +6172,8 @@ function convertZupImportArrayToIssueObject_(row) {
     paid: parseMoney_(row[ZUP_IMPORT_COLUMNS.paid]),
     withheld: parseMoney_(row[ZUP_IMPORT_COLUMNS.withheld]),
     sourceRow: row[ZUP_IMPORT_COLUMNS.sourceRow],
+    sourceOrdinal: row[ZUP_IMPORT_COLUMNS.sourceOrdinal],
+    accrualInterval: row[ZUP_IMPORT_COLUMNS.accrualInterval],
     isVlm: row[ZUP_IMPORT_COLUMNS.sheet] === 'Polza VLM',
   };
 }

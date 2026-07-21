@@ -368,6 +368,9 @@ function runAllSheetsIndexation_(spreadsheet, options) {
     } else if (typeof ensureClaimIntakeSheet_ === 'function') {
       ensureClaimIntakeSheet_(spreadsheet);
     }
+    if (typeof getClaimCalculatedFactsSnapshotSheet_ === 'function') {
+      getClaimCalculatedFactsSnapshotSheet_(spreadsheet, true);
+    }
     reportCalculationProgress_(calculationOptions, { stage: 'preparing' });
     return runAllSheetsIndexationTransaction_(spreadsheet, {
       lockHeld: acquired,
@@ -645,8 +648,17 @@ function runAllSheetsIndexationTransaction_(spreadsheet, options) {
     const auditFacts = results.reduce(
       (facts, result) => facts.concat(result.claimFacts || []), []
     ).concat(recoveryEffects.auditFacts || []);
+    const caseEvidenceCoverage = typeof buildCaseEvidenceCoverage_ === 'function'
+      ? buildCaseEvidenceCoverage_(
+        rawPayrollRows, rawPayrollQuality, recoveryEffects.auditCatalog || [], auditFacts,
+        { generatedAt: new Date() }
+      ) : null;
+    recoveryEffects.caseEvidenceCoverage = caseEvidenceCoverage;
     assertClaimConstructorAuditReconciles_(results, auditFacts);
     reportCalculationProgress_(transactionOptions, { stage: 'audit' });
+    if (caseEvidenceCoverage && typeof renderCaseEvidenceCoverage_ === 'function' && intakeSheet) {
+      renderCaseEvidenceCoverage_(intakeSheet, caseEvidenceCoverage);
+    }
     if (typeof renderClaimAudit_ === 'function' && intakeSheet) {
       extendCalculationTransactionAuditSnapshot_(
         transactionSnapshot, spreadsheet, intakeSheet, auditFacts
@@ -696,8 +708,10 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
   });
   let auditNamedRange = null;
   let auditSnapshot = null;
+  let evidenceCoverageNamedRange = null;
   if (typeof getClaimIntakeLayout_ === 'function') {
-    const audit = getClaimIntakeLayout_().claimSelections;
+    const intakeLayout = getClaimIntakeLayout_();
+    const audit = intakeLayout.claimSelections;
     const sheet = spreadsheet.getSheetByName('Анкета и требования');
     auditNamedRange = spreadsheet.getRangeByName(audit.namedRange);
     const extent = sheet
@@ -708,6 +722,35 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
         extent, audit.columnCount);
       const title = sheet.getRange(audit.titleCell);
       addCalculationRangeSnapshot_(snapshot, sheet, title.getRow(), title.getColumn(), 1, 1);
+      if (intakeLayout.evidenceCoverage) {
+        const coverage = intakeLayout.evidenceCoverage;
+        evidenceCoverageNamedRange = spreadsheet.getRangeByName(coverage.namedRange);
+        addCalculationRangeSnapshot_(snapshot, sheet, coverage.firstRow, coverage.firstColumn,
+          coverage.rowCount, coverage.columnCount);
+      }
+    }
+  }
+  let calculatedFactsSnapshot = null;
+  if (typeof getClaimCalculatedFactsSnapshotSheet_ === 'function') {
+    const factsSheet = getClaimCalculatedFactsSnapshotSheet_(spreadsheet, false);
+    if (factsSheet) {
+      const factsNamedRange = spreadsheet.getRangeByName(
+        typeof CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE !== 'undefined'
+          ? CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE : 'CLAIM_CALCULATED_FACTS_SNAPSHOT'
+      );
+      const factsRangeRows = Math.max(
+        factsNamedRange ? factsNamedRange.getNumRows() + 1 : factsSheet.getLastRow(), 2
+      );
+      addCalculationRangeSnapshot_(snapshot, factsSheet, 1, 1, factsRangeRows,
+        typeof CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS !== 'undefined'
+          ? CLAIM_CALCULATED_FACTS_SNAPSHOT_HEADERS.length : 12);
+      calculatedFactsSnapshot = {
+        sheet: factsSheet,
+        namedRange: factsNamedRange,
+        namedRangeName: typeof CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE !== 'undefined'
+          ? CLAIM_CALCULATED_FACTS_SNAPSHOT_NAMED_RANGE : 'CLAIM_CALCULATED_FACTS_SNAPSHOT',
+        namedRangeExisted: !!factsNamedRange,
+      };
     }
   }
   const properties = typeof PropertiesService !== 'undefined'
@@ -719,6 +762,12 @@ function snapshotCalculationTransaction_(spreadsheet, descriptors) {
     auditNamedRangeExisted: !!auditNamedRange,
     auditNamedRange,
     auditSnapshot,
+    evidenceCoverageNamedRangeName: typeof getClaimIntakeLayout_ === 'function'
+      && getClaimIntakeLayout_().evidenceCoverage
+      ? getClaimIntakeLayout_().evidenceCoverage.namedRange : '',
+    evidenceCoverageNamedRangeExisted: !!evidenceCoverageNamedRange,
+    evidenceCoverageNamedRange,
+    calculatedFactsSnapshot,
     properties,
     propertyValues: properties && typeof properties.getProperties === 'function'
       ? properties.getProperties() : {},
@@ -741,7 +790,7 @@ function addCalculationRangeSnapshot_(snapshot, sheet, row, column, rowCount, co
   if (snapshot.batchKeys.has(key)) return;
   const range = sheet.getRange(row, column, rowCount, columnCount);
   snapshot.batchKeys.add(key);
-  snapshot.batches.push({
+  const batch = {
     key, sheet, row, column, rowCount, columnCount,
     values: range.getValues(),
     formulas: range.getFormulas(),
@@ -749,7 +798,17 @@ function addCalculationRangeSnapshot_(snapshot, sheet, row, column, rowCount, co
     backgrounds: range.getBackgrounds(),
     numberFormats: range.getNumberFormats(),
     dataValidations: range.getDataValidations(),
+  };
+  const optionalStyles = [
+    ['fontColors', 'getFontColors'], ['fontWeights', 'getFontWeights'],
+    ['horizontalAlignments', 'getHorizontalAlignments'],
+    ['verticalAlignments', 'getVerticalAlignments'],
+    ['wraps', 'getWraps'], ['wrapStrategies', 'getWrapStrategies'],
+  ];
+  optionalStyles.forEach(([keyName, getter]) => {
+    if (typeof range[getter] === 'function') batch[keyName] = range[getter]();
   });
+  snapshot.batches.push(batch);
 }
 
 function extendCalculationTransactionAuditSnapshot_(snapshot, spreadsheet, sheet, claimFacts) {
@@ -803,6 +862,29 @@ function rollbackCalculationTransaction_(spreadsheet, snapshot) {
       removeCalculationNamedRange_(spreadsheet, snapshot.auditNamedRangeName);
     } catch (error) { errors.push(error); }
   }
+  if (snapshot.evidenceCoverageNamedRangeExisted && snapshot.evidenceCoverageNamedRange
+    && snapshot.evidenceCoverageNamedRangeName) {
+    try {
+      spreadsheet.setNamedRange(
+        snapshot.evidenceCoverageNamedRangeName, snapshot.evidenceCoverageNamedRange
+      );
+    } catch (error) { errors.push(error); }
+  } else if (!snapshot.evidenceCoverageNamedRangeExisted
+    && snapshot.evidenceCoverageNamedRangeName) {
+    try {
+      removeCalculationNamedRange_(spreadsheet, snapshot.evidenceCoverageNamedRangeName);
+    } catch (error) { errors.push(error); }
+  }
+  if (snapshot.calculatedFactsSnapshot && snapshot.calculatedFactsSnapshot.namedRangeName) {
+    const facts = snapshot.calculatedFactsSnapshot;
+    try {
+      if (facts.namedRangeExisted && facts.namedRange) {
+        spreadsheet.setNamedRange(facts.namedRangeName, facts.namedRange);
+      } else {
+        removeCalculationNamedRange_(spreadsheet, facts.namedRangeName);
+      }
+    } catch (error) { errors.push(error); }
+  }
   if (snapshot.properties) {
     try {
       const current = snapshot.properties.getProperties();
@@ -845,6 +927,38 @@ function verifyCalculationTransactionRollback_(snapshot, errors) {
       errors.push(new Error('Транзакционный rollback не удалил вновь созданный диапазон аудита.'));
     }
   }
+  if (snapshot.evidenceCoverageNamedRangeName && snapshot.auditSpreadsheet) {
+    const currentRange = snapshot.auditSpreadsheet.getRangeByName(
+      snapshot.evidenceCoverageNamedRangeName
+    );
+    if (snapshot.evidenceCoverageNamedRangeExisted) {
+      if (!currentRange || currentRange.getSheet().getSheetId()
+        !== snapshot.evidenceCoverageNamedRange.getSheet().getSheetId()
+        || currentRange.getRow() !== snapshot.evidenceCoverageNamedRange.getRow()
+        || currentRange.getColumn() !== snapshot.evidenceCoverageNamedRange.getColumn()
+        || currentRange.getNumRows() !== snapshot.evidenceCoverageNamedRange.getNumRows()
+        || currentRange.getNumColumns() !== snapshot.evidenceCoverageNamedRange.getNumColumns()) {
+        errors.push(new Error('Транзакционный rollback не восстановил карту покрытия дела.'));
+      }
+    } else if (currentRange) {
+      errors.push(new Error('Транзакционный rollback не удалил диапазон карты покрытия дела.'));
+    }
+  }
+  if (snapshot.calculatedFactsSnapshot && snapshot.auditSpreadsheet) {
+    const facts = snapshot.calculatedFactsSnapshot;
+    const currentRange = snapshot.auditSpreadsheet.getRangeByName(facts.namedRangeName);
+    if (facts.namedRangeExisted) {
+      if (!currentRange || currentRange.getSheet().getSheetId() !== facts.namedRange.getSheet().getSheetId()
+        || currentRange.getRow() !== facts.namedRange.getRow()
+        || currentRange.getColumn() !== facts.namedRange.getColumn()
+        || currentRange.getNumRows() !== facts.namedRange.getNumRows()
+        || currentRange.getNumColumns() !== facts.namedRange.getNumColumns()) {
+        errors.push(new Error('Транзакционный rollback не восстановил снимок требований.'));
+      }
+    } else if (currentRange) {
+      errors.push(new Error('Транзакционный rollback не удалил диапазон снимка требований.'));
+    }
+  }
   if (errors.length) throw new Error(`Rollback failed: ${errors.map((error) =>
     error.message || error).join('; ')}`);
 }
@@ -875,11 +989,20 @@ function verifyCalculationRangeSnapshots_(batches, errors) {
     const validationsRestored = calculationValidationMatricesEqual_(
       range.getDataValidations(), batch.dataValidations
     );
+    const optionalStylesRestored = [
+      ['fontColors', 'getFontColors'], ['fontWeights', 'getFontWeights'],
+      ['horizontalAlignments', 'getHorizontalAlignments'],
+      ['verticalAlignments', 'getVerticalAlignments'],
+      ['wraps', 'getWraps'], ['wrapStrategies', 'getWrapStrategies'],
+    ].every(([keyName, getter]) => batch[keyName] === undefined
+      || typeof range[getter] !== 'function'
+      || JSON.stringify(range[getter]()) === JSON.stringify(batch[keyName]));
     if (!valuesRestored || !notesRestored || !backgroundsRestored
-      || !formatsRestored || !validationsRestored) {
+      || !formatsRestored || !validationsRestored || !optionalStylesRestored) {
       errors.push(new Error(`Транзакционный rollback не восстановил диапазон ${batch.key}`
         + ` (values=${valuesRestored}, notes=${notesRestored}, backgrounds=${backgroundsRestored},`
-        + ` formats=${formatsRestored}, validations=${validationsRestored}).`));
+        + ` formats=${formatsRestored}, validations=${validationsRestored},`
+        + ` styles=${optionalStylesRestored}).`));
     }
   });
 }
@@ -931,6 +1054,17 @@ function restoreCalculationRangeSnapshots_(spreadsheet, batches) {
     range.setBackgrounds(batch.backgrounds);
     range.setNumberFormats(batch.numberFormats);
     range.setDataValidations(batch.dataValidations);
+    const optionalStyles = [
+      ['fontColors', 'setFontColors'], ['fontWeights', 'setFontWeights'],
+      ['horizontalAlignments', 'setHorizontalAlignments'],
+      ['verticalAlignments', 'setVerticalAlignments'],
+      ['wraps', 'setWraps'], ['wrapStrategies', 'setWrapStrategies'],
+    ];
+    optionalStyles.forEach(([keyName, setter]) => {
+      if (batch[keyName] !== undefined && typeof range[setter] === 'function') {
+        range[setter](batch[keyName]);
+      }
+    });
   });
 }
 
@@ -3255,7 +3389,8 @@ function discoverCalculationSheetDescriptors_(spreadsheet) {
     (descriptors, sheet) => {
       if (isGeneratedSheetName_(sheet.getName())
         || sheet.getName() === 'Анкета и требования'
-        || sheet.getName() === 'Конструктор') return descriptors;
+        || sheet.getName() === 'Конструктор'
+        || sheet.getName() === 'Аудит_снимок_требований') return descriptors;
       const descriptor = resolveSheetLayout_(sheet);
       if (descriptor && descriptor.semanticColumns) descriptors.push(descriptor);
       else if (descriptor && descriptor.id) descriptors.push({
